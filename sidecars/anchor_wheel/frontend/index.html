@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>锚点轮盘工作台 · AnchorWheel</title>
+  <link rel="stylesheet" href="/wheel.css" />
+  <link rel="stylesheet" href="/styles.css" />
+  <script src="/preload.js"></script>
+</head>
+<body class="aw-shell" data-aw-root="1">
+  <div id="aw-app" class="aw-app">
+    <!-- Top Tab & Priority Anchor Strip -->
+    <header class="aw-topbar" id="aw-topbar">
+      <div class="aw-tray" aria-label="浏览历史">
+        <button type="button" id="aw-btn-back" class="aw-tray-btn" title="后退 (Alt+← / 鼠标侧键)" disabled>
+          <svg class="aw-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+        </button>
+        <button type="button" id="aw-btn-forward" class="aw-tray-btn" title="前进 (Alt+→ / 鼠标侧键)" disabled>
+          <svg class="aw-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+        </button>
+      </div>
+
+      <div id="aw-tab-scroll" class="aw-tab-scroll" data-aw-dropzone="tabbar" aria-label="已打开标签页">
+        <!-- Populated dynamically: Priority Anchor Pill(s) + open tabs -->
+      </div>
+
+      <div class="aw-tray">
+        <button type="button" id="aw-btn-files" class="aw-tray-btn" title="浏览工作区与报告目录">
+          <svg class="aw-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+          <span class="aw-hide-xs">文件</span>
+        </button>
+        <button type="button" id="aw-btn-settings" class="aw-tray-btn" title="轮盘与索引设置">
+          <svg class="aw-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- Document Sub-bar -->
+    <div class="aw-subbar" id="aw-subbar">
+      <div class="aw-breadcrumb" id="aw-breadcrumb" title="">
+        <span id="aw-crumb-text">未打开文件 · 请从下方选择文档或粘贴路径</span>
+      </div>
+      <div class="aw-subbar-actions">
+        <button type="button" id="aw-btn-tree" class="aw-status-pill" hidden title="常驻层级导览 (按 Tab 键开关)">
+          <svg class="aw-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="3" y="14" width="7" height="5" rx="1.5"/><rect x="14" y="14" width="7" height="5" rx="1.5"/><path d="M6.5 8v6"/><path d="M10 5.5h4"/><path d="M10 16.5h4"/></svg>
+          <span>层级</span>
+        </button>
+        <button type="button" id="aw-btn-pin-anchor" class="aw-status-pill" hidden>
+          <svg class="aw-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="5" r="3"/><line x1="12" y1="22" x2="12" y2="8"/><path d="M5 12H2a10 10 0 0 0 20 0h-3"/></svg>
+          <span id="aw-pin-anchor-label">设为优先母页</span>
+        </button>
+        <button type="button" id="aw-btn-links" class="aw-status-pill" hidden>
+          <svg class="aw-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+          <span id="aw-links-label">反向引用 0</span>
+        </button>
+        <button type="button" id="aw-btn-encoding" class="aw-status-pill" hidden>
+          <svg class="aw-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9" y1="20" x2="15" y2="20"/><line x1="12" y1="4" x2="12" y2="20"/></svg>
+          <span id="aw-encoding-label">UTF-8</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- Main Reading Stage -->
+    <main id="aw-stage" class="aw-stage">
+      <div id="aw-encoding-banner" class="aw-encoding-banner" hidden></div>
+      <div id="aw-reader" class="aw-reader"></div>
+    </main>
+  </div>
+
+  <!-- Popover Root -->
+  <div id="aw-popover-root"></div>
+
+  <script src="/nav_shared.js"></script>
+  <script src="/wheel.js"></script>
+  <script src="/bilateral_wheel.js"></script>
+  <script src="/ae_tree.js"></script>
+  <script src="/settings_modal.js"></script>
+  <script src="/markdown.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

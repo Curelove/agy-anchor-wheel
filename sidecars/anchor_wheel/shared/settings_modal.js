@@ -1,0 +1,591 @@
+// Unified Settings & Reactive Interactive Visual Guide Modal (shared by Mode 1 & Mode 2)
+(function (root, factory) {
+  const api = factory(
+    typeof module !== 'undefined' && module.exports ? require('./nav_shared.js') : root.AnchorWheelNavShared
+  );
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+  if (root) root.AnchorWheelSettingsModal = api;
+})(typeof globalThis !== 'undefined' ? globalThis : window, function (Shared) {
+  'use strict';
+
+  const CARD_META = Object.freeze([
+    {
+      key: 'bilateral_wheel',
+      title: '双侧分类轮盘（推荐中键）',
+      desc: '圆心永远是当前页；一侧返回母页，另一侧按类型展开子页，超出 3 条按住中键反向滑轨挑选，松手即打开。',
+    },
+    {
+      key: 'ae_tree',
+      title: '竖向层级树（推荐快捷键）',
+      desc: '纵向串联「祖父页 → 母页 → 当前页」，右侧横向排列各自子页；平时柔暗，悬停点亮整支与亮画快览，叠角展开自动下移避让。',
+    },
+    {
+      key: 'classic_wheel',
+      title: '经典母页轮盘',
+      desc: '圆心固定为优先母页，周围扇区展示组内子页；按住中键划选扇区或中心松手打开，移到圈外自动取消。',
+    },
+  ]);
+
+  function createSettingsModal(options = {}) {
+    const doc = options.document || document;
+    const mountRoot = options.mountRoot || doc.body;
+    const S = Shared || globalThis.AnchorWheelNavShared;
+
+    let backdropEl = null;
+    let activeTab = 'modes';
+    let focusChannel = 'middle'; // 'middle' | 'tab'
+    let draft = null;
+    let currentCallbacks = null;
+
+    function close() {
+      if (!backdropEl) return;
+      doc.removeEventListener('keydown', onKeyDown, true);
+      try { backdropEl.remove(); } catch {}
+      backdropEl = null;
+      draft = null;
+      currentCallbacks = null;
+    }
+
+    function onKeyDown(ev) {
+      if (!backdropEl) return;
+      if (ev.key === 'Escape') {
+        ev.preventDefault();
+        ev.stopPropagation();
+        close();
+      }
+    }
+
+    function getActiveCardKey() {
+      if (!draft) return 'bilateral_wheel';
+      if (focusChannel === 'tab') {
+        return draft.tabTriggerEnabled !== false && draft.tabMode && draft.tabMode !== 'off'
+          ? draft.tabMode
+          : '';
+      }
+      return draft.middleMode && draft.middleMode !== 'off' ? draft.middleMode : '';
+    }
+
+    function syncDraftFromDom(modalEl) {
+      if (!modalEl || !draft) return;
+      const g = (sel) => modalEl.querySelector(sel);
+      if (g('#aw-sm-middle')) draft.middleMode = g('#aw-sm-middle').value;
+      if (g('#aw-sm-pdir')) draft.parentDirection = g('#aw-sm-pdir').value;
+      if (g('#aw-sm-tab-en')) draft.tabTriggerEnabled = Boolean(g('#aw-sm-tab-en').checked);
+      if (g('#aw-sm-tab-mode')) draft.tabMode = g('#aw-sm-tab-mode').value;
+      if (g('#aw-sm-tab-key')) draft.tabCustomHotkey = g('#aw-sm-tab-key').value;
+      if (g('#aw-sm-tab-close')) draft.tabCloseOnSelect = Boolean(g('#aw-sm-tab-close').checked);
+
+      if (g('#aw-sm-scope')) draft.childSourceScope = g('#aw-sm-scope').value;
+      if (g('#aw-sm-prev-en')) draft.hoverPreviewEnabled = Boolean(g('#aw-sm-prev-en').checked);
+      if (g('#aw-sm-prev-delay')) draft.hoverPreviewDelayMs = Number(g('#aw-sm-prev-delay').value);
+      if (g('#aw-sm-prev-anim')) draft.videoPreviewAnimated = Boolean(g('#aw-sm-prev-anim').checked);
+
+      const ruleRows = modalEl.querySelectorAll('[data-aw-rule-idx]');
+      if (ruleRows.length) {
+        const nextRules = [];
+        ruleRows.forEach((row, i) => {
+          const id = row.getAttribute('data-aw-rule-id') || `cat_${i + 1}`;
+          const label = row.querySelector('.aw-sm-rule-label')?.value?.trim() || '';
+          const extRaw = row.querySelector('.aw-sm-rule-exts')?.value || '';
+          const extensions = Array.from(
+            new Set(
+              extRaw
+                .split(/[,;\s]+/)
+                .map((x) => x.replace(/^\.+/, '').trim().toLowerCase())
+                .filter((x) => x && /^[a-z0-9]{1,16}$/.test(x))
+            )
+          );
+          if (label && label !== '其他') nextRules.push({ id, label: label.slice(0, 12), extensions });
+        });
+        if (nextRules.length) draft.categoryRules = nextRules;
+      }
+
+      if (g('#aw-sm-max')) draft.maxChildrenPerGroup = Math.max(1, Math.min(30, Number(g('#aw-sm-max').value || 6)));
+      if (g('#aw-sm-fold')) draft.foldChildTabsInNativeBar = Boolean(g('#aw-sm-fold').checked);
+      if (g('#aw-sm-auto')) draft.autoAnchorSummaryMd = Boolean(g('#aw-sm-auto').checked);
+      if (g('#aw-sm-sectors')) draft.wheelSectors = Number(g('#aw-sm-sectors').value || 8);
+      if (g('#aw-sm-theme')) {
+        draft.theme = g('#aw-sm-theme').value;
+        if (backdropEl) {
+          if (draft.theme && draft.theme !== 'auto') backdropEl.setAttribute('data-aw-theme', draft.theme);
+          else backdropEl.removeAttribute('data-aw-theme');
+        }
+      }
+      if (g('#aw-sm-extra')) {
+        draft.extraScanDirs = String(g('#aw-sm-extra').value || '')
+          .split(/[,;\n]/)
+          .map((x) => x.trim())
+          .filter(Boolean);
+      }
+    }
+
+    function updateLiveGuides(modalEl) {
+      if (!modalEl || !draft) return;
+      const activeKey = getActiveCardKey();
+      const otherMode =
+        focusChannel === 'middle'
+          ? (draft.tabTriggerEnabled !== false ? draft.tabMode : '')
+          : draft.middleMode;
+      const otherLabel = focusChannel === 'middle' ? '另一通道已用' : '中键已用';
+
+      modalEl.querySelectorAll('[data-aw-focus-ch]').forEach((btn) => {
+        btn.setAttribute('data-active', btn.getAttribute('data-aw-focus-ch') === focusChannel ? '1' : '0');
+      });
+
+      modalEl.querySelectorAll('[data-aw-guide-card]').forEach((card) => {
+        const key = card.getAttribute('data-aw-guide-card');
+        const isPrimary = key === activeKey;
+        card.setAttribute('data-card-state', isPrimary ? 'active' : 'dimmed');
+        card.setAttribute('aria-pressed', isPrimary ? 'true' : 'false');
+
+        const chip = card.querySelector('.aw-guide-chip');
+        if (chip) {
+          if (isPrimary) {
+            chip.textContent = focusChannel === 'middle' ? '当前中键主模式' : '当前快捷键主模式';
+            chip.setAttribute('data-tone', 'active');
+            chip.hidden = false;
+          } else if (key === otherMode && otherMode !== 'off') {
+            chip.textContent = otherLabel;
+            chip.setAttribute('data-tone', 'secondary');
+            chip.hidden = false;
+          } else {
+            chip.hidden = true;
+          }
+        }
+
+        const svgHost = card.querySelector('.aw-guide-svg-host');
+        if (svgHost) svgHost.innerHTML = S.renderModeGuideSvg(key, draft);
+      });
+
+      // Live mini previews on secondary tabs without stealing input focus
+      const catMini = modalEl.querySelector('#aw-sm-cat-live-preview');
+      if (catMini) {
+        catMini.innerHTML = `
+          <div class="aw-mini-preview-col">${S.renderModeGuideSvg('bilateral_wheel', draft)}</div>
+          <div class="aw-mini-preview-col">${S.renderModeGuideSvg('ae_tree', draft)}</div>
+        `;
+      }
+      const advMini = modalEl.querySelector('#aw-sm-adv-live-preview');
+      if (advMini) {
+        advMini.innerHTML = `<div class="aw-mini-preview-col" style="max-width:340px;margin:0 auto">${S.renderModeGuideSvg('classic_wheel', draft)}</div>`;
+      }
+    }
+
+    function applyCardSelection(modalEl, key) {
+      if (!draft) return;
+      if (key === 'ae_tree') {
+        focusChannel = 'tab';
+        draft.tabTriggerEnabled = true;
+        draft.tabMode = 'ae_tree';
+      } else if (focusChannel === 'tab') {
+        draft.tabTriggerEnabled = true;
+        draft.tabMode = key;
+      } else {
+        draft.middleMode = key;
+      }
+
+      const midSel = modalEl.querySelector('#aw-sm-middle');
+      const tabEn = modalEl.querySelector('#aw-sm-tab-en');
+      const tabSel = modalEl.querySelector('#aw-sm-tab-mode');
+      if (midSel) midSel.value = draft.middleMode || 'bilateral_wheel';
+      if (tabEn) tabEn.checked = draft.tabTriggerEnabled !== false;
+      if (tabSel) tabSel.value = draft.tabMode || 'ae_tree';
+      updateLiveGuides(modalEl);
+    }
+
+    function render() {
+      if (!backdropEl || !draft) return;
+      const modal = backdropEl.querySelector('.aw-settings-modal');
+      if (!modal) return;
+
+      const s = draft;
+      const rules = S.sanitizeRulesClient(s.categoryRules);
+      const evicted = Array.isArray(currentCallbacks?.evicted) ? currentCallbacks.evicted : [];
+      const cdp = currentCallbacks?.cdpStatus || null;
+
+      let tabBody = '';
+      if (activeTab === 'modes') {
+        tabBody = `
+          <div class="aw-focus-bar">
+            <div class="aw-tray">
+              <button type="button" class="aw-tray-btn" data-aw-focus-ch="middle" data-active="${focusChannel === 'middle' ? '1' : '0'}">聚焦：按住中键模式</button>
+              <button type="button" class="aw-tray-btn" data-aw-focus-ch="tab" data-active="${focusChannel === 'tab' ? '1' : '0'}">聚焦：快捷键模式</button>
+            </div>
+            <span class="aw-focus-hint">点击上方卡片直接切换，悬停灰显卡片可看清细节动效</span>
+          </div>
+
+          <div class="aw-guide-grid">
+            ${CARD_META.map(
+              (c) => `
+              <button type="button" class="aw-guide-card" data-aw-guide-card="${c.key}" data-card-state="dimmed">
+                <div class="aw-guide-head">
+                  <strong>${c.title}</strong>
+                  <span class="aw-guide-chip" hidden></span>
+                </div>
+                <div class="aw-guide-svg-host">${S.renderModeGuideSvg(c.key, s)}</div>
+                <div class="aw-guide-meta">
+                  <span>${c.desc}</span>
+                </div>
+              </button>`
+            ).join('')}
+          </div>
+
+          <div class="aw-settings-group">
+            <div class="aw-settings-group-title">双通道呼出与实时布局联动</div>
+            <div class="aw-form-row">
+              <div class="aw-form-label">
+                <strong>按住鼠标中键（松手即确认）</strong>
+                <span>仅呈现可划选目标，移到空白或圈外松手取消</span>
+              </div>
+              <select id="aw-sm-middle" class="aw-select aw-reactive-ctrl">
+                <option value="bilateral_wheel" ${s.middleMode === 'bilateral_wheel' ? 'selected' : ''}>双侧分类轮盘</option>
+                <option value="classic_wheel" ${s.middleMode === 'classic_wheel' ? 'selected' : ''}>经典母页轮盘</option>
+                <option value="off" ${s.middleMode === 'off' ? 'selected' : ''}>关闭中键呼出</option>
+              </select>
+            </div>
+            <div class="aw-form-row">
+              <div class="aw-form-label">
+                <strong>双侧轮盘中「母页」所在方向</strong>
+                <span>调节后上方轮盘动画立刻跟随旋转对齐</span>
+              </div>
+              <select id="aw-sm-pdir" class="aw-select aw-reactive-ctrl">
+                <option value="left" ${s.parentDirection === 'left' ? 'selected' : ''}>左侧返回母页（右侧展开子页）</option>
+                <option value="right" ${s.parentDirection === 'right' ? 'selected' : ''}>右侧返回母页（左侧展开子页）</option>
+                <option value="top" ${s.parentDirection === 'top' ? 'selected' : ''}>上方返回母页（下方展开子页）</option>
+                <option value="bottom" ${s.parentDirection === 'bottom' ? 'selected' : ''}>下方返回母页（上方展开子页）</option>
+              </select>
+            </div>
+            <div class="aw-form-row">
+              <div class="aw-form-label">
+                <strong>启用快捷键常驻导览（覆盖右侧栏原生 Tab）</strong>
+                <span>阅读文档时拦截原生 Tab 跳页首；聊天框、搜索框与代码编辑框内自动放行</span>
+              </div>
+              <input type="checkbox" id="aw-sm-tab-en" class="aw-reactive-ctrl" ${s.tabTriggerEnabled !== false ? 'checked' : ''} />
+            </div>
+            <div class="aw-form-row">
+              <div class="aw-form-label">
+                <strong>快捷键呼出的视图样式</strong>
+                <span>按键切换开关，页面滚动时持续停留</span>
+              </div>
+              <select id="aw-sm-tab-mode" class="aw-select aw-reactive-ctrl">
+                <option value="ae_tree" ${s.tabMode === 'ae_tree' ? 'selected' : ''}>竖向层级树</option>
+                <option value="bilateral_wheel" ${s.tabMode === 'bilateral_wheel' ? 'selected' : ''}>双侧分类轮盘（滚轮浏览）</option>
+                <option value="classic_wheel" ${s.tabMode === 'classic_wheel' ? 'selected' : ''}>经典母页轮盘</option>
+              </select>
+            </div>
+            <div class="aw-form-row">
+              <div class="aw-form-label">
+                <strong>快捷键选择</strong>
+                <span>上方层级树按键帽会实时显示当前按键</span>
+              </div>
+              <select id="aw-sm-tab-key" class="aw-select aw-reactive-ctrl">
+                <option value="Tab" ${s.tabCustomHotkey === 'Tab' ? 'selected' : ''}>Tab 键（推荐）</option>
+                <option value="Alt+Q" ${s.tabCustomHotkey === 'Alt+Q' ? 'selected' : ''}>Alt + Q</option>
+                <option value="Alt+W" ${s.tabCustomHotkey === 'Alt+W' ? 'selected' : ''}>Alt + W</option>
+                <option value="F2" ${s.tabCustomHotkey === 'F2' ? 'selected' : ''}>F2</option>
+              </select>
+            </div>
+            <div class="aw-form-row">
+              <div class="aw-form-label">
+                <strong>点选跳转后自动收起浮层</strong>
+                <span>关闭时可连续点选多个文档对比，直到再按快捷键关闭</span>
+              </div>
+              <input type="checkbox" id="aw-sm-tab-close" class="aw-reactive-ctrl" ${s.tabCloseOnSelect ? 'checked' : ''} />
+            </div>
+          </div>
+        `;
+      } else if (activeTab === 'categories') {
+        tabBody = `
+          <div class="aw-mini-preview-strip" id="aw-sm-cat-live-preview">
+            <div class="aw-mini-preview-col">${S.renderModeGuideSvg('bilateral_wheel', s)}</div>
+            <div class="aw-mini-preview-col">${S.renderModeGuideSvg('ae_tree', s)}</div>
+          </div>
+
+          <div class="aw-settings-group">
+            <div class="aw-settings-group-title">子页范围与 0.25 秒悬停快览</div>
+            <div class="aw-form-row">
+              <div class="aw-form-label">
+                <strong>默认展示的子页范围</strong>
+                <span>浮层顶部仍可一键临时切换</span>
+              </div>
+              <select id="aw-sm-scope" class="aw-select aw-reactive-ctrl">
+                <option value="opened_and_outlinks" ${s.childSourceScope !== 'opened_only' ? 'selected' : ''}>已开子标签 + 文档本地出链（已开置顶）</option>
+                <option value="opened_only" ${s.childSourceScope === 'opened_only' ? 'selected' : ''}>仅显示已打开或收编的子标签</option>
+              </select>
+            </div>
+            <div class="aw-form-row">
+              <div class="aw-form-label">
+                <strong>开启光标悬停快览</strong>
+                <span>显示文档开头片段、图片缩略图与视频开头预览</span>
+              </div>
+              <input type="checkbox" id="aw-sm-prev-en" class="aw-reactive-ctrl" ${s.hoverPreviewEnabled !== false ? 'checked' : ''} />
+            </div>
+            <div class="aw-form-row">
+              <div class="aw-form-label">
+                <strong>悬停触发延迟</strong>
+                <span>减少快速扫过时的干扰</span>
+              </div>
+              <select id="aw-sm-prev-delay" class="aw-select aw-reactive-ctrl">
+                <option value="120" ${Number(s.hoverPreviewDelayMs) <= 150 ? 'selected' : ''}>120 毫秒（灵敏）</option>
+                <option value="250" ${Number(s.hoverPreviewDelayMs) > 150 && Number(s.hoverPreviewDelayMs) <= 320 ? 'selected' : ''}>250 毫秒（推荐）</option>
+                <option value="450" ${Number(s.hoverPreviewDelayMs) > 320 ? 'selected' : ''}>450 毫秒（稳重）</option>
+              </select>
+            </div>
+            <div class="aw-form-row">
+              <div class="aw-form-label">
+                <strong>视频跳过黑帧生成 3 秒动态预览</strong>
+                <span>先秒出非黑帧截图，后台异步缓存压缩动态图</span>
+              </div>
+              <input type="checkbox" id="aw-sm-prev-anim" class="aw-reactive-ctrl" ${s.videoPreviewAnimated !== false ? 'checked' : ''} />
+            </div>
+          </div>
+
+          <div class="aw-settings-group">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px">
+              <div class="aw-settings-group-title" style="margin:0">双侧轮盘自定义分类规则（实时映射上方轮盘）</div>
+              <button type="button" class="aw-ghost-btn" id="aw-sm-add-rule" ${rules.length >= 8 ? 'disabled' : ''}>${S.ICONS.plus} 新增分类</button>
+            </div>
+            <div class="aw-rule-list">
+              ${rules
+                .map(
+                  (r, i) => `
+                <div class="aw-rule-row" data-aw-rule-idx="${i}" data-aw-rule-id="${S.esc(r.id)}">
+                  <input type="text" class="aw-input aw-sm-rule-label aw-reactive-ctrl" value="${S.esc(r.label)}" maxlength="12" placeholder="分类名" />
+                  <input type="text" class="aw-input aw-sm-rule-exts aw-reactive-ctrl" value="${S.esc((r.extensions || []).join(', '))}" placeholder="扩展名，如 png, jpg, svg" />
+                  <button type="button" class="aw-tray-btn aw-sm-del-rule" data-del-idx="${i}" title="删除此分类" ${rules.length <= 1 ? 'disabled' : ''}>${S.ICONS.trash}</button>
+                </div>`
+                )
+                .join('')}
+              <div class="aw-rule-row aw-rule-locked">
+                <input type="text" class="aw-input" value="其他" disabled />
+                <input type="text" class="aw-input" value="其余未命中以上分类的所有文件与文件夹（固定兜底，不可删除）" disabled />
+                <span class="aw-link-row-badge">固定</span>
+              </div>
+            </div>
+          </div>
+        `;
+      } else {
+        tabBody = `
+          <div class="aw-mini-preview-strip" id="aw-sm-adv-live-preview">
+            <div class="aw-mini-preview-col" style="max-width:340px;margin:0 auto">${S.renderModeGuideSvg('classic_wheel', s)}</div>
+          </div>
+
+          <div class="aw-settings-group">
+            <div class="aw-settings-group-title">标签组收纳与外观</div>
+            ${
+              cdp !== null
+                ? `<div class="aw-form-row">
+                    <div class="aw-form-label"><strong>原生侧栏连接状态</strong><span>${cdp.connected ? `已附着主窗口（端口 ${cdp.port}）` : '当前未附着调试端口'}</span></div>
+                    ${!cdp.connected && currentCallbacks?.onGenerateLauncher ? '<button type="button" id="aw-sm-launcher" class="aw-ghost-btn">生成调试启动器</button>' : `<span class="aw-link-row-badge">${cdp.connected ? '已在线' : '离线'}</span>`}
+                  </div>`
+                : ''
+            }
+            <div class="aw-form-row">
+              <div class="aw-form-label"><strong>每组保留子文件上限</strong><span>超出后自动清理最早未读且未加锁项</span></div>
+              <input type="number" id="aw-sm-max" class="aw-input" style="width:72px" min="1" max="30" value="${s.maxChildrenPerGroup ?? 6}" />
+            </div>
+            <div class="aw-form-row">
+              <div class="aw-form-label"><strong>原生顶栏自动折叠子标签</strong><span>把子文件收入母页数字徽章，腾出标签栏空间</span></div>
+              <input type="checkbox" id="aw-sm-fold" ${s.foldChildTabsInNativeBar !== false ? 'checked' : ''} />
+            </div>
+            <div class="aw-form-row">
+              <div class="aw-form-label"><strong>汇总型 MD 自动设为优先母页</strong><span>含 3 个以上本地链接时自动立组</span></div>
+              <input type="checkbox" id="aw-sm-auto" ${s.autoAnchorSummaryMd ? 'checked' : ''} />
+            </div>
+            <div class="aw-form-row">
+              <div class="aw-form-label"><strong>经典轮盘每页扇区数</strong><span>实时反映在上方经典轮盘结构中</span></div>
+              <select id="aw-sm-sectors" class="aw-select aw-reactive-ctrl">
+                <option value="4" ${Number(s.wheelSectors) === 4 ? 'selected' : ''}>4 扇区</option>
+                <option value="6" ${Number(s.wheelSectors) === 6 ? 'selected' : ''}>6 扇区</option>
+                <option value="8" ${Number(s.wheelSectors || 8) === 8 ? 'selected' : ''}>8 扇区</option>
+              </select>
+            </div>
+            <div class="aw-form-row">
+              <div class="aw-form-label"><strong>界面主题（适配 obsidian-prism）</strong><span>切换立即实时预览配色效果</span></div>
+              <select id="aw-sm-theme" class="aw-select aw-reactive-ctrl">
+                <option value="auto" ${s.theme === 'auto' ? 'selected' : ''}>跟随宿主</option>
+                <option value="obsidian" ${s.theme === 'obsidian' ? 'selected' : ''}>深空黑曜</option>
+                <option value="warm" ${s.theme === 'warm' ? 'selected' : ''}>暖炭玄岩</option>
+                <option value="crystal" ${s.theme === 'crystal' ? 'selected' : ''}>白昼冷晶</option>
+                <option value="alabaster" ${s.theme === 'alabaster' ? 'selected' : ''}>暖白画册</option>
+              </select>
+            </div>
+            <div class="aw-form-row" style="flex-direction:column;align-items:stretch;gap:6px">
+              <div class="aw-form-label"><strong>额外扫描目录（逗号分隔）</strong><span>纳入工作区外的 Obsidian 库等双向链接索引</span></div>
+              <input type="text" id="aw-sm-extra" class="aw-input" value="${S.esc((s.extraScanDirs || []).join(', '))}" placeholder="例如 C:\\Users\\...\\Obsidian" />
+            </div>
+          </div>
+
+          <div class="aw-settings-group">
+            <div class="aw-settings-group-title">最近自动收纳（点击捞回）</div>
+            ${
+              evicted.length
+                ? evicted
+                    .slice(0, 5)
+                    .map(
+                      (r) => `
+                  <button type="button" class="aw-link-row" data-aw-sm-restore="${S.esc(r.path)}" data-aw-sm-rgrp="${S.esc(r.groupId || '')}">
+                    <div class="aw-link-row-top">
+                      <span class="aw-link-row-title">${S.esc(r.title)}</span>
+                      <span class="aw-link-row-badge">恢复</span>
+                    </div>
+                  </button>`
+                    )
+                    .join('')
+                : '<div class="aw-link-row-snippet">暂无被自动清理的文件。</div>'
+            }
+          </div>
+        `;
+      }
+
+      modal.innerHTML = `
+        <div class="aw-settings-head">
+          <div style="display:flex;align-items:center;gap:8px;min-width:0">
+            ${S.ICONS.wheel}
+            <span class="aw-popover-title">锚点轮盘设置与交互图解</span>
+          </div>
+          <div class="aw-tray" style="flex-wrap:wrap">
+            <button type="button" class="aw-tray-btn" data-aw-sm-tab="modes" data-active="${activeTab === 'modes' ? '1' : '0'}">交互模式与图解</button>
+            <button type="button" class="aw-tray-btn" data-aw-sm-tab="categories" data-active="${activeTab === 'categories' ? '1' : '0'}">分类与快览</button>
+            <button type="button" class="aw-tray-btn" data-aw-sm-tab="storage" data-active="${activeTab === 'storage' ? '1' : '0'}">收纳与高级</button>
+          </div>
+          <button type="button" class="aw-tray-btn" id="aw-sm-close" title="关闭">${S.ICONS.close}</button>
+        </div>
+        <div class="aw-settings-body">${tabBody}</div>
+        <div class="aw-settings-foot">
+          <span style="font-size:12px;color:var(--aw-fg-muted)">提示：仅当前聚焦的主模式卡片保持全亮，修改任一下方参数均实时联动图解</span>
+          <div style="display:flex;gap:8px">
+            <button type="button" class="aw-ghost-btn" id="aw-sm-cancel">取消</button>
+            <button type="button" class="aw-primary-btn" id="aw-sm-save">保存并应用</button>
+          </div>
+        </div>
+      `;
+
+      // Apply strict single-active / rest-dimmed tri-state right after mount
+      updateLiveGuides(modal);
+
+      modal.querySelectorAll('[data-aw-focus-ch]').forEach((btn) => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          syncDraftFromDom(modal);
+          focusChannel = btn.getAttribute('data-aw-focus-ch') || 'middle';
+          updateLiveGuides(modal);
+        });
+      });
+
+      modal.querySelectorAll('[data-aw-guide-card]').forEach((card) => {
+        card.addEventListener('click', (e) => {
+          e.stopPropagation();
+          syncDraftFromDom(modal);
+          applyCardSelection(modal, card.getAttribute('data-aw-guide-card'));
+        });
+      });
+
+      modal.querySelectorAll('.aw-reactive-ctrl').forEach((ctrl) => {
+        const evtName = ctrl.tagName === 'INPUT' && (ctrl.type === 'text' || ctrl.type === 'number') ? 'input' : 'change';
+        ctrl.addEventListener(evtName, () => {
+          syncDraftFromDom(modal);
+          if (ctrl.id === 'aw-sm-middle') focusChannel = 'middle';
+          else if (['aw-sm-tab-mode', 'aw-sm-tab-key', 'aw-sm-tab-en', 'aw-sm-tab-close'].includes(ctrl.id)) focusChannel = 'tab';
+          updateLiveGuides(modal);
+        });
+      });
+
+      modal.querySelectorAll('[data-aw-sm-tab]').forEach((btn) => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          syncDraftFromDom(modal);
+          activeTab = btn.getAttribute('data-aw-sm-tab');
+          render();
+        });
+      });
+
+      modal.querySelector('#aw-sm-add-rule')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        syncDraftFromDom(modal);
+        const cur = S.sanitizeRulesClient(draft.categoryRules);
+        if (cur.length < 8) {
+          cur.push({ id: `custom_${Date.now().toString(36).slice(-4)}`, label: '新分类', extensions: ['log'] });
+          draft.categoryRules = cur;
+          render();
+        }
+      });
+
+      modal.querySelectorAll('.aw-sm-del-rule').forEach((btn) => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          syncDraftFromDom(modal);
+          const idx = Number(btn.getAttribute('data-del-idx'));
+          const cur = S.sanitizeRulesClient(draft.categoryRules);
+          if (cur.length > 1 && idx >= 0 && idx < cur.length) {
+            cur.splice(idx, 1);
+            draft.categoryRules = cur;
+            render();
+          }
+        });
+      });
+
+      modal.querySelector('#aw-sm-launcher')?.addEventListener('click', async () => {
+        await currentCallbacks?.onGenerateLauncher?.();
+      });
+
+      modal.querySelectorAll('[data-aw-sm-restore]').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+          const p = btn.getAttribute('data-aw-sm-restore');
+          const gid = btn.getAttribute('data-aw-sm-rgrp');
+          close();
+          await currentCallbacks?.onRestoreEvicted?.(p, gid);
+        });
+      });
+
+      modal.querySelector('#aw-sm-close')?.addEventListener('click', close);
+      modal.querySelector('#aw-sm-cancel')?.addEventListener('click', close);
+      modal.querySelector('#aw-sm-save')?.addEventListener('click', async () => {
+        syncDraftFromDom(modal);
+        const payload = { ...draft };
+        const cb = currentCallbacks?.onSave;
+        close();
+        await cb?.(payload);
+      });
+    }
+
+    function open({ settings, evicted = [], cdpStatus = null, initialTab = 'modes', initialFocusChannel = 'middle', onSave, onRestoreEvicted, onGenerateLauncher }) {
+      close();
+      activeTab = initialTab || 'modes';
+      focusChannel = initialFocusChannel === 'tab' ? 'tab' : 'middle';
+      draft = {
+        ...settings,
+        categoryRules: S.sanitizeRulesClient(settings?.categoryRules).map((r) => ({ ...r, extensions: [...r.extensions] })),
+        extraScanDirs: [...(settings?.extraScanDirs || [])],
+      };
+      currentCallbacks = { evicted, cdpStatus, onSave, onRestoreEvicted, onGenerateLauncher };
+
+      backdropEl = S.markNode(doc.createElement('div'));
+      backdropEl.className = 'aw-settings-backdrop';
+      const initTheme = settings?.theme || options.theme;
+      if (initTheme && initTheme !== 'auto') {
+        backdropEl.setAttribute('data-aw-theme', initTheme);
+      }
+      backdropEl.addEventListener('click', (e) => {
+        if (e.target === backdropEl) close();
+      });
+
+      const modal = S.markNode(doc.createElement('div'));
+      modal.className = 'aw-settings-modal';
+      modal.addEventListener('click', (e) => e.stopPropagation());
+      modal.addEventListener('mousedown', (e) => e.stopPropagation());
+      backdropEl.appendChild(modal);
+      mountRoot.appendChild(backdropEl);
+      render();
+      doc.addEventListener('keydown', onKeyDown, true);
+    }
+
+    return {
+      open,
+      close,
+      isOpen: () => Boolean(backdropEl),
+    };
+  }
+
+  return { createSettingsModal };
+});

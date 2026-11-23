@@ -1,0 +1,20 @@
+{
+  "name": "agy-anchor-wheel",
+  "displayName": "锚点轮盘 · AnchorWheel",
+  "description": "Upgrade Antigravity's side pane with non-overwriting Markdown link navigation, hold-release Bilateral Category Wheel, Tab-persistent vertical-ancestor tree with 0.25s fast previews, Obsidian backlinks, and auto-encoding repair.",
+  "version": "0.4.0",
+  "logo": "assets/logo.svg",
+  "author": {
+    "name": "Curelove",
+    "url": "https://github.com/Curelove"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Curelove/agy-anchor-wheel"
+  },
+  "suggestedPrompts": [
+    "打开锚点轮盘工作台，扫描当前工作区与会话报告的双向引用关系",
+    "检查我当前侧边栏里的乱码文件并自动识别真实编码",
+    "把当前这份汇总报告设为优先母页，整理并折叠关联子文件标签"
+  ]
+}

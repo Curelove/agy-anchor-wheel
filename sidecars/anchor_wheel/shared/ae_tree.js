@@ -1,0 +1,346 @@
+// AE-Tab-Inspired Vertical Ancestor Trunk × Horizontal Child Rounded-Rectangle Tree
+(function (root, factory) {
+  const api = factory(
+    typeof module !== 'undefined' && module.exports ? require('./nav_shared.js') : root.AnchorWheelNavShared
+  );
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+  if (root) root.AnchorWheelTree = api;
+})(typeof globalThis !== 'undefined' ? globalThis : window, function (Shared) {
+  'use strict';
+
+  function clamp(v, min, max) {
+    return Math.max(min, Math.min(max, v));
+  }
+
+  function createAeTree(options = {}) {
+    const doc = options.document || document;
+    const mountRoot = options.mountRoot || doc.body;
+    const S = Shared || globalThis.AnchorWheelNavShared;
+
+    const previewCtrl = S.createPreviewController({
+      document: doc,
+      mountRoot,
+      fetchPreview: options.fetchPreview,
+      getDelayMs: options.getDelayMs,
+      getAnimated: options.getAnimated,
+      isEnabled: options.isPreviewEnabled,
+      standaloneRawUrl: options.standaloneRawUrl,
+    });
+
+    let wrapperEl = null;
+    let state = null;
+
+    function close() {
+      previewCtrl.hide();
+      if (!wrapperEl) return;
+      doc.removeEventListener('keydown', onKeyDown, true);
+      const cb = state?.onClose;
+      try { wrapperEl.remove(); } catch {}
+      wrapperEl = null;
+      state = null;
+      cb?.();
+    }
+
+    function onKeyDown(ev) {
+      if (!state) return;
+      if (ev.key === 'Escape') {
+        ev.preventDefault();
+        ev.stopPropagation();
+        close();
+      }
+    }
+
+    function handlePick(item) {
+      if (!state || !item?.path) return;
+      const st = state;
+      previewCtrl.hide();
+      if (st.closeOnSelect) close();
+      st.onSelect?.(item);
+    }
+
+    function buildRowsFromContext(ctx) {
+      const ancestors = Array.isArray(ctx?.ancestors) ? ctx.ancestors : [];
+      const rows = [];
+      ancestors.forEach((anc, idx) => {
+        const isDirectParent = idx === ancestors.length - 1;
+        const depthFromParent = ancestors.length - 1 - idx;
+        const roleLabel = isDirectParent ? '母页' : depthFromParent === 1 ? '祖父页' : `上级 ${idx + 1}`;
+        rows.push({
+          key: anc.key || S.normKey(anc.path),
+          path: anc.path,
+          title: anc.title || S.baseDisplayName(anc.path),
+          roleLabel,
+          isCurrent: false,
+          inferred: Boolean(anc.inferred),
+          items: Array.isArray(anc.siblings) ? anc.siblings : [],
+        });
+      });
+      if (ctx?.current) {
+        rows.push({
+          key: ctx.current.key || S.normKey(ctx.current.path),
+          path: ctx.current.path,
+          title: ctx.current.title || S.baseDisplayName(ctx.current.path),
+          roleLabel: '当前页',
+          isCurrent: true,
+          items: Array.isArray(ctx.current.children) ? ctx.current.children : [],
+        });
+      }
+      return rows;
+    }
+
+    function renderPanel() {
+      if (!wrapperEl || !state) return;
+      const panel = wrapperEl.querySelector('.aw-tree-panel');
+      if (!panel) return;
+      panel.innerHTML = '';
+
+      const ctx = state.context || {};
+      const scope = state.scope || ctx.childSourceScope || 'opened_and_outlinks';
+      const rows = buildRowsFromContext(ctx);
+
+      const head = S.markNode(doc.createElement('div'));
+      head.className = 'aw-tree-head';
+      head.innerHTML = `
+        <div class="aw-tree-head-title">${S.ICONS.tree}<span>层级导览</span></div>
+        <div class="aw-tray" style="padding:2px">
+          <button type="button" class="aw-tray-btn" data-aw-tree-scope="opened_and_outlinks" data-active="${scope !== 'opened_only' ? '1' : '0'}">全部出链</button>
+          <button type="button" class="aw-tray-btn" data-aw-tree-scope="opened_only" data-active="${scope === 'opened_only' ? '1' : '0'}">仅已开</button>
+        </div>
+        <button type="button" class="aw-tray-btn" data-aw-tree-close="1" title="关闭 (Tab / Esc)">${S.ICONS.close}</button>
+      `;
+      head.querySelectorAll('[data-aw-tree-scope]').forEach((btn) => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const nextScope = btn.getAttribute('data-aw-tree-scope');
+          if (nextScope && nextScope !== state.scope) {
+            state.scope = nextScope;
+            state.onSwitchScope?.(nextScope);
+          }
+        });
+      });
+      head.querySelector('[data-aw-tree-close]')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        close();
+      });
+      panel.appendChild(head);
+
+      const scrollBody = S.markNode(doc.createElement('div'));
+      scrollBody.className = 'aw-tree-scroll';
+
+      if (!ctx.ancestors?.length) {
+        const emptyTop = S.markNode(doc.createElement('div'));
+        emptyTop.className = 'aw-tree-empty-parent';
+        emptyTop.textContent = '上级母页：暂未从其他文档跳转进入当前页';
+        scrollBody.appendChild(emptyTop);
+      }
+
+      const listWrap = S.markNode(doc.createElement('div'));
+      listWrap.className = 'aw-tree-rows';
+
+      rows.forEach((row, rowIdx) => {
+        const rowEl = S.markNode(doc.createElement('div'));
+        rowEl.className = 'aw-tree-row';
+        if (row.isCurrent) rowEl.setAttribute('data-current', '1');
+        if (rowIdx < rows.length - 1) rowEl.setAttribute('data-has-next', '1');
+
+        // Left vertical trunk node
+        const trunkCol = S.markNode(doc.createElement('div'));
+        trunkCol.className = 'aw-tree-trunk-col';
+
+        const nodeCard = S.markNode(doc.createElement('button'));
+        nodeCard.type = 'button';
+        nodeCard.className = 'aw-tree-node';
+        if (row.isCurrent) {
+          nodeCard.setAttribute('data-current', '1');
+          if (state.justUpdated) nodeCard.setAttribute('data-pulse', '1');
+        }
+        nodeCard.innerHTML = `
+          <span class="aw-tree-role">${S.esc(row.roleLabel)}${row.inferred ? ' · 推' : ''}</span>
+          <span class="aw-tree-node-label">${S.pickIconForItem(row)}<span>${S.esc(S.baseDisplayName(row.title))}</span></span>
+        `;
+        nodeCard.title = row.path;
+        if (!row.isCurrent) {
+          nodeCard.addEventListener('mouseenter', () => {
+            previewCtrl.scheduleShow(row, nodeCard.getBoundingClientRect());
+          });
+          nodeCard.addEventListener('mouseleave', () => previewCtrl.hide());
+          nodeCard.addEventListener('click', (e) => {
+            e.stopPropagation();
+            handlePick(row);
+          });
+        }
+        trunkCol.appendChild(nodeCard);
+        rowEl.appendChild(trunkCol);
+
+        // Right branch: horizontal/stacked children rounded rects (dimmed until row hover)
+        const branchCol = S.markNode(doc.createElement('div'));
+        branchCol.className = 'aw-tree-branch';
+        const items = row.items;
+        if (items.length) {
+          const connector = S.markNode(doc.createElement('div'));
+          connector.className = 'aw-tree-connector';
+          branchCol.appendChild(connector);
+
+          const childrenCol = S.markNode(doc.createElement('div'));
+          childrenCol.className = 'aw-tree-children';
+
+          const limit = Math.max(3, Number(state.expandedCounts[row.key] || 3));
+          const visible = items.slice(0, limit);
+          const hiddenCount = Math.max(0, items.length - visible.length);
+
+          visible.forEach((child, cIdx) => {
+            const cardWrap = S.markNode(doc.createElement('div'));
+            cardWrap.className = 'aw-tree-child-wrap';
+            const isLastStacked = hiddenCount > 0 && cIdx === visible.length - 1;
+            if (isLastStacked) cardWrap.setAttribute('data-stacked', '1');
+
+            const card = S.markNode(doc.createElement('button'));
+            card.type = 'button';
+            card.className = 'aw-tree-child aw-stagger-in';
+            card.style.setProperty('--aw-i', String(cIdx));
+            const delayMs = Math.max(40, Math.min(1500, Number(options.getDelayMs?.() ?? 250)));
+            card.style.setProperty('--aw-charge-ms', `${delayMs}ms`);
+            if (child.isOpenedTab) card.setAttribute('data-opened', '1');
+            card.innerHTML = `
+              ${S.pickIconForItem(child)}
+              <span class="aw-tree-child-title">${S.esc(S.baseDisplayName(child.title || child.path))}</span>
+              ${child.isOpenedTab ? '<span class="aw-bi-dot" title="已打开标签"></span>' : ''}
+              <span class="aw-tree-charge-bar" aria-hidden="true"></span>
+            `;
+            card.title = child.path;
+            card.addEventListener('mouseenter', () => {
+              previewCtrl.scheduleShow(child, card.getBoundingClientRect());
+            });
+            card.addEventListener('mouseleave', () => previewCtrl.hide());
+            card.addEventListener('click', (e) => {
+              e.stopPropagation();
+              handlePick(child);
+            });
+            cardWrap.appendChild(card);
+
+            if (isLastStacked) {
+              const stackBtn = S.markNode(doc.createElement('button'));
+              stackBtn.type = 'button';
+              stackBtn.className = 'aw-tree-stack-corner';
+              stackBtn.innerHTML = `<span>+${hiddenCount} 条</span>${S.ICONS.chevronDown}`;
+              stackBtn.title = '展开更多子页（下方条目将自动下移避让）';
+              stackBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                previewCtrl.hide();
+                state.expandedCounts[row.key] = limit + 6;
+                renderPanel();
+              });
+              cardWrap.appendChild(stackBtn);
+            }
+
+            childrenCol.appendChild(cardWrap);
+          });
+
+          if (hiddenCount === 0 && items.length > 3) {
+            const collapseBtn = S.markNode(doc.createElement('button'));
+            collapseBtn.type = 'button';
+            collapseBtn.className = 'aw-tree-collapse-btn';
+            collapseBtn.textContent = '收起折叠';
+            collapseBtn.addEventListener('click', (e) => {
+              e.stopPropagation();
+              delete state.expandedCounts[row.key];
+              renderPanel();
+            });
+            childrenCol.appendChild(collapseBtn);
+          }
+
+          branchCol.appendChild(childrenCol);
+        } else {
+          const noneHint = S.markNode(doc.createElement('div'));
+          noneHint.className = 'aw-tree-branch-empty';
+          noneHint.textContent = row.isCurrent ? '无子页' : '无其他同级子页';
+          branchCol.appendChild(noneHint);
+        }
+
+        rowEl.appendChild(branchCol);
+        listWrap.appendChild(rowEl);
+      });
+
+      scrollBody.appendChild(listWrap);
+      panel.appendChild(scrollBody);
+
+      const foot = S.markNode(doc.createElement('div'));
+      foot.className = 'aw-tree-foot';
+      foot.textContent = state.closeOnSelect
+        ? '悬停卡片 0.25s 看开头预览 · 点击跳转并收起'
+        : '悬停卡片 0.25s 看开头预览 · 点击跳转保持常驻 · 按 Tab 关闭';
+      panel.appendChild(foot);
+    }
+
+    function open({
+      context,
+      anchorRect = null,
+      scope = 'opened_and_outlinks',
+      closeOnSelect = false,
+      onSelect,
+      onSwitchScope,
+      onClose,
+    }) {
+      close();
+      if (!context || !context.current) return;
+
+      const vw = doc.defaultView?.innerWidth || 1200;
+      const vh = doc.defaultView?.innerHeight || 800;
+      const panelW = Math.min(430, vw - 24);
+      const baseLeft = anchorRect
+        ? clamp(anchorRect.left + 12, 12, vw - panelW - 12)
+        : clamp(Math.round((vw - panelW) / 2), 12, vw - panelW - 12);
+      const baseTop = anchorRect ? clamp(anchorRect.top + 48, 44, vh - 220) : 64;
+
+      wrapperEl = S.markNode(doc.createElement('div'));
+      wrapperEl.className = 'aw-tree-backdrop';
+      if (options.theme && options.theme !== 'auto') {
+        wrapperEl.setAttribute('data-aw-theme', options.theme);
+      }
+
+      const panel = S.markNode(doc.createElement('div'));
+      panel.className = 'aw-tree-panel';
+      panel.style.width = `${panelW}px`;
+      panel.style.left = `${baseLeft}px`;
+      panel.style.top = `${baseTop}px`;
+      panel.addEventListener('click', (e) => e.stopPropagation());
+      panel.addEventListener('mousedown', (e) => e.stopPropagation());
+      wrapperEl.appendChild(panel);
+
+      state = {
+        context,
+        scope,
+        closeOnSelect: Boolean(closeOnSelect),
+        expandedCounts: {},
+        onSelect,
+        onSwitchScope,
+        onClose,
+      };
+
+      mountRoot.appendChild(wrapperEl);
+      renderPanel();
+      requestAnimationFrame(() => {
+        if (wrapperEl) wrapperEl.setAttribute('data-open', '1');
+      });
+      doc.addEventListener('keydown', onKeyDown, true);
+    }
+
+    function updateContext(nextContext) {
+      if (!state || !nextContext || !nextContext.current) return;
+      previewCtrl.hide();
+      state.context = nextContext;
+      state.justUpdated = true;
+      renderPanel();
+      state.justUpdated = false;
+    }
+
+    return {
+      open,
+      close,
+      updateContext,
+      isOpen: () => Boolean(wrapperEl),
+    };
+  }
+
+  return { createAeTree };
+});
