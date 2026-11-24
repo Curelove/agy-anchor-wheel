@@ -478,7 +478,12 @@
           collapseSubFan();
         }
         if (st.parent?.path) {
-          st.hoverCommitItem = { path: st.parent.path, title: st.parent.title, isParent: true };
+          st.hoverCommitItem = {
+            path: st.parent.path,
+            title: st.parent.title,
+            isParent: true,
+            isDirectory: Boolean(st.parent.isDirectory),
+          };
           updateSectorHighlight('parent');
           const parentArc = backdropEl.querySelector('.aw-bi-parent-arc');
           if (parentArc) previewCtrl.scheduleShow(st.parent, parentArc.getBoundingClientRect());
@@ -569,7 +574,12 @@
       if (st.parent?.path) {
         parentArc.addEventListener('click', (e) => {
           e.stopPropagation();
-          commitTarget({ path: st.parent.path, title: st.parent.title, isParent: true });
+          commitTarget({
+            path: st.parent.path,
+            title: st.parent.title,
+            isParent: true,
+            isDirectory: Boolean(st.parent.isDirectory),
+          });
         });
       }
       svg.appendChild(parentArc);
@@ -583,8 +593,10 @@
       pNode.className = 'aw-wheel-node';
       pNode.style.left = `${px.toFixed(1)}px`;
       pNode.style.top = `${py.toFixed(1)}px`;
+      const parentIcon = st.parent?.isDirectory ? S.ICONS.folder : S.ICONS.parentUp;
+      const parentRoleText = st.parent?.isDirectory ? '母文件夹' : '母页';
       pNode.innerHTML = st.parent?.path
-        ? `${S.ICONS.parentUp}<span class="aw-wheel-node-title">${S.esc(S.baseDisplayName(st.parent.title || st.parent.path))}</span><span class="aw-wheel-node-meta">母页</span>`
+        ? `${parentIcon}<span class="aw-wheel-node-title">${S.esc(S.baseDisplayName(st.parent.title || st.parent.path))}</span><span class="aw-wheel-node-meta">${parentRoleText}</span>`
         : `${S.ICONS.parentUp}<span class="aw-wheel-node-meta">暂无母页</span>`;
       labelsWrap.appendChild(pNode);
 
@@ -652,9 +664,11 @@
 
       const centerLabel = S.markNode(doc.createElement('div'));
       centerLabel.className = 'aw-wheel-hub-label';
+      const curIsDir = Boolean(ctx.current?.isDirectory);
+      const dirMeta = ctx.current?.dirMeta || null;
       const curTitle = ctx.current?.title ? S.baseDisplayName(ctx.current.title) : '未打开';
       const totalCh = Number(ctx.totalCurrentChildren || 0);
-      centerLabel.innerHTML = `${S.ICONS.currentDot}<span class="aw-wheel-hub-tag">当前页</span><span class="aw-wheel-hub-name" title="${S.esc(curTitle)}">${S.esc(curTitle)}</span>`;
+      centerLabel.innerHTML = `${curIsDir ? S.ICONS.folder : S.ICONS.currentDot}<span class="aw-wheel-hub-tag">${curIsDir ? '当前文件夹' : '当前页'}</span><span class="aw-wheel-hub-name" title="${S.esc(curTitle)}">${S.esc(curTitle)}</span>`;
 
       stage.appendChild(svg);
       stage.appendChild(labelsWrap);
@@ -664,8 +678,24 @@
         const emptySub = S.markNode(doc.createElement('div'));
         emptySub.className = 'aw-wheel-hold-hint';
         emptySub.style.top = 'calc(100% + 4px)';
-        emptySub.textContent = st.holdMode ? '当前页暂无子页 · 划向母页可返回' : '当前页暂无子页';
+        if (curIsDir) {
+          const skipText = dirMeta?.skippedSubdirCount ? `（已略过 ${dirMeta.skippedSubdirCount} 个子文件夹）` : '';
+          emptySub.textContent = st.holdMode
+            ? `当前文件夹暂无直属文件${skipText}${st.parent?.path ? ' · 划向母页可返回' : ''}`
+            : `当前文件夹暂无直属文件${skipText}`;
+        } else {
+          emptySub.textContent = st.holdMode ? '当前页暂无子页 · 划向母页可返回' : '当前页暂无子页';
+        }
         stage.appendChild(emptySub);
+      } else if (curIsDir && st.holdMode && (dirMeta?.truncated || dirMeta?.skippedSubdirCount > 0)) {
+        const dirHint = S.markNode(doc.createElement('div'));
+        dirHint.className = 'aw-wheel-hold-hint';
+        dirHint.style.top = 'calc(100% + 4px)';
+        const parts = [];
+        if (dirMeta.truncated) parts.push(`已展示前 ${dirMeta.maxFiles}/${dirMeta.totalFiles} 个文件`);
+        if (dirMeta.skippedSubdirCount > 0) parts.push(`已略过 ${dirMeta.skippedSubdirCount} 个子文件夹`);
+        dirHint.textContent = parts.join(' · ');
+        stage.appendChild(dirHint);
       }
 
       if (!st.holdMode) {
@@ -675,7 +705,7 @@
         const scope = st.scope || ctx.childSourceScope || 'opened_and_outlinks';
         bar.innerHTML = `
           <div class="aw-tray" style="padding:1px">
-            <button type="button" class="aw-tray-btn" data-aw-bi-scope="opened_and_outlinks" data-active="${scope !== 'opened_only' ? '1' : '0'}">全部出链</button>
+            <button type="button" class="aw-tray-btn" data-aw-bi-scope="opened_and_outlinks" data-active="${scope !== 'opened_only' ? '1' : '0'}">${curIsDir ? '全部文件' : '全部出链'}</button>
             <button type="button" class="aw-tray-btn" data-aw-bi-scope="opened_only" data-active="${scope === 'opened_only' ? '1' : '0'}">仅已开</button>
           </div>
           <button type="button" class="aw-wheel-toolbar-btn" data-aw-bi-close="1">关闭</button>

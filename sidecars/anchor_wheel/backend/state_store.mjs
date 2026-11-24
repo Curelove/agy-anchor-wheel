@@ -200,10 +200,14 @@ export function resolveAncestors(sess, filePath, maxDepth = 4) {
 
     if (!pKey || !pPath || seen.has(pKey)) break;
     seen.add(pKey);
+    const matchedGroup = !rec
+      ? groups.find((g) => canonicalKey(g.anchorPath) === pKey)
+      : null;
     chainBottomUp.push({
       path: pPath,
       key: pKey,
       title: pTitle || path.basename(pPath),
+      isDirectory: Boolean(rec?.parentIsDirectory || matchedGroup?.anchorIsDirectory),
     });
     curKey = pKey;
   }
@@ -276,6 +280,7 @@ export function pushHistory(historyState, entry, maxLen = 60) {
     scrollTop: Number(entry.scrollTop || 0),
     line: entry.line ? Number(entry.line) : null,
     tabId: entry.tabId ? String(entry.tabId) : '',
+    isDirectory: Boolean(entry.isDirectory),
     timestamp: Number(entry.timestamp || Date.now()),
   };
 
@@ -462,7 +467,7 @@ export class StateStore {
     return sess;
   }
 
-  #setLineageEdge(sess, { parentPath, parentTitle, childPath, childTitle }) {
+  #setLineageEdge(sess, { parentPath, parentTitle, parentIsDirectory = false, childPath, childTitle, childIsDirectory = false }) {
     const pNorm = normalizeFilePath(parentPath);
     const cNorm = normalizeFilePath(childPath);
     if (!pNorm || !cNorm) return false;
@@ -475,9 +480,11 @@ export class StateStore {
       parentPath: pNorm,
       parentKey: pKey,
       parentTitle: String(parentTitle || path.basename(pNorm)),
+      parentIsDirectory: Boolean(parentIsDirectory),
       childPath: cNorm,
       childKey: cKey,
       childTitle: String(childTitle || path.basename(cNorm)),
+      childIsDirectory: Boolean(childIsDirectory),
       openedAt: Date.now(),
     };
     const keys = Object.keys(map);
@@ -490,9 +497,9 @@ export class StateStore {
     return true;
   }
 
-  recordLineage(conversationId, { parentPath, parentTitle, childPath, childTitle }) {
+  recordLineage(conversationId, { parentPath, parentTitle, parentIsDirectory = false, childPath, childTitle, childIsDirectory = false }) {
     const sess = this.#ensureSession(conversationId);
-    if (this.#setLineageEdge(sess, { parentPath, parentTitle, childPath, childTitle })) {
+    if (this.#setLineageEdge(sess, { parentPath, parentTitle, parentIsDirectory, childPath, childTitle, childIsDirectory })) {
       sess.updatedAt = Date.now();
       this.#saveSessions();
     }
@@ -539,7 +546,7 @@ export class StateStore {
     }
   }
 
-  pinAnchor(conversationId, { path: anchorRawPath, title, tabId, maxChildren }) {
+  pinAnchor(conversationId, { path: anchorRawPath, title, tabId, maxChildren, isDirectory = false }) {
     const sess = this.#ensureSession(conversationId);
     const normPath = normalizeFilePath(anchorRawPath);
     if (!normPath) return this.getSession(conversationId);
@@ -553,6 +560,7 @@ export class StateStore {
         anchorKey: ak,
         anchorTitle: String(title || path.basename(normPath)),
         anchorTabId: tabId ? String(tabId) : '',
+        anchorIsDirectory: Boolean(isDirectory),
         maxChildren: maxChildren ? Math.max(1, Math.round(Number(maxChildren))) : null,
         createdAt: Date.now(),
         children: [],
@@ -561,6 +569,7 @@ export class StateStore {
     } else {
       if (title) group.anchorTitle = String(title);
       if (tabId) group.anchorTabId = String(tabId);
+      if (isDirectory) group.anchorIsDirectory = true;
       if (maxChildren !== undefined) {
         group.maxChildren = maxChildren === null ? null : Math.max(1, Math.round(Number(maxChildren)));
       }
@@ -584,7 +593,22 @@ export class StateStore {
     return this.getSession(conversationId);
   }
 
-  adoptChild(conversationId, { groupId, anchorPath, directParentPath, directParentTitle, childPath, childTitle, tabId, lock = false }) {
+  adoptChild(
+    conversationId,
+    {
+      groupId,
+      anchorPath,
+      anchorIsDirectory = false,
+      directParentPath,
+      directParentTitle,
+      directParentIsDirectory = false,
+      childPath,
+      childTitle,
+      childIsDirectory = false,
+      tabId,
+      lock = false,
+    }
+  ) {
     const sess = this.#ensureSession(conversationId);
     const normChild = normalizeFilePath(childPath);
     if (!normChild) return { session: this.getSession(conversationId), evicted: [] };
@@ -598,6 +622,7 @@ export class StateStore {
         anchorKey: canonicalKey(normAnchor),
         anchorTitle: path.basename(normAnchor),
         anchorTabId: '',
+        anchorIsDirectory: Boolean(anchorIsDirectory),
         maxChildren: null,
         createdAt: Date.now(),
         children: [],
@@ -621,12 +646,14 @@ export class StateStore {
       if (childTitle) existing.title = String(childTitle);
       if (tabId) existing.tabId = String(tabId);
       if (lock) existing.locked = true;
+      if (childIsDirectory) existing.isDirectory = true;
     } else {
       group.children.push({
         path: normChild,
         key: childKey,
         title: String(childTitle || path.basename(normChild)),
         tabId: tabId ? String(tabId) : '',
+        isDirectory: Boolean(childIsDirectory),
         addedAt: now,
         lastAccessedAt: now,
         locked: Boolean(lock),
@@ -641,12 +668,15 @@ export class StateStore {
 
     const linParentPath = directParentPath || group.anchorPath;
     const linParentTitle = directParentTitle || group.anchorTitle;
+    const linParentIsDir = directParentPath ? Boolean(directParentIsDirectory) : Boolean(group.anchorIsDirectory);
     if (directParentPath || !sess.lineage.parentByKey[childKey]) {
       this.#setLineageEdge(sess, {
         parentPath: linParentPath,
         parentTitle: linParentTitle,
+        parentIsDirectory: linParentIsDir,
         childPath: normChild,
         childTitle: childTitle || path.basename(normChild),
+        childIsDirectory: Boolean(childIsDirectory),
       });
     }
 

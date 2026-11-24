@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { convertFileToUtf8, inspectFileEncoding } from './encoding.mjs';
-import { buildNavContext } from './nav_context.mjs';
+import { buildNavContext, classifyFile, listDirectoryDirectFiles } from './nav_context.mjs';
 import { PreviewService } from './preview_service.mjs';
 import { UpdateService } from './update_service.mjs';
 
@@ -381,9 +381,41 @@ export class CdpBridge {
             backlinkIndex: this.backlinkIndex,
             conversationId: cid,
             activePath: req.path || req.activePath || '',
+            activeIsDirectory: Boolean(req.isDirectory),
             openTabs: Array.isArray(req.openTabs) ? req.openTabs : [],
             scopeOverride: req.scope || '',
           }),
+        };
+      }
+      case 'listDir': {
+        const settings = this.stateStore.getSettings();
+        const listing = listDirectoryDirectFiles(req.path || '', {
+          maxFiles: req.maxFiles,
+          includeStats: Boolean(req.includeStats),
+        });
+        if (!listing.ok) return listing;
+        const files = listing.files.map((f) => {
+          const cls = classifyFile(f.path, settings.categoryRules, false);
+          return {
+            ...f,
+            title: f.name,
+            ext: cls.ext,
+            isDirectory: false,
+            categoryId: cls.id,
+            categoryLabel: cls.label,
+          };
+        });
+        return {
+          ok: true,
+          isDirectory: true,
+          path: listing.dirPath,
+          key: listing.key,
+          title: listing.title,
+          files,
+          totalFiles: listing.totalFiles,
+          skippedSubdirCount: listing.skippedSubdirCount,
+          truncated: listing.truncated,
+          maxFiles: listing.maxFiles,
         };
       }
       case 'getPreview': {

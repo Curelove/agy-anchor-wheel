@@ -349,6 +349,25 @@ async function runAudit() {
     const overflowSettingsCompat = await cdp.evalAsync(`document.documentElement.scrollWidth - document.documentElement.clientWidth`);
     await cdp.screenshot(path.join(outDir, '09_390_alabaster_settings_compat.png'));
 
+    // 9. Mode 2 Directory View (1440px Obsidian with Bilateral Wheel + 390px Crystal)
+    await cdp.evalAsync(`document.getElementById('aw-sm-close')?.click()`);
+    await cdp.setViewport(1440, 900);
+    await cdp.evalAsync(`document.documentElement.setAttribute('data-aw-theme', 'obsidian')`);
+    await cdp.evalAsync(`window.__awWorkbench.openFile(${JSON.stringify(wsDir)}, { inNewTab: true, isDirectory: true })`);
+    await new Promise((r) => setTimeout(r, 280));
+    await cdp.evalAsync(`window.__awWorkbench.openBilateralWheel(560, 420, { holdMode: true, persistOnScroll: false })`);
+    await new Promise((r) => setTimeout(r, 180));
+    await cdp.evalAsync(`document.querySelectorAll('.aw-bi-cat-arc:not([data-empty="1"])')[0]?.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }))`);
+    await new Promise((r) => setTimeout(r, 220));
+    await cdp.screenshot(path.join(outDir, '10_1440_obsidian_dir_wheel.png'));
+
+    await cdp.setViewport(390, 844);
+    await cdp.evalAsync(`document.documentElement.setAttribute('data-aw-theme', 'crystal')`);
+    await cdp.evalAsync(`window.__awWorkbench.openFile(${JSON.stringify(wsDir)}, { skipHistory: true, isDirectory: true })`);
+    await new Promise((r) => setTimeout(r, 220));
+    const overflowDirView = await cdp.evalAsync(`document.documentElement.scrollWidth - document.documentElement.clientWidth`);
+    await cdp.screenshot(path.join(outDir, '11_390_crystal_dir_view.png'));
+
     console.log(JSON.stringify({
       ok: true,
       outDir,
@@ -357,6 +376,7 @@ async function runAudit() {
       overflowTree,
       overflowSettings,
       overflowSettingsCompat,
+      overflowDirView,
       consoleErrors: cdp.errors,
     }, null, 2));
   } finally {

@@ -150,6 +150,46 @@ test('standalone HTTP API serves UI assets, session ops, backlinks, and encoding
     assert.equal(prevRes.kind, 'text');
     assert.equal(prevRes.snippetText, '中文');
 
+    // Directory listing, nav-context, and preview endpoints
+    fs.mkdirSync(path.join(wsDir, 'ignored_subdir'), { recursive: true });
+    fs.writeFileSync(path.join(wsDir, '.env'), 'SECRET=1', 'utf8');
+    const dirListRes = await (
+      await fetch(`${base}/api/dir/list`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: wsDir }),
+      })
+    ).json();
+    assert.equal(dirListRes.ok, true);
+    assert.equal(dirListRes.isDirectory, true);
+    assert.equal(dirListRes.skippedSubdirCount, 1);
+    assert.equal(dirListRes.files.some((f) => f.name === '.env'), false);
+    assert.equal(dirListRes.files.some((f) => f.name === 'overview.md'), true);
+
+    const dirNavRes = await (
+      await fetch(`${base}/api/nav-context`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ conversationId: 't-dir', path: wsDir, isDirectory: true }),
+      })
+    ).json();
+    assert.equal(dirNavRes.ok, true);
+    assert.equal(dirNavRes.current.isDirectory, true);
+    assert.equal(dirNavRes.current.dirMeta.skippedSubdirCount, 1);
+    assert.ok(dirNavRes.totalCurrentChildren >= 2);
+
+    const dirPrevRes = await (
+      await fetch(`${base}/api/preview`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: wsDir }),
+      })
+    ).json();
+    assert.equal(dirPrevRes.ok, true);
+    assert.equal(dirPrevRes.kind, 'directory');
+    assert.equal(dirPrevRes.subdirCount, 1);
+    assert.equal(dirPrevRes.entries.some((e) => e.name === '.env'), false);
+
     for (const staticPath of ['/nav_shared.js', '/bilateral_wheel.js', '/ae_tree.js', '/settings_modal.js']) {
       const sr = await fetch(`${base}${staticPath}`);
       assert.equal(sr.status, 200);

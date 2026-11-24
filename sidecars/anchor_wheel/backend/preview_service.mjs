@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { decodeBuffer } from './encoding.mjs';
-import { resolveSafeDirPath, resolveSafeReadPath } from './security.mjs';
+import { isSensitiveFilePath, resolveSafeDirPath, resolveSafeReadPath } from './security.mjs';
 
 const IMAGE_MIME = Object.freeze({
   '.png': 'image/png',
@@ -420,17 +420,28 @@ export class PreviewService {
       if (safeDir.ok) {
         try {
           const dirents = fs.readdirSync(safeDir.dirPath, { withFileTypes: true });
-          const entries = dirents.slice(0, 14).map((d) => ({
-            name: d.name,
-            isDirectory: d.isDirectory(),
-          }));
+          const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+          const files = [];
+          let subdirCount = 0;
+          for (const d of dirents) {
+            if (!d.name || d.name.startsWith('.') || /^(?:desktop\.ini|thumbs\.db|~\$.*)$/i.test(d.name)) continue;
+            const full = path.join(safeDir.dirPath, d.name);
+            if (d.isDirectory()) {
+              subdirCount++;
+              continue;
+            }
+            if (isSensitiveFilePath(full)) continue;
+            if (d.isFile()) files.push({ name: d.name, isDirectory: false });
+          }
+          files.sort((a, b) => collator.compare(a.name, b.name));
           return {
             ok: true,
             kind: 'directory',
             path: safeDir.dirPath,
             title: path.basename(safeDir.dirPath) || safeDir.dirPath,
-            itemCount: dirents.length,
-            entries,
+            itemCount: files.length,
+            subdirCount,
+            entries: files.slice(0, 14),
           };
         } catch (err) {
           return { ok: false, error: String(err?.message || err) };

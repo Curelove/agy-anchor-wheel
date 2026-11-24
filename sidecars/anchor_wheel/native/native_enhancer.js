@@ -29,6 +29,7 @@
   let lastConversationId = '';
   let localHistory = { entries: [], index: -1 };
   let activeFilePath = '';
+  let activeIsDirectory = false;
   let activeFileLinks = { backlinks: [], outlinks: [] };
   let activeEncodingInfo = null;
   let cachedNavContext = null;
@@ -85,6 +86,13 @@
     const clean = String(p || '').replace(/[\\/]+$/, '');
     const parts = clean.split(/[\\/]/);
     return parts[parts.length - 1] || clean;
+  }
+
+  function parentDirPath(p) {
+    const clean = String(p || '').replace(/[\\/]+$/, '');
+    const idx = Math.max(clean.lastIndexOf('\\'), clean.lastIndexOf('/'));
+    if (idx <= 0) return '';
+    return clean.slice(0, idx);
   }
 
   function safeDecodeUri(str) {
@@ -312,11 +320,32 @@
     return out;
   }
 
-  function getActiveNativeFilePath(pane) {
-    if (!pane || !Array.isArray(pane.tabs)) return '';
-    const tab = pane.tabs.find((t) => t.id === pane.activeTabId);
+  function getActiveNativeTabInfo(pane) {
+    if (!pane || !Array.isArray(pane.tabs)) return { path: '', isDirectory: false, tab: null };
+    const tab = pane.tabs.find((t) => t.id === pane.activeTabId) || null;
     const uri = extractUriFromTab(tab);
-    return uri ? uriToPath(uri) : '';
+    const cleanPath = uri ? uriToPath(uri).replace(/[\\/]+$/, '') : '';
+    const isDirectory = Boolean(tab?.content?.type === 'directoryView' || (uri && /[\\/]$/.test(uri)));
+    return { path: cleanPath, isDirectory, tab };
+  }
+
+  function inferKnownDirectoryFlag(targetPath, explicitFlag = false) {
+    if (explicitFlag) return true;
+    const k = normKey(targetPath);
+    if (!k) return false;
+    if (cachedNavContext?.parent && normKey(cachedNavContext.parent.path) === k && cachedNavContext.parent.isDirectory) {
+      return true;
+    }
+    if (Array.isArray(cachedNavContext?.ancestors)) {
+      const hitAnc = cachedNavContext.ancestors.find((a) => normKey(a.path) === k);
+      if (hitAnc?.isDirectory) return true;
+    }
+    for (const g of session?.groups || []) {
+      if (normKey(g.anchorPath) === k && g.anchorIsDirectory) return true;
+    }
+    const linRec = session?.lineage?.parentByKey?.[normKey(activeFilePath)];
+    if (linRec && linRec.parentKey === k && linRec.parentIsDirectory) return true;
+    return false;
   }
 
   function getRightPaneColumn() {
@@ -411,8 +440,9 @@
       }
     }
 
+    const resolvedIsDir = inferKnownDirectoryFlag(cleanTargetPath, isDirectory);
     const fileUri = pathToHostFileUri(cleanTargetPath);
-    const content = isDirectory
+    const content = resolvedIsDir
       ? { type: 'directoryView', directoryView: { directoryUri: fileUri, ...(treeId.kind === 'cascadeId' ? { cascadeId: treeId.cascadeId } : {}) } }
       : { type: 'fileView', fileView: { fileUri, ...(treeId.kind === 'cascadeId' ? { cascadeId: treeId.cascadeId } : {}), ...(lineStart ? { line: lineStart } : {}) } };
 
@@ -423,7 +453,7 @@
       background: Boolean(background),
       content,
     };
-    if (!hasV2) setPayload.tabId = `${isDirectory ? 'directory' : 'file'}__${fileUri}`;
+    if (!hasV2) setPayload.tabId = `${resolvedIsDir ? 'directory' : 'file'}__${fileUri}`;
 
     reduxStore.dispatch({
       type: hasV2 ? 'sidePanelV2/setContent' : 'sidePanel/setContent',
@@ -507,6 +537,12 @@
     }
   }
 
+  function isKnownOutlinkDirectory(absPath) {
+    const k = normKey(absPath);
+    if (!k) return false;
+    return Boolean((activeFileLinks?.outlinks || []).some((o) => o?.isDirectory && normKey(o.resolvedPath) === k));
+  }
+
   // ── Extract Link Meta (Scoped strictly away from breadcrumb div[data-uri]) ──
   function extractLinkMetaFromTarget(rawEl) {
     const el = rawEl && rawEl.nodeType === 1 ? rawEl : rawEl?.parentElement;
@@ -516,9 +552,9 @@
     const pill = el.closest?.('button.inline-pill, [data-testid="entity-pill"], button[data-file-uri]');
     if (pill) {
       const rawUri = pill.getAttribute('data-uri') || pill.getAttribute('data-file-uri') || pill.getAttribute('title') || '';
-      const isDirectory = /[\\/]$/.test(rawUri) || /[\\/]$/.test(pill.getAttribute('title') || '');
       const p = uriToPath(rawUri).replace(/[\\/]+$/, '');
       if (p) {
+        const isDirectory = /[\\/]$/.test(rawUri) || /[\\/]$/.test(pill.getAttribute('title') || '') || isKnownOutlinkDirectory(p);
         return { path: p, uri: rawUri, title: baseName(p), lineStart: Number(pill.getAttribute('data-line-start')) || null, isDirectory };
       }
       try {
@@ -528,7 +564,8 @@
           const u = cur.memoizedProps?.fileUri || cur.memoizedProps?.href;
           if (typeof u === 'string' && u) {
             const fp = uriToPath(u).replace(/[\\/]+$/, '');
-            return { path: fp, uri: u, title: baseName(fp), lineStart: Number(cur.memoizedProps?.['data-line-start']) || null, isDirectory: /[\\/]$/.test(u) };
+            const isDir = /[\\/]$/.test(u) || isKnownOutlinkDirectory(fp);
+            return { path: fp, uri: u, title: baseName(fp), lineStart: Number(cur.memoizedProps?.['data-line-start']) || null, isDirectory: isDir };
           }
         }
       } catch {}
@@ -538,11 +575,87 @@
     if (anchor) {
       const href = String(anchor.getAttribute('href') || '').trim();
       if (!href || href.startsWith('#') || /^(?:https?:|mailto:|tel:|javascript:|customization:|sidecar:)/i.test(href)) return null;
-      const isDirectory = /[\\/]$/.test(href);
       const resolved = resolvePathRelativeToActive(href);
       if (resolved) {
-        return { path: String(resolved.path || '').replace(/[\\/]+$/, ''), uri: href, title: baseName(resolved.path), lineStart: resolved.lineStart, isDirectory };
+        const cleanP = String(resolved.path || '').replace(/[\\/]+$/, '');
+        const isDirectory = /[\\/]$/.test(href) || isKnownOutlinkDirectory(cleanP);
+        return { path: cleanP, uri: href, title: baseName(cleanP), lineStart: resolved.lineStart, isDirectory };
       }
+    }
+    return null;
+  }
+
+  /**
+   * Detects clickable file/folder rows inside Antigravity's native `directoryView` (`YYc`) component
+   * via read-only React fiber inspection, strictly scoped away from breadcrumbs and sidebar trees.
+   */
+  function extractDirectoryRowMetaFromTarget(rawEl) {
+    if (!activeIsDirectory || !activeFilePath) return null;
+    const el = rawEl && rawEl.nodeType === 1 ? rawEl : rawEl?.parentElement;
+    if (!el || !isInsideRightContent(el)) return null;
+    if (el.closest?.('[data-aw-owned="1"], [role="treeitem"], button, a[href], [data-uri], [data-file-uri]')) {
+      return null;
+    }
+
+    const contentEl = getContentContainer(getRightPaneColumn());
+    let curEl = el;
+    for (let depth = 0; depth < 6 && curEl && curEl !== contentEl; depth++, curEl = curEl.parentElement) {
+      try {
+        const fk = Object.keys(curEl).find((k) => k.startsWith('__reactFiber'));
+        const fiber = fk ? curEl[fk] : null;
+        if (!fiber) continue;
+        const rowKey = typeof fiber.key === 'string' ? fiber.key : '';
+        const mp = fiber.memoizedProps;
+        const looksLikeFileUri = /^(?:file:\/\/|antigravity-ide:\/\/|vscode-file:\/\/)/i.test(rowKey);
+        if (!looksLikeFileUri || (typeof mp?.onClick !== 'function' && typeof mp?.onDoubleClick !== 'function')) {
+          continue;
+        }
+        // Verify we are genuinely inside Antigravity's DirectoryView (`directoryUri` ancestor prop)
+        let insideDirView = false;
+        let anc = fiber.return;
+        for (let up = 0; up < 18 && anc; up++, anc = anc.return) {
+          if (typeof anc.memoizedProps?.directoryUri === 'string' && anc.memoizedProps.directoryUri) {
+            insideDirView = true;
+            break;
+          }
+        }
+        if (!insideDirView) continue;
+
+        const cleanPath = uriToPath(rowKey).replace(/[\\/]+$/, '');
+        if (!cleanPath || normKey(cleanPath) === normKey(activeFilePath)) continue;
+
+        // Inspect child icon fiber (`<ZI uri={w.uri} isDirectory={x} />`) for exact directory flag
+        let detectedDir = null;
+        const queue = fiber.child ? [fiber.child] : [];
+        let steps = 0;
+        while (queue.length && steps++ < 16) {
+          const cf = queue.shift();
+          if (!cf) continue;
+          const cmp = cf.memoizedProps;
+          if (cmp && typeof cmp === 'object' && typeof cmp.isDirectory === 'boolean' && (!cmp.uri || cmp.uri === rowKey)) {
+            detectedDir = cmp.isDirectory;
+            break;
+          }
+          if (cf.child) queue.push(cf.child);
+          if (cf.sibling) queue.push(cf.sibling);
+        }
+        if (detectedDir === null) {
+          const cleanKey = normKey(cleanPath);
+          const knownDirectFile = Boolean(
+            (cachedNavContext?.current?.children || []).some((ch) => !ch.isDirectory && normKey(ch.path) === cleanKey)
+          );
+          detectedDir = knownDirectFile ? false : /[\\/]$/.test(rowKey);
+        }
+
+        return {
+          path: cleanPath,
+          uri: rowKey,
+          title: baseName(cleanPath),
+          lineStart: null,
+          isDirectory: Boolean(detectedDir),
+          fromDirectoryRow: true,
+        };
+      } catch {}
     }
     return null;
   }
@@ -593,7 +706,12 @@
     const { browserCtx, reduxStore } = discoverHostBridge();
     const { pane } = getPaneSlice(reduxStore, browserCtx);
     const openTabs = collectNativeOpenTabs(pane);
-    if (cachedNavContext && normKey(cachedNavContext.activePath) === normKey(activeFilePath) && (!scopeOverride || cachedNavContext.childSourceScope === scopeOverride)) {
+    if (
+      cachedNavContext &&
+      normKey(cachedNavContext.activePath) === normKey(activeFilePath) &&
+      Boolean(cachedNavContext.current?.isDirectory) === Boolean(activeIsDirectory) &&
+      (!scopeOverride || cachedNavContext.childSourceScope === scopeOverride)
+    ) {
       return cachedNavContext;
     }
     if (!S) return null;
@@ -601,6 +719,7 @@
       session,
       settings,
       activePath: activeFilePath,
+      activeIsDirectory,
       activeLinks: activeFileLinks,
       openTabs,
       scopeOverride,
@@ -615,6 +734,7 @@
     const wsRoots = discoverWorkspaceRoots(reduxStore);
     const res = await callRpc('getNavContext', {
       path: activeFilePath,
+      isDirectory: activeIsDirectory,
       openTabs,
       scope: scopeOverride || navScopeOverride || '',
       workspaceRoots: wsRoots,
@@ -832,7 +952,12 @@
           },
       onPinCurrent: activeFilePath
         ? async () => {
-            const res = await callRpc('sessionOp', { op: 'pinAnchor', path: activeFilePath, title: baseName(activeFilePath) });
+            const res = await callRpc('sessionOp', {
+              op: 'pinAnchor',
+              path: activeFilePath,
+              title: baseName(activeFilePath),
+              isDirectory: activeIsDirectory,
+            });
             if (res.ok && res.session) session = res.session;
             applyNonDestructiveTabFolding();
             renderStrip();
@@ -1008,7 +1133,8 @@
 
     if (targetEntry?.path) {
       activeFilePath = targetEntry.path;
-      openPathInNativeTab(targetEntry.path, { isDirectory: Boolean(targetEntry.isDirectory) });
+      activeIsDirectory = Boolean(targetEntry.isDirectory);
+      openPathInNativeTab(targetEntry.path, { isDirectory: activeIsDirectory });
       const targetScroll = targetEntry.scrollTop || 0;
       setTimeout(() => {
         const sc = findScrollContainer(getRightPaneColumn());
@@ -1057,9 +1183,12 @@
     pop.addEventListener('click', (ev) => ev.stopPropagation());
     pop.addEventListener('mousedown', (ev) => ev.stopPropagation());
 
+    const isDirMode = activeIsDirectory;
     const backInit = activeFileLinks.backlinks || [];
-    const outInit = activeFileLinks.outlinks || [];
-    let tab = forcedTab || (backInit.length > 0 ? 'backlinks' : outInit.length > 0 ? 'outlinks' : 'backlinks');
+    const dirInit = isDirMode && Array.isArray(cachedNavContext?.current?.children) ? cachedNavContext.current.children : [];
+    const outInit = isDirMode ? dirInit : activeFileLinks.outlinks || [];
+    const secondTabLabel = isDirMode ? '目录文件' : '本文出链';
+    let tab = forcedTab || (isDirMode ? (dirInit.length > 0 ? 'outlinks' : 'backlinks') : backInit.length > 0 ? 'backlinks' : outInit.length > 0 ? 'outlinks' : 'backlinks');
     let filterText = '';
     const esc = (s) => (S?.esc ? S.esc(s) : String(s || ''));
 
@@ -1067,7 +1196,7 @@
       <div class="aw-popover-head">
         <div class="aw-tray" style="flex:1">
           <button type="button" class="aw-tray-btn" style="flex:1" data-aw-ltab="backlinks" data-active="${tab === 'backlinks' ? '1' : '0'}">反向引用 (${backInit.length})</button>
-          <button type="button" class="aw-tray-btn" style="flex:1" data-aw-ltab="outlinks" data-active="${tab === 'outlinks' ? '1' : '0'}">本文出链 (${outInit.length})</button>
+          <button type="button" class="aw-tray-btn" style="flex:1" data-aw-ltab="outlinks" data-active="${tab === 'outlinks' ? '1' : '0'}">${secondTabLabel} (${outInit.length})</button>
         </div>
         <button type="button" class="aw-tray-btn" id="aw-np-close">${S.ICONS.close}</button>
       </div>
@@ -1083,11 +1212,12 @@
 
     const renderBody = () => {
       const back = activeFileLinks.backlinks || [];
-      const out = activeFileLinks.outlinks || [];
+      const dirFiles = isDirMode && Array.isArray(cachedNavContext?.current?.children) ? cachedNavContext.current.children : [];
+      const out = isDirMode ? dirFiles : activeFileLinks.outlinks || [];
       for (const tBtn of pop.querySelectorAll('[data-aw-ltab]')) {
         const key = tBtn.getAttribute('data-aw-ltab');
         tBtn.setAttribute('data-active', tab === key ? '1' : '0');
-        tBtn.textContent = key === 'backlinks' ? `反向引用 (${back.length})` : `本文出链 (${out.length})`;
+        tBtn.textContent = key === 'backlinks' ? `反向引用 (${back.length})` : `${secondTabLabel} (${out.length})`;
       }
       const activeList = tab === 'backlinks' ? back : out;
       if (filterWrap) filterWrap.hidden = activeList.length <= 8;
@@ -1107,7 +1237,30 @@
               </button>`
               )
               .join('')
-          : `<div class="aw-link-row-snippet">${back.length ? '无匹配的反向引用记录。' : '暂无其他 Markdown 文档引用当前文件。'}</div>`;
+          : `<div class="aw-link-row-snippet">${back.length ? '无匹配的反向引用记录。' : isDirMode ? '暂无 Markdown 文档引用当前文件夹。' : '暂无其他 Markdown 文档引用当前文件。'}</div>`;
+      } else if (isDirMode) {
+        const filtered = q
+          ? dirFiles.filter(
+              (f) =>
+                String(f.title || '').toLowerCase().includes(q) ||
+                String(f.categoryLabel || '').toLowerCase().includes(q) ||
+                String(f.path || '').toLowerCase().includes(q)
+            )
+          : dirFiles;
+        bodyEl.innerHTML = filtered.length
+          ? filtered
+              .map(
+                (f) => `
+              <button type="button" class="aw-link-row" data-aw-jump="${esc(f.path)}" data-aw-line="" data-aw-dir="0">
+                <div class="aw-link-row-top">
+                  <span class="aw-link-row-title" style="display:inline-flex;align-items:center;gap:6px">${S.pickIconForItem(f)}<span>${esc(f.title || baseName(f.path))}</span></span>
+                  <span class="aw-link-row-badge">${esc(f.categoryLabel || '其他')}${f.isOpenedTab ? ' · 已开' : ''}</span>
+                </div>
+                <div class="aw-link-row-snippet">${esc(f.path)}</div>
+              </button>`
+              )
+              .join('')
+          : `<div class="aw-link-row-snippet">${dirFiles.length ? '无匹配的直属文件。' : '当前文件夹暂无直属文件。'}</div>`;
       } else {
         const filtered = q
           ? out.filter((o) => String(o.label || '').toLowerCase().includes(q) || String(o.resolvedPath || '').toLowerCase().includes(q))
@@ -1346,7 +1499,7 @@
           openClassicWheelForTarget({ group: activeGrp, isLiveFallback: false }, rect.left + rect.width / 2, rect.bottom + 145, { holdMode: false });
         } else {
           void pushCurrentScroll().then(() => {
-            openPathInNativeTab(activeGrp.anchorPath);
+            openPathInNativeTab(activeGrp.anchorPath, { isDirectory: Boolean(activeGrp.anchorIsDirectory) });
             void refreshState();
           });
         }
@@ -1382,13 +1535,18 @@
       strip.appendChild(pill);
     }
 
-    if (activeFilePath && /\.(md|mdx|txt)$/i.test(activeFilePath) && (!roleInfo || roleInfo.role !== 'anchor')) {
+    if (activeFilePath && (activeIsDirectory || /\.(md|mdx|txt)$/i.test(activeFilePath)) && (!roleInfo || roleInfo.role !== 'anchor')) {
       const pinBtn = markOwned(D.createElement('button'));
       pinBtn.className = 'aw-status-pill';
       pinBtn.textContent = '设为母页';
-      pinBtn.title = '把当前文档钉为优先母页，折叠收编关联子标签';
+      pinBtn.title = activeIsDirectory ? '把当前文件夹钉为优先母页，折叠收编打开的子文件' : '把当前文档钉为优先母页，折叠收编关联子标签';
       pinBtn.addEventListener('click', async () => {
-        const res = await callRpc('sessionOp', { op: 'pinAnchor', path: activeFilePath, title: baseName(activeFilePath) });
+        const res = await callRpc('sessionOp', {
+          op: 'pinAnchor',
+          path: activeFilePath,
+          title: baseName(activeFilePath),
+          isDirectory: activeIsDirectory,
+        });
         if (res.ok && res.session) session = res.session;
         applyNonDestructiveTabFolding();
         renderStrip();
@@ -1428,8 +1586,14 @@
       linksBtn.className = 'aw-status-pill';
       linksBtn.setAttribute('data-aw-role', 'links-btn');
       if (backCount > 0) linksBtn.setAttribute('data-has-links', '1');
-      linksBtn.textContent = backCount > 0 ? `被 ${backCount} 引用` : `出链 ${outCount}`;
-      linksBtn.title = '查看反向引用与文档出链';
+      if (activeIsDirectory) {
+        const dirCount = cachedNavContext?.current?.children?.length || 0;
+        linksBtn.textContent = backCount > 0 ? `被 ${backCount} 引用 · ${dirCount} 文件` : `目录 ${dirCount} 文件`;
+        linksBtn.title = '查看文件夹直属文件与反向引用';
+      } else {
+        linksBtn.textContent = backCount > 0 ? `被 ${backCount} 引用` : `出链 ${outCount}`;
+        linksBtn.title = '查看反向引用与文档出链';
+      }
       linksBtn.addEventListener('click', (e) => {
         e.stopPropagation();
         openBacklinksPopover(e.currentTarget);
@@ -1438,10 +1602,10 @@
     }
 
     const domHasMojibake = (() => {
-      if (!contentEl) return false;
+      if (!contentEl || activeIsDirectory) return false;
       return (contentEl.textContent || '').slice(0, 2000).includes('\uFFFD');
     })();
-    if (activeFilePath && (activeEncodingInfo?.isNonUtf8 || activeEncodingInfo?.mojibakeHint || domHasMojibake || encodingOverlayVisible)) {
+    if (activeFilePath && !activeIsDirectory && (activeEncodingInfo?.isNonUtf8 || activeEncodingInfo?.mojibakeHint || domHasMojibake || encodingOverlayVisible)) {
       const encBtn = markOwned(D.createElement('button'));
       encBtn.className = 'aw-status-pill';
       encBtn.setAttribute('data-warn', '1');
@@ -1475,6 +1639,8 @@
       // Isolate session state cleanly when user switches Antigravity conversations
       session = null;
       cachedNavContext = null;
+      activeFilePath = '';
+      activeIsDirectory = false;
       activeFileLinks = { backlinks: [], outlinks: [] };
       activeEncodingInfo = null;
       localHistory = { entries: [], index: -1 };
@@ -1485,7 +1651,9 @@
 
     const { browserCtx, reduxStore } = discoverHostBridge();
     const { pane } = getPaneSlice(reduxStore, browserCtx);
-    const curFile = getActiveNativeFilePath(pane);
+    const activeInfo = getActiveNativeTabInfo(pane);
+    const curFile = activeInfo.path;
+    const curIsDir = activeInfo.isDirectory;
     const wsRoots = discoverWorkspaceRoots(reduxStore);
 
     if (!session) {
@@ -1517,11 +1685,14 @@
       }
     }
 
-    const changedFile = curFile !== activeFilePath;
+    const prevPath = activeFilePath;
+    const prevIsDir = activeIsDirectory;
+    const changedFile = curFile !== activeFilePath || curIsDir !== activeIsDirectory;
     if (changedFile) {
       const oldOv = D.getElementById(OVERLAY_ID);
       if (oldOv) void toggleEncodingRepairOverlay('');
       activeFilePath = curFile;
+      activeIsDirectory = curIsDir;
     }
 
     if (!D.getElementById(STRIP_ID) && getContentContainer(getRightPaneColumn())) {
@@ -1529,16 +1700,41 @@
     }
 
     if (changedFile && curFile) {
-      await recordHistoryPush({ path: curFile, title: baseName(curFile) });
+      await recordHistoryPush({ path: curFile, title: baseName(curFile), isDirectory: curIsDir });
+      // Fallback lineage safety net: if user navigated directly from a folder view into one of its direct files
+      if (
+        prevPath &&
+        prevIsDir &&
+        !curIsDir &&
+        normKey(parentDirPath(curFile)) === normKey(prevPath) &&
+        !session?.lineage?.parentByKey?.[normKey(curFile)]
+      ) {
+        recordLocalLineageMirror(prevPath, baseName(prevPath), curFile, baseName(curFile), {
+          parentIsDirectory: true,
+          childIsDirectory: false,
+        });
+        const lRes = await callRpc('sessionOp', {
+          op: 'recordLineage',
+          parentPath: prevPath,
+          parentTitle: baseName(prevPath),
+          parentIsDirectory: true,
+          childPath: curFile,
+          childTitle: baseName(curFile),
+          childIsDirectory: false,
+        });
+        if (lRes?.ok && lRes.session) session = lRes.session;
+      }
     }
 
     if (activeFilePath && (changedFile || !activeFileLinks.path)) {
       const [linksRes, encRes] = await Promise.all([
         callRpc('getBacklinks', { path: activeFilePath, workspaceRoots: wsRoots }),
-        settings.encodingAutoDetect !== false ? callRpc('inspectEncoding', { path: activeFilePath }) : Promise.resolve({ ok: false }),
+        !activeIsDirectory && settings.encodingAutoDetect !== false
+          ? callRpc('inspectEncoding', { path: activeFilePath })
+          : Promise.resolve({ ok: false }),
       ]);
       if (linksRes.ok) activeFileLinks = linksRes;
-      if (encRes.ok) activeEncodingInfo = encRes;
+      activeEncodingInfo = encRes.ok ? encRes : null;
     } else if (!activeFilePath) {
       activeFileLinks = { backlinks: [], outlinks: [] };
       activeEncodingInfo = null;
@@ -1551,6 +1747,7 @@
 
     applyNonDestructiveTabFolding();
     renderStrip();
+    await refreshPersistentNavigatorIfOpen();
   }
 
   function scheduleSync() {
@@ -1573,7 +1770,13 @@
     return Boolean(tabBar && tabBar.contains(target));
   }
 
-  function recordLocalLineageMirror(parentPath, parentTitle, childPath, childTitle) {
+  function recordLocalLineageMirror(
+    parentPath,
+    parentTitle,
+    childPath,
+    childTitle,
+    { parentIsDirectory = false, childIsDirectory = false } = {}
+  ) {
     if (!parentPath || !childPath) return;
     const pKey = normKey(parentPath);
     const cKey = normKey(childPath);
@@ -1591,26 +1794,35 @@
       parentPath,
       parentKey: pKey,
       parentTitle: parentTitle || baseName(parentPath),
+      parentIsDirectory: Boolean(parentIsDirectory),
       childPath,
       childKey: cKey,
       childTitle: childTitle || baseName(childPath),
+      childIsDirectory: Boolean(childIsDirectory),
       openedAt: Date.now(),
     };
   }
 
   async function handleLinkActivation(meta, { background = false } = {}) {
     const openerPath = activeFilePath;
-    const openerTitle = activeFileLinks.title || baseName(openerPath);
+    const openerIsDir = activeIsDirectory;
+    const openerTitle = (!openerIsDir && activeFileLinks.title) || baseName(openerPath);
+    const targetIsDir = inferKnownDirectoryFlag(meta?.path, Boolean(meta?.isDirectory));
     await pushCurrentScroll();
 
     if (openerPath && meta?.path && !meta.skipLineage && normKey(openerPath) !== normKey(meta.path)) {
-      recordLocalLineageMirror(openerPath, openerTitle, meta.path, meta.title);
+      recordLocalLineageMirror(openerPath, openerTitle, meta.path, meta.title, {
+        parentIsDirectory: openerIsDir,
+        childIsDirectory: targetIsDir,
+      });
       void callRpc('sessionOp', {
         op: 'recordLineage',
         parentPath: openerPath,
         parentTitle: openerTitle,
+        parentIsDirectory: openerIsDir,
         childPath: meta.path,
         childTitle: meta.title,
+        childIsDirectory: targetIsDir,
       }).then((res) => {
         if (res?.ok && res.session) session = res.session;
       });
@@ -1620,8 +1832,8 @@
     const role = findGroupRole(openerPath);
     if (role) {
       targetGroupId = role.group.id;
-    } else if (settings.autoAnchorSummaryMd && openerPath && /\.(md|mdx)$/i.test(openerPath) && (activeFileLinks.outlinks?.length || 0) >= 3) {
-      const pinRes = await callRpc('sessionOp', { op: 'pinAnchor', path: openerPath, title: openerTitle });
+    } else if (settings.autoAnchorSummaryMd && openerPath && !openerIsDir && /\.(md|mdx)$/i.test(openerPath) && (activeFileLinks.outlinks?.length || 0) >= 3) {
+      const pinRes = await callRpc('sessionOp', { op: 'pinAnchor', path: openerPath, title: openerTitle, isDirectory: false });
       if (pinRes.ok && pinRes.session) {
         session = pinRes.session;
         targetGroupId = findGroupRole(openerPath)?.group?.id || null;
@@ -1634,8 +1846,10 @@
         groupId: targetGroupId,
         directParentPath: meta.skipLineage ? '' : openerPath,
         directParentTitle: meta.skipLineage ? '' : openerTitle,
+        directParentIsDirectory: meta.skipLineage ? false : openerIsDir,
         childPath: meta.path,
         childTitle: meta.title,
+        childIsDirectory: targetIsDir,
       });
       if (adoptRes.ok && adoptRes.session) session = adoptRes.session;
       if (adoptRes.evicted?.length) closeNativeTabsByKeys(adoptRes.evicted.map((x) => x.path));
@@ -1644,7 +1858,7 @@
     openPathInNativeTab(meta.path, {
       background,
       lineStart: meta.lineStart,
-      isDirectory: Boolean(meta.isDirectory),
+      isDirectory: targetIsDir,
     });
 
     if (background) {
@@ -1653,11 +1867,12 @@
       renderStrip();
     } else {
       activeFilePath = meta.path;
+      activeIsDirectory = targetIsDir;
       await recordHistoryPush({
         path: meta.path,
         title: meta.title,
         line: meta.lineStart,
-        isDirectory: Boolean(meta.isDirectory),
+        isDirectory: targetIsDir,
       });
       await refreshState();
     }
@@ -1666,7 +1881,13 @@
   function onCaptureClick(ev) {
     if (destroyed || ev.button !== 0 || ev.altKey || ev.ctrlKey || ev.metaKey || ev.shiftKey) return;
     if (!isInsideRightContent(ev.target)) return;
-    const meta = extractLinkMetaFromTarget(ev.target);
+    let meta = extractLinkMetaFromTarget(ev.target);
+    if (!meta && activeIsDirectory) {
+      const rowMeta = extractDirectoryRowMetaFromTarget(ev.target);
+      // Intercept direct file clicks inside directoryView so the parent folder tab is preserved;
+      // leave subfolder clicks untouched so native folder browsing continues normally.
+      if (rowMeta && !rowMeta.isDirectory) meta = rowMeta;
+    }
     if (!meta) return;
     ev.preventDefault();
     ev.stopPropagation();
@@ -1678,7 +1899,7 @@
     if (destroyed || ev.button !== 1) return;
     if (!isInsideRightContent(ev.target)) return;
     const midMode = settings.middleMode || 'bilateral_wheel';
-    if (extractLinkMetaFromTarget(ev.target) || midMode !== 'off') {
+    if (extractLinkMetaFromTarget(ev.target) || (activeIsDirectory && extractDirectoryRowMetaFromTarget(ev.target)) || midMode !== 'off') {
       ev.preventDefault();
     }
   }
@@ -1693,7 +1914,11 @@
       return;
     }
     if (!isInsideRightContent(ev.target)) return;
-    const meta = extractLinkMetaFromTarget(ev.target);
+    let meta = extractLinkMetaFromTarget(ev.target);
+    if (!meta && activeIsDirectory) {
+      const rowMeta = extractDirectoryRowMetaFromTarget(ev.target);
+      if (rowMeta && !rowMeta.isDirectory) meta = rowMeta;
+    }
     if (!meta) return;
     ev.preventDefault();
     ev.stopPropagation();
@@ -1711,7 +1936,11 @@
 
   function onCaptureDragStart(ev) {
     if (destroyed || !isInsideRightContent(ev.target)) return;
-    const meta = extractLinkMetaFromTarget(ev.target);
+    let meta = extractLinkMetaFromTarget(ev.target);
+    if (!meta && activeIsDirectory) {
+      const rowMeta = extractDirectoryRowMetaFromTarget(ev.target);
+      if (rowMeta && !rowMeta.isDirectory) meta = rowMeta;
+    }
     if (!meta) return;
     dragPayload = meta;
     try {
@@ -1744,6 +1973,7 @@
     dragPayload = null;
     openPathInNativeTab(dropped.path, { background: false, lineStart: dropped.lineStart, isDirectory: Boolean(dropped.isDirectory) });
     activeFilePath = dropped.path;
+    activeIsDirectory = Boolean(dropped.isDirectory);
     void recordHistoryPush({ path: dropped.path, title: dropped.title, line: dropped.lineStart, isDirectory: Boolean(dropped.isDirectory) }).then(() => refreshState());
   }
 
@@ -1773,7 +2003,14 @@
     }
     const syncCtx = getSyncNavContext(navScopeOverride);
     if (!syncCtx?.current) return false;
-    return openBilateralForContext(syncCtx, origin.x, origin.y, { holdMode: true, holdButton: origin.button });
+    const usedCache = syncCtx === cachedNavContext;
+    const opened = openBilateralForContext(syncCtx, origin.x, origin.y, { holdMode: true, holdButton: origin.button });
+    if (opened && !usedCache) {
+      void fetchNavContext(navScopeOverride).then((fresh) => {
+        if (fresh && bilateralInstance?.isOpen?.()) bilateralInstance.updateContext(fresh);
+      });
+    }
+    return opened;
   }
 
   function onPointerDown(ev) {
@@ -1901,7 +2138,8 @@
         storeUnsubscribe = reduxStore.subscribe(() => {
           if (destroyed) return;
           const { pane } = getPaneSlice(reduxStore, browserCtx);
-          const snap = `${pane?.activeTabId || ''}|${pane?.tabs?.length || 0}`;
+          const curTab = Array.isArray(pane?.tabs) ? pane.tabs.find((t) => t.id === pane.activeTabId) : null;
+          const snap = `${pane?.activeTabId || ''}|${pane?.tabs?.length || 0}|${curTab?.content?.type || ''}|${extractUriFromTab(curTab)}`;
           if (snap !== lastPaneSnap) {
             lastPaneSnap = snap;
             scheduleSync();
@@ -1968,6 +2206,8 @@
         version: bootMeta.version || BOOT.version || '',
         conversationId: lastConversationId || resolveConversationId(),
         activeFilePath,
+        activeIsDirectory,
+        dirChildCount: activeIsDirectory ? (cachedNavContext?.current?.children?.length || 0) : 0,
         activePopoverName,
         outlinkCount: activeFileLinks.outlinks?.length || 0,
         backlinkCount: activeFileLinks.backlinks?.length || 0,

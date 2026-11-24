@@ -134,7 +134,15 @@
   /**
    * Local fallback builder when Mode 1 talks to an older un-restarted sidecar or offline harness.
    */
-  function buildFallbackNavContext({ session, settings, activePath, activeLinks, openTabs = [], scopeOverride = '' }) {
+  function buildFallbackNavContext({
+    session,
+    settings,
+    activePath,
+    activeIsDirectory = false,
+    activeLinks,
+    openTabs = [],
+    scopeOverride = '',
+  }) {
     const rules = sanitizeRulesClient(settings?.categoryRules);
     const scope = (scopeOverride || settings?.childSourceScope || 'opened_and_outlinks') === 'opened_only'
       ? 'opened_only'
@@ -145,6 +153,7 @@
       const p = typeof t === 'string' ? t : t?.path;
       if (p) openMap.set(normKey(p), { path: p, title: baseDisplayName(p), isDirectory: Boolean(t?.isDirectory) });
     }
+    const isActDir = Boolean(activeIsDirectory || /[\\/]$/.test(String(activePath || '')) || openMap.get(actKey)?.isDirectory);
 
     // Ancestor resolution (session.lineage -> session.groups -> backlinks)
     const ancestors = [];
@@ -156,6 +165,7 @@
       let pPath = rec?.parentPath || '';
       let pTitle = rec?.parentTitle || '';
       let pKey = rec?.parentKey || (pPath ? normKey(pPath) : '');
+      let pIsDir = Boolean(rec?.parentIsDirectory);
       if (!pKey) {
         const g = (session?.groups || []).find(
           (grp) => normKey(grp.anchorPath) !== curK && (grp.children || []).some((c) => normKey(c.path) === curK)
@@ -164,11 +174,13 @@
           pPath = g.anchorPath;
           pTitle = g.anchorTitle || baseDisplayName(pPath);
           pKey = normKey(pPath);
+          pIsDir = Boolean(g.anchorIsDirectory);
         }
       }
       if (!pKey || !pPath || seen.has(pKey)) break;
       seen.add(pKey);
-      ancestors.unshift({ path: pPath, key: pKey, title: pTitle || baseDisplayName(pPath), siblings: [] });
+      pIsDir = Boolean(pIsDir || openMap.get(pKey)?.isDirectory);
+      ancestors.unshift({ path: pPath, key: pKey, title: pTitle || baseDisplayName(pPath), isDirectory: pIsDir, siblings: [] });
       curK = pKey;
     }
     if (!ancestors.length && activeLinks?.backlinks?.length) {
@@ -253,7 +265,13 @@
       childSourceScope: scope,
       parentDirection: settings?.parentDirection || 'left',
       current: activePath
-        ? { path: activePath, key: actKey, title: activeLinks?.title || baseDisplayName(activePath), children: currentChildren }
+        ? {
+            path: activePath,
+            key: actKey,
+            title: (!isActDir && activeLinks?.title) || baseDisplayName(activePath),
+            isDirectory: isActDir,
+            children: currentChildren,
+          }
         : null,
       ancestors: enrichedAncestors,
       parent: enrichedAncestors.length ? enrichedAncestors[enrichedAncestors.length - 1] : null,
@@ -398,7 +416,7 @@
       const title = esc(data?.title || item?.title || baseDisplayName(item?.path));
       const sizeStr = formatBytes(data?.sizeBytes);
       const badge = data?.kind === 'directory'
-        ? `${data.itemCount || 0} 项`
+        ? `${data.itemCount || 0} 文件${data.subdirCount ? ` · ${data.subdirCount} 子目录` : ''}`
         : data?.ext
         ? `${String(data.ext).toUpperCase()}${sizeStr ? ` · ${sizeStr}` : ''}`
         : sizeStr;
@@ -424,9 +442,11 @@
         bodyHtml = `<div class="aw-preview-empty">${ICONS.audio}<span>音频文件 (${esc(badge)}) · 点击播放</span></div>`;
       } else if (data.kind === 'directory') {
         const rows = (data.entries || []).slice(0, 8)
-          .map((e) => `<div class="aw-preview-dir-row">${e.isDirectory ? ICONS.folder : ICONS.file}<span>${esc(e.name)}</span></div>`)
+          .map((e) => `<div class="aw-preview-dir-row">${e.isDirectory ? ICONS.folder : pickIconForItem(e.name)}<span>${esc(e.name)}</span></div>`)
           .join('');
-        bodyHtml = rows ? `<div class="aw-preview-dir">${rows}</div>` : '<div class="aw-preview-empty">空文件夹</div>';
+        bodyHtml = rows
+          ? `<div class="aw-preview-dir">${rows}</div>`
+          : `<div class="aw-preview-empty">${data.subdirCount ? `暂无直属文件（含 ${data.subdirCount} 个子文件夹）` : '空文件夹'}</div>`;
       } else if (data.kind === 'binary') {
         bodyHtml = `<div class="aw-preview-empty">二进制资源 (${esc(badge)})</div>`;
       } else {

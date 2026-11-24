@@ -107,7 +107,12 @@
       const st = activeState;
       const shouldClose = st.holdMode || st.closeOnSelect !== false;
       if (idx === 'hub') {
-        const anchor = { path: st.group.anchorPath, title: st.group.anchorTitle, isAnchor: true };
+        const anchor = {
+          path: st.group.anchorPath,
+          title: st.group.anchorTitle,
+          isAnchor: true,
+          isDirectory: Boolean(st.group.anchorIsDirectory),
+        };
         if (shouldClose) close();
         st.onSelect?.(anchor);
         return;
@@ -450,8 +455,9 @@
 
       const hubLabel = markNode(doc.createElement('div'));
       hubLabel.className = 'aw-wheel-hub-label';
-      const hubTagText = st.hubTag || '母页';
-      hubLabel.innerHTML = `${ICONS.anchor}<span class="aw-wheel-hub-tag">${esc(hubTagText)}</span><span class="aw-wheel-hub-name">${esc(baseDisplayName(st.group.anchorTitle))}</span>`;
+      const hubTagText = st.group.anchorIsDirectory && (!st.hubTag || st.hubTag === '母页') ? '母文件夹' : (st.hubTag || '母页');
+      const hubIcon = st.group.anchorIsDirectory && ICONS.folder ? ICONS.folder : ICONS.anchor;
+      hubLabel.innerHTML = `${hubIcon}<span class="aw-wheel-hub-tag">${esc(hubTagText)}</span><span class="aw-wheel-hub-name">${esc(baseDisplayName(st.group.anchorTitle))}</span>`;
 
       stage.appendChild(svg);
       stage.appendChild(labelsWrap);

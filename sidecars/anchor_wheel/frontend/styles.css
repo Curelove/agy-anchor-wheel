@@ -430,6 +430,126 @@ body {
   gap: 8px;
 }
 
+/* Mode 2 Directory File Explorer */
+.aw-dir-view {
+  max-width: 780px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.aw-dir-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 12px 14px;
+  border-radius: var(--aw-r-md);
+  background: var(--aw-card);
+  border: 1px solid var(--aw-card-border);
+}
+
+.aw-dir-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.aw-dir-title-wrap h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.aw-dir-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--aw-fg-muted);
+}
+
+.aw-dir-filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.aw-dir-filter-pill {
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  color: var(--aw-fg-muted);
+  background: var(--aw-card);
+  border: 1px solid var(--aw-border);
+  transition: background-color 0.14s var(--aw-ease-out), border-color 0.14s var(--aw-ease-out), color 0.14s var(--aw-ease-out);
+}
+
+.aw-dir-filter-pill:hover {
+  background: var(--aw-hover);
+  color: var(--aw-fg);
+}
+
+.aw-dir-filter-pill[data-active="1"] {
+  background: var(--aw-accent-soft);
+  border-color: var(--aw-accent);
+  color: var(--aw-fg);
+  font-weight: 500;
+}
+
+.aw-dir-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 12px;
+  border-radius: var(--aw-r-md);
+  background: var(--aw-card);
+  border: 1px solid var(--aw-border);
+  color: var(--aw-fg);
+  text-align: left;
+  transition: background-color 0.14s var(--aw-ease-out), border-color 0.14s var(--aw-ease-out);
+}
+
+.aw-dir-row:hover {
+  background: var(--aw-hover);
+  border-color: var(--aw-card-border);
+}
+
+.aw-dir-row-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.aw-dir-row-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.aw-dir-row-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  font-size: 11.5px;
+  color: var(--aw-fg-muted);
+}
+
 .aw-media-frame {
   display: flex;
   flex-direction: column;

@@ -848,3 +848,406 @@ test('Mode 1 native_enhancer: DOM container tracking, non-overwriting tab dispat
     } catch {}
   }
 });
+
+test('Mode 1 native_enhancer: directoryView in-place transition, YYc file-row non-overwriting click, hold-middle wheel on file row, and parent folder return', async (t) => {
+  const exe = findBrowserExe();
+  if (!exe) {
+    t.skip('No headless Chromium binary available');
+    return;
+  }
+
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'aw-dir-native-test-'));
+  const profileDir = path.join(tmpRoot, 'profile');
+  fs.mkdirSync(profileDir, { recursive: true });
+
+  const wheelCss = fs.readFileSync(path.join(ROOT, 'sidecars', 'anchor_wheel', 'shared', 'wheel_styles.css'), 'utf8');
+  const navSharedJs = fs.readFileSync(path.join(ROOT, 'sidecars', 'anchor_wheel', 'shared', 'nav_shared.js'), 'utf8');
+  const wheelJs = fs.readFileSync(path.join(ROOT, 'sidecars', 'anchor_wheel', 'shared', 'radial_wheel.js'), 'utf8');
+  const bilateralJs = fs.readFileSync(path.join(ROOT, 'sidecars', 'anchor_wheel', 'shared', 'bilateral_wheel.js'), 'utf8');
+  const aeTreeJs = fs.readFileSync(path.join(ROOT, 'sidecars', 'anchor_wheel', 'shared', 'ae_tree.js'), 'utf8');
+  const settingsModalJs = fs.readFileSync(path.join(ROOT, 'sidecars', 'anchor_wheel', 'shared', 'settings_modal.js'), 'utf8');
+  const mdJs = fs.readFileSync(path.join(ROOT, 'sidecars', 'anchor_wheel', 'shared', 'markdown_render.js'), 'utf8');
+  const nativeJs = fs.readFileSync(path.join(ROOT, 'sidecars', 'anchor_wheel', 'native', 'native_enhancer.js'), 'utf8');
+
+  let browserProc = null;
+  let ws = null;
+
+  try {
+    browserProc = spawn(
+      exe,
+      [
+        '--headless=new',
+        '--disable-gpu',
+        '--no-first-run',
+        '--no-default-browser-check',
+        '--remote-debugging-port=0',
+        `--user-data-dir=${profileDir}`,
+        'about:blank',
+      ],
+      { stdio: 'ignore', windowsHide: true }
+    );
+
+    const port = await waitForPortFile(profileDir);
+    const pages = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
+    const page = pages.find((p) => p.type === 'page') || pages[0];
+    ws = new WebSocket(page.webSocketDebuggerUrl);
+    await new Promise((r) => ws.addEventListener('open', r));
+    const cdp = new MiniCdp(ws);
+    await cdp.send('Runtime.enable');
+
+    const res = await cdp.evalAsync(`(async () => {
+      const root = document.createElement('div');
+      root.id = 'root';
+      document.body.appendChild(root);
+
+      const cid = '22222222-3333-4444-5555-666666666666';
+      const dirUri = 'file:///c%3A/Users/demo/omni_raw';
+      const dirPath = 'c:\\\\Users\\\\demo\\\\omni_raw';
+      const file1Uri = 'file:///c%3A/Users/demo/omni_raw/01_shot.png';
+      const file1Path = 'c:\\\\Users\\\\demo\\\\omni_raw\\\\01_shot.png';
+      const file2Path = 'c:\\\\Users\\\\demo\\\\omni_raw\\\\02_shot.png';
+      const file3Path = 'c:\\\\Users\\\\demo\\\\omni_raw\\\\03_notes.md';
+      const subDirUri = 'file:///c%3A/Users/demo/omni_raw/nested_sub';
+
+      window.__fileRowNativeClicks = 0;
+      window.__subDirNativeClicks = 0;
+
+      // Start as fileView with same tabId, then transition in-place to directoryView (exact real AGY flow!)
+      const storeState = {
+        sidePanelV2: {
+          conversationPanes: {
+            [cid]: {
+              activeTabId: 'file__' + dirUri,
+              tabs: [
+                {
+                  id: 'file__' + dirUri,
+                  content: { type: 'fileView', fileView: { fileUri: dirUri, cascadeId: cid } },
+                  isPreview: true,
+                },
+              ],
+            },
+          },
+          overviewPanelOpen: {},
+        },
+      };
+      const listeners = new Set();
+      const reduxStore = {
+        getState: () => storeState,
+        subscribe: (fn) => { listeners.add(fn); return () => listeners.delete(fn); },
+        dispatch: (action) => {
+          const pane = storeState.sidePanelV2.conversationPanes[cid];
+          if (action.type === 'sidePanelV2/promoteTab') {
+            const tab = pane.tabs.find((t) => t.id === action.payload.tabId);
+            if (tab) tab.isPreview = false;
+          } else if (action.type === 'sidePanelV2/setContent') {
+            const c = action.payload.content;
+            const k =
+              action.payload.tabId ||
+              (c.type === 'directoryView' ? 'directory__' + c.directoryView.directoryUri : 'file__' + c.fileView.fileUri);
+            const existing = pane.tabs.find((t) => t.id === k);
+            if (existing) existing.content = c;
+            else pane.tabs.push({ id: k, content: c, isPreview: false });
+            if (!action.payload.background) pane.activeTabId = k;
+          } else if (action.type === 'sidePanelV2/setActiveTab') {
+            pane.activeTabId = action.payload.tabId;
+          }
+          for (const fn of listeners) fn();
+        },
+      };
+      const browserCtx = {
+        openUrlInBrowserPane: () => {},
+        getTargetTreeId: () => ({ kind: 'cascadeId', cascadeId: cid }),
+      };
+      const mockRouter = { navigate: () => Promise.resolve(), buildLocation: () => ({}) };
+      root.__reactContainer$test = {
+        memoizedProps: { store: reduxStore, value: browserCtx, router: mockRouter },
+        child: null,
+        sibling: null,
+      };
+
+      const aux = document.createElement('div');
+      aux.setAttribute('data-testid', 'aux-pane-split');
+      const left = document.createElement('div');
+      const right = document.createElement('div');
+      right.style.cssText = 'width:480px;height:700px;';
+      const col = document.createElement('div');
+      col.className = 'flex flex-col browser-hole-ancestor';
+      col.style.cssText = 'width:480px;height:700px;';
+      const tabBar = document.createElement('div');
+      tabBar.className = 'agy-layout-vars shrink-0 flex items-center';
+      const tabEl = document.createElement('div');
+      tabEl.className = 'agy-aux-tab';
+      tabBar.appendChild(tabEl);
+
+      const contentWrap = document.createElement('div');
+      contentWrap.className = 'flex-grow basis-0 overflow-hidden';
+      contentWrap.style.cssText = 'width:480px;height:620px;';
+
+      // Realistic Antigravity YYc directory rows with React fiber keys & ancestor directoryUri prop
+      const yycAncFiber = { memoizedProps: { directoryUri: dirUri, cascadeId: cid }, return: null };
+
+      const fileRow = document.createElement('div');
+      fileRow.id = 'dir-file-row';
+      fileRow.style.cssText = 'height:32px;width:420px;';
+      const fileLabel = document.createElement('div');
+      fileLabel.textContent = '01_shot.png';
+      fileRow.appendChild(fileLabel);
+      fileRow.addEventListener('click', () => { window.__fileRowNativeClicks++; });
+      const fileIconFiber = { memoizedProps: { uri: file1Uri, isDirectory: false }, child: null, sibling: null };
+      fileRow.__reactFiber$test = {
+        key: file1Uri,
+        memoizedProps: { onClick: () => {}, onDoubleClick: () => {} },
+        return: yycAncFiber,
+        child: fileIconFiber,
+      };
+
+      const subRow = document.createElement('div');
+      subRow.id = 'dir-sub-row';
+      subRow.style.cssText = 'height:32px;width:420px;';
+      const subLabel = document.createElement('div');
+      subLabel.textContent = 'nested_sub';
+      subRow.appendChild(subLabel);
+      subRow.addEventListener('click', () => { window.__subDirNativeClicks++; });
+      const subIconFiber = { memoizedProps: { uri: subDirUri, isDirectory: true }, child: null, sibling: null };
+      subRow.__reactFiber$test = {
+        key: subDirUri,
+        memoizedProps: { onClick: () => {}, onDoubleClick: () => {} },
+        return: yycAncFiber,
+        child: subIconFiber,
+      };
+
+      contentWrap.append(fileRow, subRow);
+      col.append(tabBar, contentWrap);
+      right.appendChild(col);
+      aux.append(left, right);
+      root.appendChild(aux);
+
+      const mockSession = {
+        groups: [],
+        activeGroupId: null,
+        history: { entries: [], index: -1 },
+        recentlyEvicted: [],
+        lineage: { parentByKey: {} },
+      };
+      const mockSettings = {
+        middleMode: 'bilateral_wheel',
+        tabTriggerEnabled: true,
+        tabMode: 'ae_tree',
+        tabCustomHotkey: 'Tab',
+        tabCloseOnSelect: false,
+        childSourceScope: 'opened_and_outlinks',
+        parentDirection: 'left',
+        hoverPreviewEnabled: true,
+        hoverPreviewDelayMs: 40,
+        autoCheckUpdates: false,
+      };
+      const dirChildren = [
+        { path: file1Path, key: file1Path.toLowerCase(), title: '01_shot.png', ext: 'png', isDirectory: false, isOpenedTab: false, categoryId: 'image', categoryLabel: '图片' },
+        { path: file2Path, key: file2Path.toLowerCase(), title: '02_shot.png', ext: 'png', isDirectory: false, isOpenedTab: false, categoryId: 'image', categoryLabel: '图片' },
+        { path: file3Path, key: file3Path.toLowerCase(), title: '03_notes.md', ext: 'md', isDirectory: false, isOpenedTab: false, categoryId: 'doc', categoryLabel: '文档' },
+      ];
+
+      window.__agAnchorWheelCall = (raw) => {
+        const req = JSON.parse(raw);
+        setTimeout(() => {
+          let res = { ok: true, session: mockSession };
+          if (req.action === 'getBoot') {
+            res = { ok: true, version: ${JSON.stringify(PLUGIN_VERSION)}, settings: mockSettings, session: mockSession };
+          } else if (req.action === 'getBacklinks') {
+            res = { ok: true, path: req.path, title: 'omni_raw', backlinks: [], outlinks: [] };
+          } else if (req.action === 'getNavContext') {
+            const p = String(req.path || '');
+            const isDir = Boolean(req.isDirectory) || p.toLowerCase() === dirPath.toLowerCase();
+            if (isDir) {
+              res = {
+                ok: true,
+                activePath: dirPath,
+                childSourceScope: req.scope || 'opened_and_outlinks',
+                parentDirection: 'left',
+                current: {
+                  path: dirPath,
+                  key: dirPath.toLowerCase(),
+                  title: 'omni_raw',
+                  isDirectory: true,
+                  dirMeta: { totalFiles: 3, skippedSubdirCount: 1, truncated: false, maxFiles: 200 },
+                  children: dirChildren,
+                },
+                ancestors: [],
+                parent: null,
+                categories: [
+                  { id: 'image', label: '图片', items: dirChildren.filter((x) => x.categoryId === 'image') },
+                  { id: 'video', label: '视频', items: [] },
+                  { id: 'doc', label: '文档', items: dirChildren.filter((x) => x.categoryId === 'doc') },
+                  { id: 'other', label: '其他', items: [] },
+                ],
+                totalCurrentChildren: 3,
+              };
+            } else {
+              const lin = mockSession.lineage.parentByKey[p.toLowerCase()];
+              const parentObj = lin
+                ? {
+                    path: lin.parentPath,
+                    key: lin.parentKey,
+                    title: lin.parentTitle,
+                    isDirectory: Boolean(lin.parentIsDirectory),
+                    siblings: dirChildren.filter((x) => x.path.toLowerCase() !== p.toLowerCase()),
+                  }
+                : null;
+              res = {
+                ok: true,
+                activePath: p,
+                childSourceScope: req.scope || 'opened_and_outlinks',
+                parentDirection: 'left',
+                current: { path: p, key: p.toLowerCase(), title: p.split('\\\\').pop(), isDirectory: false, children: [] },
+                ancestors: parentObj ? [parentObj] : [],
+                parent: parentObj,
+                categories: [
+                  { id: 'image', label: '图片', items: [] },
+                  { id: 'video', label: '视频', items: [] },
+                  { id: 'doc', label: '文档', items: [] },
+                  { id: 'other', label: '其他', items: [] },
+                ],
+                totalCurrentChildren: 0,
+              };
+            }
+          } else if (req.action === 'getPreview') {
+            res = { ok: true, kind: 'directory', path: req.path, title: 'omni_raw', itemCount: 3, subdirCount: 1, entries: [{ name: '01_shot.png', isDirectory: false }] };
+          } else if (req.action === 'sessionOp') {
+            if (req.op === 'recordLineage') {
+              const cKey = String(req.childPath || '').toLowerCase();
+              mockSession.lineage.parentByKey[cKey] = {
+                parentPath: req.parentPath,
+                parentKey: String(req.parentPath || '').toLowerCase(),
+                parentTitle: req.parentTitle || 'omni_raw',
+                parentIsDirectory: Boolean(req.parentIsDirectory),
+                childPath: req.childPath,
+                childKey: cKey,
+                childTitle: req.childTitle || '',
+                childIsDirectory: Boolean(req.childIsDirectory),
+              };
+            }
+            res = { ok: true, session: mockSession, evicted: [] };
+          }
+          window.__agAnchorWheelResolve?.(req.id, res);
+        }, 5);
+      };
+
+      window.__agAnchorWheelBoot = { version: ${JSON.stringify(PLUGIN_VERSION)}, settings: mockSettings, wheelCss: ${JSON.stringify(wheelCss)} };
+      eval(${JSON.stringify(navSharedJs)});
+      eval(${JSON.stringify(wheelJs)});
+      eval(${JSON.stringify(bilateralJs)});
+      eval(${JSON.stringify(aeTreeJs)});
+      eval(${JSON.stringify(settingsModalJs)});
+      eval(${JSON.stringify(mdJs)});
+      eval(${JSON.stringify(nativeJs)});
+      await new Promise((r) => setTimeout(r, 140));
+
+      // 1. Trigger Antigravity's in-place fileView -> directoryView conversion on the SAME tabId!
+      reduxStore.dispatch({
+        type: 'sidePanelV2/setContent',
+        payload: {
+          tabId: 'file__' + dirUri,
+          content: { type: 'directoryView', directoryView: { directoryUri: dirUri, cascadeId: cid } },
+        },
+      });
+      await new Promise((r) => setTimeout(r, 180));
+
+      const dirDebug = window.__agAnchorWheel.getDebugState();
+      const stripLinksText = document.querySelector('#aw-companion-strip [data-aw-role="links-btn"]')?.textContent || '';
+      const hasPinBtnForDir = Array.from(document.querySelectorAll('#aw-companion-strip .aw-status-pill')).some((el) => el.textContent === '设为母页');
+
+      // 2. Hold middle mouse button directly ON TOP OF a file row -> Bilateral Wheel opens with '当前文件夹' hub!
+      fileLabel.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 1, clientX: 240, clientY: 160 }));
+      fileLabel.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 1, clientX: 240, clientY: 160 }));
+      await new Promise((r) => setTimeout(r, 150));
+      const biOpenOnFileRow = Boolean(document.querySelector('.aw-bi-stage'));
+      const biHubTag = document.querySelector('.aw-wheel-hub-tag')?.textContent || '';
+      const biNonEmptyCats = document.querySelectorAll('.aw-bi-cat-arc:not([data-empty="1"])').length;
+      document.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientX: 10, clientY: 10 }));
+      document.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, button: 1, clientX: 10, clientY: 10 }));
+      await new Promise((r) => setTimeout(r, 40));
+
+      // 3. Left-click subfolder row -> NOT blocked, native click runs!
+      subLabel.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }));
+      await new Promise((r) => setTimeout(r, 40));
+
+      // 4. Left-click file row -> intercepted, preserves parent folder tab, opens new tab, records folder parent lineage!
+      const fileClickEv = new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 });
+      fileLabel.dispatchEvent(fileClickEv);
+      await new Promise((r) => setTimeout(r, 180));
+
+      const pane = storeState.sidePanelV2.conversationPanes[cid];
+      const folderTabAfterClick = pane.tabs.find((t) => t.content?.type === 'directoryView');
+      const childTabAfterClick = pane.tabs.find((t) => t.id === pane.activeTabId);
+
+      // 5. On child file, press Tab -> AE Tree shows '母文件夹' + sibling files!
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }));
+      await new Promise((r) => setTimeout(r, 120));
+      const treeParentRole = document.querySelector('.aw-tree-row:not([data-current="1"]) .aw-tree-role')?.textContent || '';
+      const treeSiblings = document.querySelectorAll('.aw-tree-row:not([data-current="1"]) .aw-tree-child').length;
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true }));
+      await new Promise((r) => setTimeout(r, 40));
+
+      // 6. Close original folder tab so return MUST re-open directoryView cleanly via left wheel arc!
+      pane.tabs = pane.tabs.filter((t) => t.content?.type !== 'directoryView');
+      contentWrap.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 1, clientX: 260, clientY: 260 }));
+      await new Promise((r) => setTimeout(r, 150));
+      const parentMetaText = document.querySelector('.aw-wheel-node-meta')?.textContent || '';
+      document.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientX: 170, clientY: 260 }));
+      document.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, button: 1, clientX: 170, clientY: 260 }));
+      await new Promise((r) => setTimeout(r, 160));
+
+      const reopenedActiveTab = pane.tabs.find((t) => t.id === pane.activeTabId);
+
+      return {
+        dirDebug,
+        stripLinksText,
+        hasPinBtnForDir,
+        biOpenOnFileRow,
+        biHubTag,
+        biNonEmptyCats,
+        subDirNativeClicks: window.__subDirNativeClicks,
+        fileRowNativeClicks: window.__fileRowNativeClicks,
+        fileClickPrevented: fileClickEv.defaultPrevented,
+        folderPreservedAndPromoted: Boolean(folderTabAfterClick && folderTabAfterClick.isPreview === false),
+        childOpenedAsFile: childTabAfterClick?.content?.type === 'fileView',
+        treeParentRole,
+        treeSiblings,
+        parentMetaText,
+        reopenedAsDirectoryView: reopenedActiveTab?.content?.type === 'directoryView',
+        reopenedDirUri: reopenedActiveTab?.content?.directoryView?.directoryUri || '',
+      };
+    })()`);
+
+    assert.deepEqual(cdp.errors, []);
+    assert.equal(res.dirDebug.activeIsDirectory, true);
+    assert.equal(res.dirDebug.dirChildCount, 3);
+    assert.ok(res.stripLinksText.includes('3 文件'));
+    assert.equal(res.hasPinBtnForDir, true);
+    assert.equal(res.biOpenOnFileRow, true);
+    assert.equal(res.biHubTag, '当前文件夹');
+    assert.equal(res.biNonEmptyCats, 2);
+    assert.equal(res.subDirNativeClicks, 1);
+    assert.equal(res.fileRowNativeClicks, 0);
+    assert.equal(res.fileClickPrevented, true);
+    assert.equal(res.folderPreservedAndPromoted, true);
+    assert.equal(res.childOpenedAsFile, true);
+    assert.equal(res.treeParentRole, '母文件夹');
+    assert.equal(res.treeSiblings, 2);
+    assert.equal(res.parentMetaText, '母文件夹');
+    assert.equal(res.reopenedAsDirectoryView, true);
+    assert.ok(res.reopenedDirUri.endsWith('/omni_raw'));
+  } finally {
+    try { ws?.close(); } catch {}
+    if (browserProc) {
+      await new Promise((resolve) => {
+        const timer = setTimeout(resolve, 1500);
+        browserProc.once('exit', () => { clearTimeout(timer); resolve(); });
+        try { browserProc.kill(); } catch { resolve(); }
+      });
+    }
+    try {
+      fs.rmSync(tmpRoot, { recursive: true, force: true, maxRetries: 6, retryDelay: 150 });
+    } catch {}
+  }
+});

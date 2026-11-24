@@ -434,7 +434,7 @@ export class BacklinkIndex {
     return basenameMap;
   }
 
-  #resolveOutlinksForRefs(mdPath, rawRefs, basenameMap, existsCache = null) {
+  #resolveOutlinksForRefs(mdPath, rawRefs, basenameMap, existsCache = null, dirCache = null) {
     const sourceDir = path.dirname(mdPath);
     const searchRoots = [...this.workspaceRoots, ...this.extraScanDirs];
     const outlinks = [];
@@ -447,6 +447,20 @@ export class BacklinkIndex {
       if (dedupOut.has(outKey)) continue;
       dedupOut.add(outKey);
 
+      let isDirectory = /[\\/]$/.test(ref.rawTarget || '');
+      if (!isDirectory && resolved.exists && !this.allFiles.has(resolved.resolvedKey)) {
+        if (dirCache && dirCache.has(resolved.resolvedKey)) {
+          isDirectory = dirCache.get(resolved.resolvedKey);
+        } else {
+          try {
+            isDirectory = fs.statSync(resolved.resolvedPath).isDirectory();
+          } catch {
+            isDirectory = false;
+          }
+          if (dirCache) dirCache.set(resolved.resolvedKey, isDirectory);
+        }
+      }
+
       outlinks.push({
         kind: ref.kind,
         label: ref.label || path.basename(resolved.resolvedPath),
@@ -454,6 +468,7 @@ export class BacklinkIndex {
         resolvedPath: resolved.resolvedPath,
         resolvedKey: resolved.resolvedKey,
         exists: resolved.exists,
+        isDirectory,
         line: ref.line,
         lineStart: resolved.lineStart || ref.line,
         lineEnd: resolved.lineEnd || null,
@@ -477,6 +492,7 @@ export class BacklinkIndex {
 
       const basenameMap = this.#buildBasenameMap();
       const existsCache = new Map();
+      const dirCache = new Map();
 
       for (const f of mdFiles) {
         const cached = this.fileCache.get(f.key);
@@ -509,7 +525,7 @@ export class BacklinkIndex {
       this.backlinksByTarget.clear();
 
       for (const entry of this.fileCache.values()) {
-        const outlinks = this.#resolveOutlinksForRefs(entry.path, entry.rawRefs, basenameMap, existsCache);
+        const outlinks = this.#resolveOutlinksForRefs(entry.path, entry.rawRefs, basenameMap, existsCache, dirCache);
         for (const outItem of outlinks) {
           if (!this.backlinksByTarget.has(outItem.resolvedKey)) {
             this.backlinksByTarget.set(outItem.resolvedKey, []);

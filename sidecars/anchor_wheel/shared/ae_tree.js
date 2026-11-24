@@ -70,24 +70,35 @@
       ancestors.forEach((anc, idx) => {
         const isDirectParent = idx === ancestors.length - 1;
         const depthFromParent = ancestors.length - 1 - idx;
-        const roleLabel = isDirectParent ? '母页' : depthFromParent === 1 ? '祖父页' : `上级 ${idx + 1}`;
+        const isDir = Boolean(anc.isDirectory);
+        const roleLabel = isDirectParent
+          ? (isDir ? '母文件夹' : '母页')
+          : depthFromParent === 1
+          ? (isDir ? '上级目录' : '祖父页')
+          : `上级 ${idx + 1}`;
         rows.push({
           key: anc.key || S.normKey(anc.path),
           path: anc.path,
           title: anc.title || S.baseDisplayName(anc.path),
           roleLabel,
           isCurrent: false,
+          isParent: true,
+          isDirectory: isDir,
+          dirMeta: anc.dirMeta || null,
           inferred: Boolean(anc.inferred),
           items: Array.isArray(anc.siblings) ? anc.siblings : [],
         });
       });
       if (ctx?.current) {
+        const curIsDir = Boolean(ctx.current.isDirectory);
         rows.push({
           key: ctx.current.key || S.normKey(ctx.current.path),
           path: ctx.current.path,
           title: ctx.current.title || S.baseDisplayName(ctx.current.path),
-          roleLabel: '当前页',
+          roleLabel: curIsDir ? '当前文件夹' : '当前页',
           isCurrent: true,
+          isDirectory: curIsDir,
+          dirMeta: ctx.current.dirMeta || null,
           items: Array.isArray(ctx.current.children) ? ctx.current.children : [],
         });
       }
@@ -102,6 +113,8 @@
       panel.innerHTML = '';
 
       const ctx = state.context || {};
+      const curIsDir = Boolean(ctx.current?.isDirectory);
+      const curDirMeta = ctx.current?.dirMeta || null;
       const scope = state.scope || ctx.childSourceScope || 'opened_and_outlinks';
       const rows = buildRowsFromContext(ctx);
 
@@ -110,7 +123,7 @@
       head.innerHTML = `
         <div class="aw-tree-head-title">${S.ICONS.tree}<span>层级导览</span></div>
         <div class="aw-tray" style="padding:2px">
-          <button type="button" class="aw-tray-btn" data-aw-tree-scope="opened_and_outlinks" data-active="${scope !== 'opened_only' ? '1' : '0'}">全部出链</button>
+          <button type="button" class="aw-tray-btn" data-aw-tree-scope="opened_and_outlinks" data-active="${scope !== 'opened_only' ? '1' : '0'}">${curIsDir ? '全部文件' : '全部出链'}</button>
           <button type="button" class="aw-tray-btn" data-aw-tree-scope="opened_only" data-active="${scope === 'opened_only' ? '1' : '0'}">仅已开</button>
         </div>
         <button type="button" class="aw-tray-btn" data-aw-tree-close="1" title="关闭 (Tab / Esc)">${S.ICONS.close}</button>
@@ -138,7 +151,9 @@
       if (!ctx.ancestors?.length) {
         const emptyTop = S.markNode(doc.createElement('div'));
         emptyTop.className = 'aw-tree-empty-parent';
-        emptyTop.textContent = '上级母页：暂未从其他文档跳转进入当前页';
+        emptyTop.textContent = curIsDir
+          ? '上级母页：暂未从其他文档跳转进入当前文件夹'
+          : '上级母页：暂未从其他文档或文件夹跳转进入当前页';
         scrollBody.appendChild(emptyTop);
       }
 
@@ -263,7 +278,12 @@
         } else {
           const noneHint = S.markNode(doc.createElement('div'));
           noneHint.className = 'aw-tree-branch-empty';
-          noneHint.textContent = row.isCurrent ? '无子页' : '无其他同级子页';
+          if (row.isCurrent && row.isDirectory) {
+            const sk = row.dirMeta?.skippedSubdirCount ? `（已略过 ${row.dirMeta.skippedSubdirCount} 个子文件夹）` : '';
+            noneHint.textContent = `暂无直属文件${sk}`;
+          } else {
+            noneHint.textContent = row.isCurrent ? '无子页' : '无其他同级子页';
+          }
           branchCol.appendChild(noneHint);
         }
 
@@ -280,9 +300,15 @@
       const delayMs = Math.max(0, Math.min(1500, Number(options.getDelayMs?.() ?? 250)));
       const hotkeyLabel = String(options.getHotkey?.() || 'Tab');
       const prevHint = previewOn ? `悬停 ${delayMs}ms 看开头预览` : '悬停快览已关闭';
+      const dirFootParts = [];
+      if (curIsDir && curDirMeta) {
+        if (curDirMeta.truncated) dirFootParts.push(`已展示前 ${curDirMeta.maxFiles}/${curDirMeta.totalFiles} 文件`);
+        if (curDirMeta.skippedSubdirCount > 0) dirFootParts.push(`已略过 ${curDirMeta.skippedSubdirCount} 个子文件夹`);
+      }
+      const dirFootSuffix = dirFootParts.length ? ` · ${dirFootParts.join(' · ')}` : '';
       foot.textContent = state.closeOnSelect
-        ? `${prevHint} · 点击跳转并收起`
-        : `${prevHint} · 点击跳转保持常驻 · 按 ${hotkeyLabel} 关闭`;
+        ? `${prevHint} · 点击跳转并收起${dirFootSuffix}`
+        : `${prevHint} · 点击跳转保持常驻 · 按 ${hotkeyLabel} 关闭${dirFootSuffix}`;
       panel.appendChild(foot);
     }
 

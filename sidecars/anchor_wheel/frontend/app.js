@@ -202,7 +202,7 @@
           const rect = pill.getBoundingClientRect();
           openWheelForGroup(grp, rect.left + rect.width / 2, rect.bottom + 140, false);
         } else {
-          void openFile(grp.anchorPath, { inNewTab: true });
+          void openFile(grp.anchorPath, { inNewTab: true, isDirectory: Boolean(grp.anchorIsDirectory) });
         }
       });
 
@@ -241,6 +241,13 @@
       const label = document.createElement('span');
       label.className = 'aw-tab-name';
       label.textContent = baseName(tab.title || tab.path);
+      if (tab.isDirectory) {
+        const ico = document.createElement('span');
+        ico.innerHTML = S.ICONS.folder;
+        ico.style.display = 'inline-flex';
+        ico.style.color = 'var(--aw-accent)';
+        btn.appendChild(ico);
+      }
 
       const closeBtn = document.createElement('span');
       closeBtn.className = 'aw-tab-close';
@@ -252,7 +259,7 @@
 
       btn.appendChild(label);
       btn.appendChild(closeBtn);
-      btn.addEventListener('click', () => void openFile(tab.path, { inNewTab: true }));
+      btn.addEventListener('click', () => void openFile(tab.path, { inNewTab: true, isDirectory: Boolean(tab.isDirectory) }));
       els.tabScroll.appendChild(btn);
     }
 
@@ -341,6 +348,7 @@
         const keepNav = Boolean(extra.fromTabMode && !state.settings?.tabCloseOnSelect);
         void openFile(picked.path, {
           inNewTab: true,
+          isDirectory: Boolean(picked.isDirectory),
           fromGroupId: isLiveFallback ? undefined : group.id,
           skipLineage: Boolean(picked.isAnchor),
           keepNavigator: keepNav,
@@ -370,11 +378,13 @@
           },
       onPinCurrent: state.activeTabPath
         ? async () => {
+            const isDir = Boolean(state.currentDoc?.isDirectory);
             const res = await apiPost('/api/session', {
               conversationId,
               op: 'pinAnchor',
               path: state.activeTabPath,
-              title: state.currentLinks?.title || baseName(state.activeTabPath),
+              title: (!isDir && state.currentLinks?.title) || baseName(state.activeTabPath),
+              isDirectory: isDir,
             });
             if (res.ok && res.session) {
               state.session = res.session;
@@ -394,13 +404,20 @@
   }
 
   function getSyncNavContext(scopeOverride = '') {
-    if (state.navContext && normKey(state.navContext.activePath) === normKey(state.activeTabPath) && (!scopeOverride || state.navContext.childSourceScope === scopeOverride)) {
+    const curIsDir = Boolean(state.currentDoc?.isDirectory);
+    if (
+      state.navContext &&
+      normKey(state.navContext.activePath) === normKey(state.activeTabPath) &&
+      Boolean(state.navContext.current?.isDirectory) === curIsDir &&
+      (!scopeOverride || state.navContext.childSourceScope === scopeOverride)
+    ) {
       return state.navContext;
     }
     return S.buildFallbackNavContext({
       session: state.session,
       settings: state.settings,
       activePath: state.activeTabPath,
+      activeIsDirectory: curIsDir,
       activeLinks: state.currentLinks,
       openTabs: state.tabs,
       scopeOverride,
@@ -412,6 +429,7 @@
     const res = await apiPost('/api/nav-context', {
       conversationId,
       path: state.activeTabPath,
+      isDirectory: Boolean(state.currentDoc?.isDirectory),
       openTabs: state.tabs,
       scope: scopeOverride || state.navScopeOverride || '',
       workspaceRoots: state.workspaceRoots,
@@ -446,6 +464,7 @@
         const keepNav = Boolean(fromTabMode && !state.settings?.tabCloseOnSelect);
         void openFile(picked.path, {
           inNewTab: true,
+          isDirectory: Boolean(picked.isDirectory),
           lineStart: picked.lineStart || null,
           skipLineage: Boolean(picked.isParent || picked.isAnchor),
           keepNavigator: keepNav,
@@ -480,6 +499,7 @@
         const keepNav = Boolean(fromTabMode && !state.settings?.tabCloseOnSelect);
         void openFile(picked.path, {
           inNewTab: true,
+          isDirectory: Boolean(picked.isDirectory),
           lineStart: picked.lineStart || null,
           skipLineage: Boolean(picked.isParent || picked.isAnchor),
           keepNavigator: keepNav,
@@ -526,21 +546,27 @@
     return ok;
   }
 
-  async function adoptAndOpen(targetPath, groupId, { openInForeground = true, lineStart = null } = {}) {
+  async function adoptAndOpen(targetPath, groupId, { openInForeground = true, lineStart = null, isDirectory = false } = {}) {
     if (!targetPath) return;
+    const openerIsDir = Boolean(state.currentDoc?.isDirectory);
     const res = await apiPost('/api/session', {
       conversationId,
       op: 'adoptChild',
       groupId,
       anchorPath: state.activeTabPath,
+      anchorIsDirectory: openerIsDir,
+      directParentPath: state.activeTabPath,
+      directParentTitle: (!openerIsDir && state.currentLinks?.title) || baseName(state.activeTabPath),
+      directParentIsDirectory: openerIsDir,
       childPath: targetPath,
       childTitle: baseName(targetPath),
+      childIsDirectory: Boolean(isDirectory),
     });
     if (res.ok && res.session) {
       state.session = res.session;
     }
     if (openInForeground) {
-      await openFile(targetPath, { inNewTab: true, lineStart, skipAdopt: true });
+      await openFile(targetPath, { inNewTab: true, lineStart, isDirectory: Boolean(isDirectory), skipAdopt: true });
     } else {
       renderTabsBar();
       showToast(`已静默收入轮盘组：${baseName(targetPath)}`);
@@ -591,8 +617,9 @@
     if (els.btnTree) els.btnTree.hidden = false;
 
     const rel = findGroupByChildOrAnchor(state.activeTabPath);
+    const isDir = Boolean(state.currentDoc?.isDirectory);
     const isMd = /\.(md|mdx|txt)$/i.test(state.activeTabPath);
-    els.btnPinAnchor.hidden = !isMd && !rel;
+    els.btnPinAnchor.hidden = !isMd && !isDir && !rel;
     if (rel && rel.role === 'anchor') {
       els.pinAnchorLabel.textContent = '取消优先母页';
       els.btnPinAnchor.setAttribute('data-has-links', '1');
@@ -602,14 +629,18 @@
     }
 
     const backCount = state.currentLinks?.backlinks?.length || 0;
-    const outCount = state.currentLinks?.outlinks?.length || 0;
+    const outCount = isDir ? (state.currentDoc?.files?.length || 0) : (state.currentLinks?.outlinks?.length || 0);
     els.btnLinks.hidden = false;
-    els.linksLabel.textContent = backCount > 0 ? `被 ${backCount} 份引用` : `引用链 ${outCount}`;
+    if (isDir) {
+      els.linksLabel.textContent = backCount > 0 ? `被 ${backCount} 引用 · ${outCount} 文件` : `目录 ${outCount} 文件`;
+    } else {
+      els.linksLabel.textContent = backCount > 0 ? `被 ${backCount} 份引用` : `引用链 ${outCount}`;
+    }
     if (backCount > 0) els.btnLinks.setAttribute('data-has-links', '1');
     else els.btnLinks.removeAttribute('data-has-links');
 
     const enc = state.currentDoc.encoding || 'utf-8';
-    els.btnEncoding.hidden = Boolean(state.currentDoc.isBinary);
+    els.btnEncoding.hidden = Boolean(state.currentDoc.isBinary || isDir);
     els.encodingLabel.textContent = enc.toUpperCase();
     if (state.currentDoc.isNonUtf8 || state.currentDoc.mojibakeHint) {
       els.btnEncoding.setAttribute('data-warn', '1');
@@ -669,7 +700,8 @@
     if (!rawPath) return;
 
     const prevPath = state.activeTabPath;
-    const prevTitle = state.currentLinks?.title || baseName(prevPath);
+    const prevIsDir = Boolean(state.currentDoc?.isDirectory);
+    const prevTitle = (!prevIsDir && state.currentLinks?.title) || baseName(prevPath);
 
     // Save current scrollTop before leaving
     if (prevPath && !opts.skipHistory) {
@@ -681,19 +713,26 @@
       });
     }
 
-    const ext = rawPath.split('.').pop()?.toLowerCase() || '';
+    const wantDir = Boolean(opts.isDirectory || /[\\/]$/.test(String(rawPath || '')));
+    const ext = wantDir ? '' : (rawPath.split('.').pop()?.toLowerCase() || '');
     const isImage = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'svg', 'bmp', 'ico', 'avif'].includes(ext);
     const isAudio = ['mp3', 'wav', 'ogg', 'm4a', 'flac'].includes(ext);
     const isVideo = ['mp4', 'webm', 'mov'].includes(ext);
 
     let doc;
-    if (isImage || isAudio || isVideo) {
+    if (wantDir) {
+      doc = await apiPost('/api/dir/list', { path: rawPath });
+    } else if (isImage || isAudio || isVideo) {
       doc = { ok: true, path: rawPath, isMedia: true, mediaKind: isImage ? 'image' : isAudio ? 'audio' : 'video', isBinary: true };
     } else {
       doc = await apiPost('/api/file/read', {
         path: rawPath,
         encoding: opts.overrideEncoding || '',
       });
+      if (!doc?.ok && /not a regular file/i.test(String(doc?.error || ''))) {
+        const dirTry = await apiPost('/api/dir/list', { path: rawPath });
+        if (dirTry?.ok) doc = dirTry;
+      }
     }
 
     if (!doc || !doc.ok) {
@@ -702,6 +741,7 @@
     }
 
     const resolvedPath = doc.path || rawPath;
+    const resolvedIsDir = Boolean(doc.isDirectory);
     state.activeTabPath = resolvedPath;
     state.currentDoc = doc;
 
@@ -711,8 +751,10 @@
         op: 'recordLineage',
         parentPath: prevPath,
         parentTitle: prevTitle,
+        parentIsDirectory: prevIsDir,
         childPath: resolvedPath,
         childTitle: baseName(resolvedPath),
+        childIsDirectory: resolvedIsDir,
       });
       if (lRes.ok && lRes.session) state.session = lRes.session;
     }
@@ -720,7 +762,7 @@
     // Register in standalone tabs if not already present
     const k = normKey(resolvedPath);
     if (!state.tabs.some((t) => normKey(t.path) === k)) {
-      state.tabs.push({ path: resolvedPath, title: baseName(resolvedPath) });
+      state.tabs.push({ path: resolvedPath, title: baseName(resolvedPath), isDirectory: resolvedIsDir });
     }
 
     // Touch child if inside a group
@@ -745,6 +787,7 @@
           title: baseName(resolvedPath),
           scrollTop: opts.restoreScrollTop || 0,
           line: opts.lineStart || null,
+          isDirectory: resolvedIsDir,
         },
       });
       if (hRes.ok && hRes.session) state.session = hRes.session;
@@ -759,6 +802,7 @@
 
     // Auto-anchor summary MD if enabled and >= 3 outlinks and not yet in any group
     if (
+      !resolvedIsDir &&
       state.settings?.autoAnchorSummaryMd &&
       /\.(md|mdx)$/i.test(resolvedPath) &&
       (state.currentLinks.outlinks?.length || 0) >= 3 &&
@@ -785,6 +829,135 @@
   }
 
   function renderDocumentBody(doc, opts = {}) {
+    if (doc.isDirectory) {
+      const files = Array.isArray(doc.files) ? doc.files : [];
+      const esc = window.AnchorWheelMarkdown.esc;
+      let activeCat = 'all';
+      const catCounts = new Map();
+      const catLabels = new Map();
+      for (const f of files) {
+        const cid = f.categoryId || 'other';
+        catCounts.set(cid, (catCounts.get(cid) || 0) + 1);
+        catLabels.set(cid, f.categoryLabel || '其他');
+      }
+      const metaBadges = [`直属 ${doc.totalFiles ?? files.length} 个文件`];
+      if (doc.truncated) metaBadges.push(`仅展示前 ${doc.maxFiles} 项`);
+      if (doc.skippedSubdirCount > 0) metaBadges.push(`已略过 ${doc.skippedSubdirCount} 个子文件夹`);
+
+      const filterDefs = [{ id: 'all', label: `全部 (${files.length})` }];
+      const orderedRuleIds = [
+        ...(Array.isArray(state.settings?.categoryRules) ? state.settings.categoryRules.map((r) => r.id) : []),
+        'other',
+      ];
+      const addedCats = new Set();
+      for (const cid of orderedRuleIds) {
+        if (catCounts.has(cid) && !addedCats.has(cid)) {
+          addedCats.add(cid);
+          filterDefs.push({ id: cid, label: `${catLabels.get(cid)} (${catCounts.get(cid)})` });
+        }
+      }
+      for (const [cid, count] of catCounts.entries()) {
+        if (!addedCats.has(cid)) {
+          filterDefs.push({ id: cid, label: `${catLabels.get(cid)} (${count})` });
+        }
+      }
+
+      const renderDirList = () => {
+        const listEl = els.reader.querySelector('#aw-dir-file-rows');
+        if (!listEl) return;
+        const shown = activeCat === 'all' ? files : files.filter((f) => (f.categoryId || 'other') === activeCat);
+        const openKeySet = new Set(state.tabs.map((t) => normKey(t.path)));
+        listEl.innerHTML = shown.length
+          ? shown
+              .map((f) => {
+                const opened = openKeySet.has(normKey(f.path));
+                const sz = S.formatBytes(f.sizeBytes);
+                return `
+                  <button type="button" class="aw-dir-row" data-aw-dir-file="${esc(f.path)}">
+                    <span class="aw-dir-row-main">
+                      ${S.pickIconForItem(f)}
+                      <span class="aw-dir-row-name">${esc(f.name || baseName(f.path))}</span>
+                      ${opened ? '<span class="aw-bi-dot" title="已打开标签"></span>' : ''}
+                    </span>
+                    <span class="aw-dir-row-right">
+                      <span class="aw-link-row-badge">${esc(f.categoryLabel || '其他')}</span>
+                      ${sz ? `<span>${esc(sz)}</span>` : ''}
+                    </span>
+                  </button>`;
+              })
+              .join('')
+          : `<div class="aw-hero-card"><p class="aw-hero-sub">${
+              files.length ? '当前分类下暂无文件。' : `当前文件夹暂无直属文件${doc.skippedSubdirCount ? `（已略过 ${doc.skippedSubdirCount} 个子文件夹）` : ''}。`
+            }</p></div>`;
+
+        for (const rowBtn of listEl.querySelectorAll('[data-aw-dir-file]')) {
+          rowBtn.addEventListener('click', (ev) => {
+            ev.preventDefault();
+            const targetPath = rowBtn.getAttribute('data-aw-dir-file');
+            if (!targetPath) return;
+            const rel = findGroupByChildOrAnchor(state.activeTabPath);
+            if (rel) {
+              void adoptAndOpen(targetPath, rel.group.id, { openInForeground: true, isDirectory: false });
+            } else {
+              void openFile(targetPath, { inNewTab: true, isDirectory: false });
+            }
+          });
+          rowBtn.addEventListener('auxclick', (ev) => {
+            if (ev.button !== 1) return;
+            ev.preventDefault();
+            ev.stopPropagation();
+            const targetPath = rowBtn.getAttribute('data-aw-dir-file');
+            if (!targetPath) return;
+            const rel = findGroupByChildOrAnchor(state.activeTabPath);
+            const grpId = rel ? rel.group.id : getActiveGroup()?.id;
+            if (grpId) {
+              void adoptAndOpen(targetPath, grpId, { openInForeground: false, isDirectory: false });
+            } else {
+              const targetKey = normKey(targetPath);
+              if (!state.tabs.some((t) => normKey(t.path) === targetKey)) {
+                state.tabs.push({ path: targetPath, title: baseName(targetPath), isDirectory: false });
+              }
+              renderTabsBar();
+              showToast(`已后台新建标签：${baseName(targetPath)}`);
+            }
+          });
+        }
+      };
+
+      els.reader.innerHTML = `
+        <div class="aw-dir-view">
+          <div class="aw-dir-header">
+            <div class="aw-dir-title-wrap">${S.ICONS.folder}<h2 title="${esc(doc.path)}">${esc(doc.title || baseName(doc.path))}</h2></div>
+            <div class="aw-dir-meta">${metaBadges.map((b) => `<span class="aw-link-row-badge">${esc(b)}</span>`).join('')}</div>
+          </div>
+          ${
+            filterDefs.length > 2
+              ? `<div class="aw-dir-filter-bar">${filterDefs
+                  .map(
+                    (f) =>
+                      `<button type="button" class="aw-dir-filter-pill" data-aw-dir-cat="${esc(f.id)}" data-active="${f.id === activeCat ? '1' : '0'}">${esc(f.label)}</button>`
+                  )
+                  .join('')}</div>`
+              : ''
+          }
+          <div class="aw-file-list" id="aw-dir-file-rows"></div>
+        </div>
+      `;
+
+      for (const pill of els.reader.querySelectorAll('[data-aw-dir-cat]')) {
+        pill.addEventListener('click', () => {
+          activeCat = pill.getAttribute('data-aw-dir-cat') || 'all';
+          for (const p2 of els.reader.querySelectorAll('[data-aw-dir-cat]')) {
+            p2.setAttribute('data-active', p2.getAttribute('data-aw-dir-cat') === activeCat ? '1' : '0');
+          }
+          renderDirList();
+        });
+      }
+      renderDirList();
+      els.reader.scrollTop = opts.restoreScrollTop || 0;
+      return;
+    }
+
     if (doc.isMedia) {
       const rawUrl = `/api/file/raw?path=${encodeURIComponent(doc.path)}`;
       if (doc.mediaKind === 'image') {
@@ -910,7 +1083,7 @@
             </div>
           </div>
           <div class="aw-open-bar">
-            <input type="text" id="aw-quick-path" class="aw-input" placeholder="输入或粘贴本地绝对路径（如 C:\\...\\report.md）后按回车打开" />
+            <input type="text" id="aw-quick-path" class="aw-input" placeholder="输入或粘贴本地文件或文件夹绝对路径（如 C:\\...\\report.md）后按回车打开" />
             <button type="button" id="aw-quick-open-btn" class="aw-primary-btn">打开</button>
           </div>
         </section>
@@ -968,16 +1141,19 @@
     pop.addEventListener('click', (ev) => ev.stopPropagation());
     pop.addEventListener('mousedown', (ev) => ev.stopPropagation());
 
+    const isDirMode = Boolean(state.currentDoc?.isDirectory);
     const backInit = state.currentLinks?.backlinks || [];
-    const outInit = state.currentLinks?.outlinks || [];
-    let currentTab = initialTab || (backInit.length > 0 ? 'backlinks' : outInit.length > 0 ? 'outlinks' : 'backlinks');
+    const dirInit = isDirMode && Array.isArray(state.currentDoc?.files) ? state.currentDoc.files : [];
+    const outInit = isDirMode ? dirInit : (state.currentLinks?.outlinks || []);
+    const secondLabel = isDirMode ? '目录文件' : '本文出链';
+    let currentTab = initialTab || (isDirMode ? (dirInit.length > 0 ? 'outlinks' : 'backlinks') : backInit.length > 0 ? 'backlinks' : outInit.length > 0 ? 'outlinks' : 'backlinks');
     let filterText = '';
 
     pop.innerHTML = `
       <div class="aw-popover-head">
         <div class="aw-tabs-seg" style="flex:1">
           <button type="button" data-ltab="backlinks" data-active="${currentTab === 'backlinks' ? '1' : '0'}">反向引用 (${backInit.length})</button>
-          <button type="button" data-ltab="outlinks" data-active="${currentTab === 'outlinks' ? '1' : '0'}">本文出链 (${outInit.length})</button>
+          <button type="button" data-ltab="outlinks" data-active="${currentTab === 'outlinks' ? '1' : '0'}">${secondLabel} (${outInit.length})</button>
         </div>
         <button type="button" class="aw-tray-btn" id="aw-pop-close">${ICONS.close}</button>
       </div>
@@ -993,11 +1169,12 @@
 
     const renderBody = () => {
       const back = state.currentLinks?.backlinks || [];
-      const out = state.currentLinks?.outlinks || [];
+      const dirFiles = isDirMode && Array.isArray(state.currentDoc?.files) ? state.currentDoc.files : [];
+      const out = isDirMode ? dirFiles : (state.currentLinks?.outlinks || []);
       for (const tabBtn of pop.querySelectorAll('[data-ltab]')) {
         const key = tabBtn.getAttribute('data-ltab');
         tabBtn.setAttribute('data-active', currentTab === key ? '1' : '0');
-        tabBtn.textContent = key === 'backlinks' ? `反向引用 (${back.length})` : `本文出链 (${out.length})`;
+        tabBtn.textContent = key === 'backlinks' ? `反向引用 (${back.length})` : `${secondLabel} (${out.length})`;
       }
       const list = currentTab === 'backlinks' ? back : out;
       if (filterWrap) {
@@ -1018,7 +1195,7 @@
           ? filtered
               .map(
                 (b) => `
-              <button type="button" class="aw-link-row" data-jump-path="${window.AnchorWheelMarkdown.esc(b.sourcePath)}" data-jump-line="${b.line}">
+              <button type="button" class="aw-link-row" data-jump-path="${window.AnchorWheelMarkdown.esc(b.sourcePath)}" data-jump-line="${b.line}" data-jump-dir="0">
                 <div class="aw-link-row-top">
                   <span class="aw-link-row-title">${window.AnchorWheelMarkdown.esc(b.sourceTitle)}</span>
                   <span class="aw-link-row-badge">${b.isArtifact ? '报告' : '工作区'} · L${b.line}</span>
@@ -1027,7 +1204,30 @@
               </button>`
               )
               .join('')
-          : `<div class="aw-link-row-snippet">${back.length ? '无匹配的反向引用记录。' : '暂未发现其他 Markdown 文档引用当前文件。'}</div>`;
+          : `<div class="aw-link-row-snippet">${back.length ? '无匹配的反向引用记录。' : '暂未发现其他 Markdown 文档引用当前位置。'}</div>`;
+      } else if (isDirMode) {
+        const filtered = q
+          ? dirFiles.filter(
+              (f) =>
+                String(f.name || f.title || '').toLowerCase().includes(q) ||
+                String(f.categoryLabel || '').toLowerCase().includes(q) ||
+                String(f.path || '').toLowerCase().includes(q)
+            )
+          : dirFiles;
+        bodyEl.innerHTML = filtered.length
+          ? filtered
+              .map(
+                (f) => `
+              <button type="button" class="aw-link-row" data-jump-path="${window.AnchorWheelMarkdown.esc(f.path)}" data-jump-line="" data-jump-dir="0">
+                <div class="aw-link-row-top">
+                  <span class="aw-link-row-title">${window.AnchorWheelMarkdown.esc(f.name || baseName(f.path))}</span>
+                  <span class="aw-link-row-badge">${window.AnchorWheelMarkdown.esc(f.categoryLabel || '其他')}</span>
+                </div>
+                <div class="aw-link-row-snippet">${window.AnchorWheelMarkdown.esc(f.path)}</div>
+              </button>`
+              )
+              .join('')
+          : `<div class="aw-link-row-snippet">${dirFiles.length ? '无匹配的直属文件。' : '当前文件夹暂无直属文件。'}</div>`;
       } else {
         const filtered = q
           ? out.filter(
@@ -1040,7 +1240,7 @@
           ? filtered
               .map(
                 (o) => `
-              <button type="button" class="aw-link-row" data-jump-path="${window.AnchorWheelMarkdown.esc(o.resolvedPath)}" data-jump-line="${o.lineStart || ''}" ${o.exists ? '' : 'disabled'}>
+              <button type="button" class="aw-link-row" data-jump-path="${window.AnchorWheelMarkdown.esc(o.resolvedPath)}" data-jump-line="${o.lineStart || ''}" data-jump-dir="${o.isDirectory ? '1' : '0'}" ${o.exists ? '' : 'disabled'}>
                 <div class="aw-link-row-top">
                   <span class="aw-link-row-title">${window.AnchorWheelMarkdown.esc(o.label || baseName(o.resolvedPath))}</span>
                   <span class="aw-link-row-badge" data-dead="${o.exists ? '0' : '1'}">${o.exists ? `L${o.line}` : '路径不存在'}</span>
@@ -1057,12 +1257,13 @@
           ev.stopPropagation();
           const p = rowBtn.getAttribute('data-jump-path');
           const ln = Number(rowBtn.getAttribute('data-jump-line')) || null;
+          const isDirectory = rowBtn.getAttribute('data-jump-dir') === '1';
           closePopover();
           const rel = findGroupByChildOrAnchor(state.activeTabPath);
           if (rel) {
-            void adoptAndOpen(p, rel.group.id, { openInForeground: true, lineStart: ln });
+            void adoptAndOpen(p, rel.group.id, { openInForeground: true, lineStart: ln, isDirectory });
           } else {
-            void openFile(p, { inNewTab: true, lineStart: ln });
+            void openFile(p, { inNewTab: true, lineStart: ln, isDirectory });
           }
         });
       }
@@ -1293,6 +1494,7 @@
         const keepNav = Boolean(state.activeTabNavMode && !state.settings?.tabCloseOnSelect);
         await openFile(res.targetEntry.path, {
           skipHistory: true,
+          isDirectory: Boolean(res.targetEntry.isDirectory),
           restoreScrollTop: res.targetEntry.scrollTop || 0,
           keepNavigator: keepNav,
         });
@@ -1318,12 +1520,14 @@
       if (!state.activeTabPath) return;
       const rel = findGroupByChildOrAnchor(state.activeTabPath);
       const op = rel && rel.role === 'anchor' ? 'unpinGroup' : 'pinAnchor';
+      const isDir = Boolean(state.currentDoc?.isDirectory);
       const res = await apiPost('/api/session', {
         conversationId,
         op,
         groupId: rel?.group?.id,
         path: state.activeTabPath,
-        title: state.currentLinks?.title || baseName(state.activeTabPath),
+        title: (!isDir && state.currentLinks?.title) || baseName(state.activeTabPath),
+        isDirectory: isDir,
       });
       if (res.ok && res.session) {
         state.session = res.session;
@@ -1436,7 +1640,7 @@
     );
 
     els.reader.addEventListener('pointerdown', (ev) => {
-      if (ev.target.closest('[data-aw-link], a, button, input')) return;
+      if (ev.target.closest('[data-aw-link], a, input, button:not([data-aw-dir-file])')) return;
       const midMode = state.settings?.middleMode || 'bilateral_wheel';
       if (midMode === 'off' || ev.button !== 1) return;
       ev.preventDefault();

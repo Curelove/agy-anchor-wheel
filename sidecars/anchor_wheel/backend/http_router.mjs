@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { convertFileToUtf8, inspectFileEncoding } from './encoding.mjs';
-import { buildNavContext } from './nav_context.mjs';
+import { buildNavContext, classifyFile, listDirectoryDirectFiles } from './nav_context.mjs';
 import { PreviewService } from './preview_service.mjs';
 import { resolveSafeReadPath } from './security.mjs';
 import { UpdateService } from './update_service.mjs';
@@ -229,10 +229,43 @@ export function createRouterHandlers({
       backlinkIndex,
       conversationId: data?.conversationId || 'default',
       activePath: data?.path || data?.activePath || '',
+      activeIsDirectory: Boolean(data?.isDirectory),
       openTabs: Array.isArray(data?.openTabs) ? data.openTabs : [],
       scopeOverride: data?.scope || '',
     });
     return { ok: true, ...ctx };
+  });
+
+  routes.set('POST /api/dir/list', (data) => {
+    const settings = stateStore.getSettings();
+    const listing = listDirectoryDirectFiles(data?.path || '', {
+      maxFiles: data?.maxFiles,
+      includeStats: data?.includeStats !== false,
+    });
+    if (!listing.ok) return listing;
+    const files = listing.files.map((f) => {
+      const cls = classifyFile(f.path, settings.categoryRules, false);
+      return {
+        ...f,
+        title: f.name,
+        ext: cls.ext,
+        isDirectory: false,
+        categoryId: cls.id,
+        categoryLabel: cls.label,
+      };
+    });
+    return {
+      ok: true,
+      isDirectory: true,
+      path: listing.dirPath,
+      key: listing.key,
+      title: listing.title,
+      files,
+      totalFiles: listing.totalFiles,
+      skippedSubdirCount: listing.skippedSubdirCount,
+      truncated: listing.truncated,
+      maxFiles: listing.maxFiles,
+    };
   });
 
   routes.set('POST /api/preview', async (data) => {

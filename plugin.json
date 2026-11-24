@@ -1,8 +1,8 @@
 {
   "name": "agy-anchor-wheel",
   "displayName": "锚点轮盘 · AnchorWheel",
-  "description": "Upgrade Antigravity's side pane with non-overwriting Markdown link navigation, hold-release Bilateral Category Wheel, Tab-persistent vertical-ancestor tree with 0.25s fast previews, Obsidian backlinks, and auto-encoding repair.",
-  "version": "0.6.0",
+  "description": "Upgrade Antigravity's side pane with non-overwriting Markdown & folder file navigation, hold-release Bilateral Category Wheel, Tab-persistent vertical-ancestor tree with 0.25s fast previews, Obsidian backlinks, and auto-encoding repair.",
+  "version": "0.7.0",
   "logo": "assets/logo.svg",
   "author": {
     "name": "Curelove",
