@@ -149,12 +149,14 @@ export function createRouterHandlers({
 
   routes.set('POST /api/settings', (data) => {
     const next = stateStore.updateSettings(data?.settings || data);
-    backlinkIndex.updateConfig({
+    const cfgChanged = backlinkIndex.updateConfig({
       extraScanDirs: next.extraScanDirs,
       scanWorkspace: next.scanWorkspace,
       scanArtifacts: next.scanArtifacts,
     });
-    backlinkIndex.rescan({ force: false });
+    if (cfgChanged) {
+      backlinkIndex.scheduleBackgroundRescan({ force: false });
+    }
     if (typeof pushNativeSync === 'function') {
       try { pushNativeSync({ settings: next }); } catch {}
     }
@@ -213,11 +215,14 @@ export function createRouterHandlers({
   });
 
   routes.set('POST /api/nav-context', (data) => {
+    let changed = false;
     if (Array.isArray(data?.workspaceRoots) && data.workspaceRoots.length) {
-      backlinkIndex.updateConfig({ workspaceRoots: data.workspaceRoots });
+      changed = backlinkIndex.updateConfig({ workspaceRoots: data.workspaceRoots });
     }
-    if (Date.now() - backlinkIndex.lastScanMs > 15000) {
+    if (changed || backlinkIndex.lastScanMs === 0) {
       backlinkIndex.rescan({ force: false });
+    } else {
+      backlinkIndex.scheduleBackgroundRescan();
     }
     const ctx = buildNavContext({
       stateStore,
@@ -237,15 +242,17 @@ export function createRouterHandlers({
   });
 
   routes.set('GET /api/backlinks', (data) => {
+    let changed = false;
     if (data?.workspace) {
       const incoming = String(data.workspace).split('|').filter(Boolean);
       if (incoming.length) {
-        backlinkIndex.updateConfig({ workspaceRoots: incoming });
-        backlinkIndex.rescan({ force: false });
+        changed = backlinkIndex.updateConfig({ workspaceRoots: incoming });
       }
     }
-    if (Date.now() - backlinkIndex.lastScanMs > 15000) {
+    if (changed || backlinkIndex.lastScanMs === 0) {
       backlinkIndex.rescan({ force: false });
+    } else {
+      backlinkIndex.scheduleBackgroundRescan();
     }
     const targetPath = String(data?.path || '').trim();
     return { ok: true, ...backlinkIndex.getLinksForFile(targetPath) };
@@ -307,8 +314,24 @@ export function createRouterHandlers({
       const exePath = candidates.find((c) => c && fs.existsSync(c)) || candidates[0];
       const cmdPath = path.join(dataDir, 'launch_antigravity_cdp.cmd');
       const vbsPath = path.join(dataDir, 'launch_antigravity_cdp.vbs');
-      const vbs = `Set sh = CreateObject("WScript.Shell")\r\nsh.Run """${exePath}"" --remote-debugging-port=0", 1, False\r\n`;
-      const cmd = `@echo off\r\nwscript.exe //B "${vbsPath}"\r\nexit /b 0\r\n`;
+      // Pure 7-bit ASCII + CRLF using %LOCALAPPDATA% & %~dp0 so non-ASCII Windows usernames never break
+      const vbs = [
+        'Set fso = CreateObject("Scripting.FileSystemObject")',
+        'Set sh = CreateObject("WScript.Shell")',
+        'base = sh.ExpandEnvironmentStrings("%LOCALAPPDATA%")',
+        'exe1 = base & "\\Programs\\antigravity\\Antigravity.exe"',
+        'exe2 = base & "\\Programs\\Antigravity\\Antigravity.exe"',
+        'target = exe1',
+        'If Not fso.FileExists(exe1) And fso.FileExists(exe2) Then target = exe2',
+        'sh.Run """" & target & """ --remote-debugging-port=0", 1, False',
+        '',
+      ].join('\r\n');
+      const cmd = [
+        '@echo off',
+        'wscript.exe //B "%~dp0launch_antigravity_cdp.vbs"',
+        'exit /b 0',
+        '',
+      ].join('\r\n');
       fs.writeFileSync(vbsPath, vbs, 'ascii');
       fs.writeFileSync(cmdPath, cmd, 'ascii');
       return { ok: true, platform: 'win32', launcherPath: cmdPath, vbsPath, exePath };

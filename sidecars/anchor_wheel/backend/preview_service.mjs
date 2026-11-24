@@ -24,6 +24,9 @@ const MAX_TEXT_READ_BYTES = 8192;
 const MAX_DISK_CACHE_FILES = 150;
 const MAX_DISK_CACHE_BYTES = 35 * 1024 * 1024;
 const MAX_MEM_ITEMS = 120;
+const MAX_FFMPEG_CONCURRENCY = 2;
+const MAX_PENDING_CLIPS = 6;
+const FAILED_MEDIA_TTL_MS = 60 * 1000;
 
 export function detectFfmpegBinary() {
   const cmd = process.platform === 'win32' ? 'where' : 'which';
@@ -51,19 +54,26 @@ export function detectFfmpegBinary() {
   return '';
 }
 
-function runFfmpeg(ffmpegBin, args, timeoutMs = 5500) {
+function runFfmpeg(ffmpegBin, args, timeoutMs = 5500, activeProcs = null) {
   return new Promise((resolve, reject) => {
     if (!ffmpegBin) {
       reject(new Error('ffmpeg unavailable'));
       return;
     }
-    execFile(ffmpegBin, args, { timeout: timeoutMs, windowsHide: true, maxBuffer: 512 * 1024 }, (err, stdout, stderr) => {
-      if (err) {
-        reject(new Error(stderr?.toString()?.slice(-240) || err.message));
-      } else {
-        resolve({ stdout: String(stdout || ''), stderr: String(stderr || '') });
+    const child = execFile(
+      ffmpegBin,
+      args,
+      { timeout: timeoutMs, windowsHide: true, maxBuffer: 512 * 1024 },
+      (err, stdout, stderr) => {
+        activeProcs?.delete(child);
+        if (err) {
+          reject(new Error(stderr?.toString()?.slice(-240) || err.message));
+        } else {
+          resolve({ stdout: String(stdout || ''), stderr: String(stderr || '') });
+        }
       }
-    });
+    );
+    activeProcs?.add(child);
   });
 }
 
@@ -78,8 +88,42 @@ export class PreviewService {
     this.ffmpegBin = options.ffmpegBin !== undefined ? options.ffmpegBin : detectFfmpegBinary();
     this.memCache = new Map();
     this.inflightClips = new Map();
-    this.inflightQueue = [];
+    this.inflightHigh = new Map();
+    this.highPriorityQueue = [];
+    this.lowPriorityQueue = [];
     this.activeJobs = 0;
+    this.activeProcs = new Set();
+    this.failedCache = new Map(); // key -> timestamp
+    this.disposed = false;
+  }
+
+  dispose() {
+    this.disposed = true;
+    for (const task of [...this.highPriorityQueue, ...this.lowPriorityQueue]) {
+      try { task.reject(new Error('PreviewService disposed')); } catch {}
+    }
+    this.highPriorityQueue = [];
+    this.lowPriorityQueue = [];
+    for (const child of this.activeProcs) {
+      try { child.kill(); } catch {}
+    }
+    this.activeProcs.clear();
+  }
+
+  #isRecentlyFailed(failKey) {
+    const at = this.failedCache.get(failKey);
+    if (!at) return false;
+    if (Date.now() - at < FAILED_MEDIA_TTL_MS) return true;
+    this.failedCache.delete(failKey);
+    return false;
+  }
+
+  #markFailed(failKey) {
+    this.failedCache.set(failKey, Date.now());
+    if (this.failedCache.size > 200) {
+      const oldest = this.failedCache.keys().next().value;
+      if (oldest) this.failedCache.delete(oldest);
+    }
   }
 
   #ensureCacheDir() {
@@ -131,16 +175,29 @@ export class PreviewService {
     }
   }
 
-  #enqueueFfmpegJob(fn) {
+  #enqueueFfmpegJob(fn, { priority = 'low' } = {}) {
+    if (this.disposed) return Promise.reject(new Error('PreviewService disposed'));
     return new Promise((resolve, reject) => {
-      this.inflightQueue.push({ fn, resolve, reject });
+      const task = { fn, resolve, reject };
+      if (priority === 'high') {
+        this.highPriorityQueue.push(task);
+      } else {
+        // Drop oldest stale queued background clip if user rapidly glides over many videos
+        while (this.lowPriorityQueue.length >= MAX_PENDING_CLIPS) {
+          const dropped = this.lowPriorityQueue.shift();
+          try { dropped?.resolve?.(null); } catch {}
+        }
+        this.lowPriorityQueue.push(task);
+      }
       this.#drainQueue();
     });
   }
 
   #drainQueue() {
-    while (this.activeJobs < 1 && this.inflightQueue.length > 0) {
-      const task = this.inflightQueue.shift();
+    if (this.disposed) return;
+    while (this.activeJobs < MAX_FFMPEG_CONCURRENCY) {
+      const task = this.highPriorityQueue.shift() || this.lowPriorityQueue.shift();
+      if (!task) break;
       this.activeJobs++;
       Promise.resolve()
         .then(task.fn)
@@ -166,13 +223,38 @@ export class PreviewService {
     if (fs.existsSync(outPath)) {
       return toDataUrl(outPath, 'image/jpeg');
     }
-    await runFfmpeg(
-      this.ffmpegBin,
-      ['-hide_banner', '-loglevel', 'error', '-i', filePath, '-vf', 'scale=320:-2', '-frames:v', '1', '-q:v', '6', '-y', outPath],
-      4500
-    );
-    this.#pruneDiskCacheIfNeeded();
-    return fs.existsSync(outPath) ? toDataUrl(outPath, 'image/jpeg') : '';
+    const failKey = `thumb:${hash}`;
+    if (this.#isRecentlyFailed(failKey)) return '';
+    const inflightKey = `thumb:${hash}`;
+    if (this.inflightHigh.has(inflightKey)) {
+      return this.inflightHigh.get(inflightKey);
+    }
+    const job = this.#enqueueFfmpegJob(
+      async () => {
+        try {
+          await runFfmpeg(
+            this.ffmpegBin,
+            ['-hide_banner', '-loglevel', 'error', '-i', filePath, '-vf', 'scale=320:-2', '-frames:v', '1', '-q:v', '6', '-y', outPath],
+            4000,
+            this.activeProcs
+          );
+          this.#pruneDiskCacheIfNeeded();
+          if (fs.existsSync(outPath) && fs.statSync(outPath).size > 100) {
+            return toDataUrl(outPath, 'image/jpeg');
+          }
+          this.#markFailed(failKey);
+          return '';
+        } catch {
+          this.#markFailed(failKey);
+          return '';
+        }
+      },
+      { priority: 'high' }
+    ).finally(() => {
+      this.inflightHigh.delete(inflightKey);
+    });
+    this.inflightHigh.set(inflightKey, job);
+    return job;
   }
 
   async #ensurePosterFrame(filePath, hash) {
@@ -181,38 +263,55 @@ export class PreviewService {
     if (fs.existsSync(outPath) && fs.statSync(outPath).size > 200) {
       return toDataUrl(outPath, 'image/jpeg');
     }
-
-    // Fast input-seek past common black intro frames, then pick representative bright frame via thumbnail=8
-    for (const ss of ['1.5', '0.35', '0']) {
-      try {
-        await runFfmpeg(
-          this.ffmpegBin,
-          [
-            '-hide_banner',
-            '-loglevel',
-            'error',
-            '-ss',
-            ss,
-            '-i',
-            filePath,
-            '-vf',
-            'thumbnail=8,scale=320:-2',
-            '-frames:v',
-            '1',
-            '-q:v',
-            '6',
-            '-y',
-            outPath,
-          ],
-          5000
-        );
-        if (fs.existsSync(outPath) && fs.statSync(outPath).size > 200) {
-          this.#pruneDiskCacheIfNeeded();
-          return toDataUrl(outPath, 'image/jpeg');
-        }
-      } catch {}
+    const failKey = `poster:${hash}`;
+    if (this.#isRecentlyFailed(failKey)) return '';
+    const inflightKey = `poster:${hash}`;
+    if (this.inflightHigh.has(inflightKey)) {
+      return this.inflightHigh.get(inflightKey);
     }
-    return '';
+
+    const job = this.#enqueueFfmpegJob(
+      async () => {
+        // Fast input-seek past common black intro frames, then pick representative bright frame via thumbnail=8
+        for (const ss of ['1.2', '0']) {
+          try {
+            await runFfmpeg(
+              this.ffmpegBin,
+              [
+                '-hide_banner',
+                '-loglevel',
+                'error',
+                '-ss',
+                ss,
+                '-i',
+                filePath,
+                '-vf',
+                'thumbnail=8,scale=320:-2',
+                '-frames:v',
+                '1',
+                '-q:v',
+                '6',
+                '-y',
+                outPath,
+              ],
+              3200,
+              this.activeProcs
+            );
+            if (fs.existsSync(outPath) && fs.statSync(outPath).size > 200) {
+              this.#pruneDiskCacheIfNeeded();
+              return toDataUrl(outPath, 'image/jpeg');
+            }
+          } catch {}
+        }
+        this.#markFailed(failKey);
+        return '';
+      },
+      { priority: 'high' }
+    ).finally(() => {
+      this.inflightHigh.delete(inflightKey);
+    });
+    this.inflightHigh.set(inflightKey, job);
+    return job;
   }
 
   #triggerClipGeneration(filePath, hash) {
@@ -221,48 +320,21 @@ export class PreviewService {
     if (fs.existsSync(clipPath) && fs.statSync(clipPath).size > 300) {
       return clipPath;
     }
+    const failKey = `clip:${hash}`;
+    if (this.#isRecentlyFailed(failKey)) return 'failed';
     if (this.inflightClips.has(hash)) return null;
 
-    const jobPromise = this.#enqueueFfmpegJob(async () => {
-      try {
-        await runFfmpeg(
-          this.ffmpegBin,
-          [
-            '-hide_banner',
-            '-loglevel',
-            'error',
-            '-ss',
-            '1.0',
-            '-t',
-            '3.0',
-            '-i',
-            filePath,
-            '-vf',
-            'fps=6,scale=300:-2:flags=lanczos',
-            '-c:v',
-            'libwebp_anim',
-            '-loop',
-            '0',
-            '-q:v',
-            '45',
-            '-compression_level',
-            '3',
-            '-an',
-            '-f',
-            'webp',
-            '-y',
-            clipPath,
-          ],
-          7000
-        );
-        if (!fs.existsSync(clipPath) || fs.statSync(clipPath).size <= 300) {
-          // Retry from 0s for very short (<1s) clips
+    const jobPromise = this.#enqueueFfmpegJob(
+      async () => {
+        try {
           await runFfmpeg(
             this.ffmpegBin,
             [
               '-hide_banner',
               '-loglevel',
               'error',
+              '-ss',
+              '1.0',
               '-t',
               '3.0',
               '-i',
@@ -283,18 +355,57 @@ export class PreviewService {
               '-y',
               clipPath,
             ],
-            7000
+            6500,
+            this.activeProcs
           );
+          if (!fs.existsSync(clipPath) || fs.statSync(clipPath).size <= 300) {
+            // Retry from 0s for very short (<1s) clips
+            await runFfmpeg(
+              this.ffmpegBin,
+              [
+                '-hide_banner',
+                '-loglevel',
+                'error',
+                '-t',
+                '3.0',
+                '-i',
+                filePath,
+                '-vf',
+                'fps=6,scale=300:-2:flags=lanczos',
+                '-c:v',
+                'libwebp_anim',
+                '-loop',
+                '0',
+                '-q:v',
+                '45',
+                '-compression_level',
+                '3',
+                '-an',
+                '-f',
+                'webp',
+                '-y',
+                clipPath,
+              ],
+              6500,
+              this.activeProcs
+            );
+          }
+          if (!fs.existsSync(clipPath) || fs.statSync(clipPath).size <= 300) {
+            this.#markFailed(failKey);
+          } else {
+            this.#pruneDiskCacheIfNeeded();
+          }
+        } catch {
+          this.#markFailed(failKey);
+          try {
+            if (fs.existsSync(clipPath) && fs.statSync(clipPath).size < 200) fs.unlinkSync(clipPath);
+          } catch {}
+        } finally {
+          this.inflightClips.delete(hash);
         }
-        this.#pruneDiskCacheIfNeeded();
-      } catch {
-        try {
-          if (fs.existsSync(clipPath) && fs.statSync(clipPath).size < 200) fs.unlinkSync(clipPath);
-        } catch {}
-      } finally {
-        this.inflightClips.delete(hash);
-      }
-    });
+      },
+      { priority: 'low' }
+    );
     this.inflightClips.set(hash, jobPromise);
     return null;
   }
@@ -382,8 +493,8 @@ export class PreviewService {
       const posterDataUrl = animDataUrl ? '' : await this.#ensurePosterFrame(filePath, hash);
       let animPending = false;
       if (animated && !animDataUrl) {
-        this.#triggerClipGeneration(filePath, hash);
-        animPending = true;
+        const trig = this.#triggerClipGeneration(filePath, hash);
+        animPending = trig !== 'failed';
       }
 
       const res = {
@@ -432,7 +543,7 @@ export class PreviewService {
       }
     }
 
-    const decoded = decodeBuffer(sliceBuf);
+    const decoded = decodeBuffer(sliceBuf, '', { truncated: stat.size > MAX_TEXT_READ_BYTES });
     if (decoded.isBinary) {
       const res = {
         ok: true,

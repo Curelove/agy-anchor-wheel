@@ -235,7 +235,9 @@
               stackBtn.addEventListener('click', (e) => {
                 e.stopPropagation();
                 previewCtrl.hide();
-                state.expandedCounts[row.key] = limit + 6;
+                const nextLimit = limit + 6;
+                // Avoid leaving 1..3 straggler items behind an extra click
+                state.expandedCounts[row.key] = items.length - nextLimit <= 3 ? items.length : nextLimit;
                 renderPanel();
               });
               cardWrap.appendChild(stackBtn);
@@ -274,9 +276,13 @@
 
       const foot = S.markNode(doc.createElement('div'));
       foot.className = 'aw-tree-foot';
+      const previewOn = options.isPreviewEnabled ? Boolean(options.isPreviewEnabled()) : true;
+      const delayMs = Math.max(0, Math.min(1500, Number(options.getDelayMs?.() ?? 250)));
+      const hotkeyLabel = String(options.getHotkey?.() || 'Tab');
+      const prevHint = previewOn ? `悬停 ${delayMs}ms 看开头预览` : '悬停快览已关闭';
       foot.textContent = state.closeOnSelect
-        ? '悬停卡片 0.25s 看开头预览 · 点击跳转并收起'
-        : '悬停卡片 0.25s 看开头预览 · 点击跳转保持常驻 · 按 Tab 关闭';
+        ? `${prevHint} · 点击跳转并收起`
+        : `${prevHint} · 点击跳转保持常驻 · 按 ${hotkeyLabel} 关闭`;
       panel.appendChild(foot);
     }
 
@@ -302,8 +308,9 @@
 
       wrapperEl = S.markNode(doc.createElement('div'));
       wrapperEl.className = 'aw-tree-backdrop';
-      if (options.theme && options.theme !== 'auto') {
-        wrapperEl.setAttribute('data-aw-theme', options.theme);
+      const resolvedTheme = options.getTheme ? options.getTheme() : options.theme;
+      if (resolvedTheme && resolvedTheme !== 'auto') {
+        wrapperEl.setAttribute('data-aw-theme', resolvedTheme);
       }
 
       const panel = S.markNode(doc.createElement('div'));

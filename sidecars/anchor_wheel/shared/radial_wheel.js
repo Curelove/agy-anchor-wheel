@@ -1,9 +1,10 @@
 // StarPie-inspired Radial Optical Wheel & Compact Group Switcher (shared by Mode 1 Native & Mode 2 Workbench)
 (function (root, factory) {
-  const api = factory();
+  const shared = typeof module !== 'undefined' && module.exports ? require('./nav_shared.js') : root.AnchorWheelNavShared;
+  const api = factory(shared);
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   if (root) root.AnchorWheelUI = api;
-})(typeof globalThis !== 'undefined' ? globalThis : window, function () {
+})(typeof globalThis !== 'undefined' ? globalThis : window, function (Shared) {
   'use strict';
 
   const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -13,7 +14,7 @@
   const R_OUTER = 152;
   const R_CANCEL_MARGIN = 34;
 
-  const ICONS = {
+  const ICONS = Shared?.ICONS || {
     anchor: '<svg class="aw-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="5" r="3"/><line x1="12" y1="22" x2="12" y2="8"/><path d="M5 12H2a10 10 0 0 0 20 0h-3"/></svg>',
     file: '<svg class="aw-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>',
     code: '<svg class="aw-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>',
@@ -22,6 +23,16 @@
     close: '<svg class="aw-icon" style="width:12px;height:12px" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>',
     list: '<svg class="aw-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>',
   };
+
+  function esc(str) {
+    if (Shared?.esc) return Shared.esc(str);
+    return String(str ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
 
   function polar(cx, cy, r, deg) {
     const rad = ((deg - 90) * Math.PI) / 180;
@@ -47,6 +58,7 @@
   }
 
   function pickIconForTitle(title) {
+    if (Shared?.pickIconForItem) return Shared.pickIconForItem(title);
     const t = String(title || '').toLowerCase();
     if (/\.(png|jpe?g|webp|gif|svg|bmp|ico|avif)$/.test(t)) return ICONS.image;
     if (/\.(js|mjs|cjs|ts|tsx|jsx|py|go|rs|java|cpp|c|h|css|html|json|yaml|yml|sh|ps1)$/.test(t)) return ICONS.code;
@@ -54,6 +66,7 @@
   }
 
   function baseDisplayName(name) {
+    if (Shared?.baseDisplayName) return Shared.baseDisplayName(name);
     const s = String(name || '');
     const parts = s.split(/[\\/]/);
     return parts[parts.length - 1] || s;
@@ -63,6 +76,7 @@
     const doc = options.document || document;
     const mountRoot = options.mountRoot || doc.body;
     const markNode = (el) => {
+      if (Shared?.markNode) return Shared.markNode(el);
       if (!el) return el;
       el.setAttribute('data-aw-owned', '1');
       el.setAttribute('data-omni-ignore', '1');
@@ -70,6 +84,8 @@
       el.setAttribute('translate', 'no');
       el.setAttribute('data-no-translate', 'true');
       el.setAttribute('data-ag-localization-skip', 'true');
+      el.setAttribute('data-agy-no-translate', 'true');
+      el.setAttribute('data-antigravity-zh-skip', '1');
       return el;
     };
 
@@ -222,7 +238,7 @@
         const hubTagText = st.hubTag || '母页';
         const head = doc.createElement('div');
         head.className = 'aw-popover-head';
-        head.innerHTML = `<span class="aw-popover-title">${hubTagText} · ${baseDisplayName(st.group.anchorTitle)}</span>`;
+        head.innerHTML = `<span class="aw-popover-title">${esc(hubTagText)} · ${esc(baseDisplayName(st.group.anchorTitle))}</span>`;
         if (st.isLiveFallback && st.onPinCurrent) {
           const pinCurBtn = markNode(doc.createElement('button'));
           pinCurBtn.className = 'aw-tray-btn';
@@ -250,7 +266,7 @@
 
         const hubRow = markNode(doc.createElement('button'));
         hubRow.className = 'aw-link-row';
-        hubRow.innerHTML = `<div class="aw-link-row-top"><span class="aw-link-row-title">${ICONS.anchor} ${baseDisplayName(st.group.anchorTitle)}</span><span class="aw-link-row-badge">${hubTagText}</span></div>`;
+        hubRow.innerHTML = `<div class="aw-link-row-top"><span class="aw-link-row-title">${ICONS.anchor} ${esc(baseDisplayName(st.group.anchorTitle))}</span><span class="aw-link-row-badge">${esc(hubTagText)}</span></div>`;
         hubRow.addEventListener('click', () => selectIndex('hub'));
         body.appendChild(hubRow);
 
@@ -264,7 +280,7 @@
           titleBtn.className = 'aw-link-row-title';
           titleBtn.style.textAlign = 'left';
           titleBtn.style.flex = '1';
-          titleBtn.innerHTML = `${pickIconForTitle(ch.title || ch.path)} ${baseDisplayName(ch.title || ch.path)}`;
+          titleBtn.innerHTML = `${pickIconForTitle(ch.title || ch.path)} ${esc(baseDisplayName(ch.title || ch.path))}`;
           titleBtn.addEventListener('click', () => {
             close();
             st.onSelect?.(ch);
@@ -435,7 +451,7 @@
       const hubLabel = markNode(doc.createElement('div'));
       hubLabel.className = 'aw-wheel-hub-label';
       const hubTagText = st.hubTag || '母页';
-      hubLabel.innerHTML = `${ICONS.anchor}<span class="aw-wheel-hub-tag">${hubTagText}</span><span class="aw-wheel-hub-name">${baseDisplayName(st.group.anchorTitle)}</span>`;
+      hubLabel.innerHTML = `${ICONS.anchor}<span class="aw-wheel-hub-tag">${esc(hubTagText)}</span><span class="aw-wheel-hub-name">${esc(baseDisplayName(st.group.anchorTitle))}</span>`;
 
       stage.appendChild(svg);
       stage.appendChild(labelsWrap);
@@ -541,8 +557,9 @@
       if (persistOnScroll && !holdMode) {
         backdropEl.setAttribute('data-aw-nonmodal', '1');
       }
-      if (options.theme && options.theme !== 'auto') {
-        backdropEl.setAttribute('data-aw-theme', options.theme);
+      const resolvedTheme = options.getTheme ? options.getTheme() : options.theme;
+      if (resolvedTheme && resolvedTheme !== 'auto') {
+        backdropEl.setAttribute('data-aw-theme', resolvedTheme);
       }
 
       backdropEl.addEventListener('click', (e) => {

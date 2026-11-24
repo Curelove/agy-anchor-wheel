@@ -139,6 +139,10 @@ body {
   overflow: hidden;
 }
 
+.aw-encoding-banner[hidden] {
+  display: none !important;
+}
+
 .aw-encoding-banner {
   display: flex;
   align-items: center;

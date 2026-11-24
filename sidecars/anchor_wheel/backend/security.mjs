@@ -126,8 +126,10 @@ export function isHostProtectedWritePath(filePath) {
   const key = canonicalKey(filePath);
   if (!key) return true;
   const localAppData = canonicalKey(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'));
+  const roamingAppData = canonicalKey(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'));
   if (IS_WIN) {
     if (key.startsWith(`${localAppData}/programs/antigravity`)) return true;
+    if (key.startsWith(`${roamingAppData}/io.github.clash-verge-rev.clash-verge-rev`)) return true;
     for (const prefix of SYSTEM_PROTECTED_PREFIXES_WIN) {
       if (key.startsWith(prefix)) return true;
     }
@@ -151,8 +153,8 @@ export function resolveSafeReadPath(rawPath) {
     return { ok: false, error: 'Access to sensitive credential files is blocked' };
   }
   try {
-    const lstat = fs.lstatSync(normalized);
-    const real = lstat.isSymbolicLink() ? fs.realpathSync(normalized) : normalized;
+    // Always resolve realpath so symlinked parent directories cannot bypass sensitive checks
+    const real = fs.realpathSync(normalized);
     if (isBlockedUncPath(real) || isSensitiveFilePath(real)) {
       return { ok: false, error: 'Resolved path is blocked' };
     }
@@ -178,8 +180,7 @@ export function resolveSafeDirPath(rawPath) {
     return { ok: false, error: 'Access to sensitive directories is blocked' };
   }
   try {
-    const lstat = fs.lstatSync(normalized);
-    const real = lstat.isSymbolicLink() ? fs.realpathSync(normalized) : normalized;
+    const real = fs.realpathSync(normalized);
     if (isBlockedUncPath(real) || isSensitiveFilePath(real)) {
       return { ok: false, error: 'Resolved directory is blocked' };
     }

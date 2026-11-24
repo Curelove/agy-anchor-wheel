@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
+const PLUGIN_VERSION = JSON.parse(fs.readFileSync(path.join(ROOT, 'plugin.json'), 'utf8')).version;
 
 function findBrowserExe() {
   const candidates = [
@@ -303,7 +304,7 @@ test('Mode 1 native_enhancer: DOM container tracking, non-overwriting tab dispat
           if (req.action === 'getBoot') {
             res = {
               ok: true,
-              version: '0.5.0',
+              version: ${JSON.stringify(PLUGIN_VERSION)},
               repoUrl: 'https://github.com/Curelove/agy-anchor-wheel',
               releasesUrl: 'https://github.com/Curelove/agy-anchor-wheel/releases',
               compatibility: {
@@ -313,10 +314,10 @@ test('Mode 1 native_enhancer: DOM container tracking, non-overwriting tab dispat
               },
               updateInfo: {
                 ok: true,
-                currentVersion: '0.5.0',
-                latestVersion: '0.5.0',
+                currentVersion: ${JSON.stringify(PLUGIN_VERSION)},
+                latestVersion: ${JSON.stringify(PLUGIN_VERSION)},
                 updateAvailable: false,
-                releaseUrl: 'https://github.com/Curelove/agy-anchor-wheel/releases/tag/v0.5.0',
+                releaseUrl: 'https://github.com/Curelove/agy-anchor-wheel/releases/tag/v' + ${JSON.stringify(PLUGIN_VERSION)},
                 publishedAt: '2026-11-24T03:00:00Z',
               },
               settings: mockSettings,
@@ -325,11 +326,11 @@ test('Mode 1 native_enhancer: DOM container tracking, non-overwriting tab dispat
           } else if (req.action === 'checkUpdate') {
             res = {
               ok: true,
-              currentVersion: '0.5.0',
-              latestVersion: '0.6.0',
+              currentVersion: ${JSON.stringify(PLUGIN_VERSION)},
+              latestVersion: '0.7.0',
               updateAvailable: true,
               targetAntigravity: '2.34.x',
-              releaseUrl: 'https://github.com/Curelove/agy-anchor-wheel/releases/tag/v0.6.0',
+              releaseUrl: 'https://github.com/Curelove/agy-anchor-wheel/releases/tag/v0.7.0',
               publishedAt: '2026-11-24T04:00:00Z',
               bodySnippet: 'Mock update available',
             };
@@ -421,7 +422,7 @@ test('Mode 1 native_enhancer: DOM container tracking, non-overwriting tab dispat
         }, replyDelay);
       };
 
-      window.__agAnchorWheelBoot = { settings: mockSettings, wheelCss: ${JSON.stringify(wheelCss)} };
+      window.__agAnchorWheelBoot = { version: ${JSON.stringify(PLUGIN_VERSION)}, settings: mockSettings, wheelCss: ${JSON.stringify(wheelCss)} };
       eval(${JSON.stringify(navSharedJs)});
       eval(${JSON.stringify(wheelJs)});
       eval(${JSON.stringify(bilateralJs)});
@@ -443,7 +444,7 @@ test('Mode 1 native_enhancer: DOM container tracking, non-overwriting tab dispat
     })()`);
 
     assert.deepEqual(cdp.errors, []);
-    assert.equal(setupResult.debug.version, '0.5.0');
+    assert.equal(setupResult.debug.version, PLUGIN_VERSION);
     assert.equal(setupResult.debug.hasContentContainer, true);
     assert.equal(setupResult.debug.contentContainerIndex, 2);
     assert.equal(setupResult.debug.outlinkCount, 12);
@@ -683,6 +684,43 @@ test('Mode 1 native_enhancer: DOM container tracking, non-overwriting tab dispat
       await new Promise((r) => setTimeout(r, 30));
       const lockedOtherVisible = Boolean(document.querySelector('.aw-rule-locked'));
 
+      // Verify adding & deleting categories updates the live SVG wheel beyond 3 custom rules AND preserves scroll
+      const getCatSvgText = () => document.querySelector('#aw-sm-cat-live-preview [data-aw-mini-col="bilateral"] .aw-guide-svg')?.textContent || '';
+      const catSvgBeforeAdd = getCatSvgText();
+      const bodyEl = document.querySelector('.aw-settings-body');
+      if (bodyEl) bodyEl.scrollTop = 40;
+      const addBtn = document.querySelector('#aw-sm-add-rule');
+      addBtn?.click(); // 4 custom + 其他 = 5
+      addBtn?.click(); // 5 custom + 其他 = 6
+      addBtn?.click(); // 6 custom + 其他 = 7
+      addBtn?.click(); // 7 custom + 其他 = 8
+      await new Promise((r) => setTimeout(r, 30));
+      const catSvgAfterAdd = getCatSvgText();
+      const ruleRowCountAfterAdd = document.querySelectorAll('.aw-rule-row[data-aw-rule-idx]').length;
+
+      // Edit first rule's label & extension -> live SVG reflects both immediately
+      const firstLabel = document.querySelector('.aw-sm-rule-label');
+      const firstExt = document.querySelector('.aw-sm-rule-exts');
+      if (firstLabel) { firstLabel.value = '立绘'; firstLabel.dispatchEvent(new Event('input', { bubbles: true })); }
+      if (firstExt) { firstExt.value = 'psd, png'; firstExt.dispatchEvent(new Event('input', { bubbles: true })); }
+      await new Promise((r) => setTimeout(r, 20));
+      const catSvgAfterEdit = getCatSvgText();
+
+      // Delete added rules back down to 3 default rules cleanly
+      for (let k = 0; k < 4; k++) {
+        const dels = document.querySelectorAll('.aw-sm-del-rule');
+        dels[dels.length - 1]?.click();
+      }
+      if (firstLabel) { firstLabel.value = '图片'; firstLabel.dispatchEvent(new Event('input', { bubbles: true })); }
+      if (firstExt) { firstExt.value = 'png, jpg, webp, svg'; firstExt.dispatchEvent(new Event('input', { bubbles: true })); }
+      await new Promise((r) => setTimeout(r, 20));
+      const catSvgAfterDel = getCatSvgText();
+
+      // Test Markdown inline code protection (& not double-escaped, * not broken by italic regex)
+      const mdRendered = window.AnchorWheelMarkdown.renderMarkdown('See \`a&b*c*.py\` and *italic*');
+      const mdSafeAmp = mdRendered.includes('data-aw-link="a&amp;b*c*.py"') && !mdRendered.includes('&amp;amp;');
+      const mdSafeStar = !mdRendered.includes('<em>c</em>') && mdRendered.includes('<em>italic</em>');
+
       document.querySelector('[data-aw-sm-tab="storage"]')?.click();
       await new Promise((r) => setTimeout(r, 30));
       const hasCompatGrid = Boolean(document.querySelector('.aw-compat-grid'));
@@ -704,8 +742,15 @@ test('Mode 1 native_enhancer: DOM container tracking, non-overwriting tab dispat
         activeKeyAfterClick,
         treeSvgHasAltQ: treeSvgText.includes('Alt+Q'),
         lockedOtherVisible,
+        catHas4Before: catSvgBeforeAdd.includes('共 4 分类扇区'),
+        ruleRowCountAfterAdd,
+        catHas8After: catSvgAfterAdd.includes('共 8 分类扇区'),
+        catReflectsEdit: catSvgAfterEdit.includes('立绘') && catSvgAfterEdit.includes('.psd'),
+        catHas4AfterDel: catSvgAfterDel.includes('共 4 分类扇区'),
+        mdSafeAmp,
+        mdSafeStar,
         hasCompatGrid,
-        updateBoxFoundNew: updateBoxText.includes('0.6.0'),
+        updateBoxFoundNew: updateBoxText.includes('0.7.0'),
         closedAfterSave,
       };
     })()`);
@@ -719,6 +764,13 @@ test('Mode 1 native_enhancer: DOM container tracking, non-overwriting tab dispat
     assert.equal(settingsResult.activeKeyAfterClick, 'ae_tree');
     assert.equal(settingsResult.treeSvgHasAltQ, true);
     assert.equal(settingsResult.lockedOtherVisible, true);
+    assert.equal(settingsResult.catHas4Before, true);
+    assert.equal(settingsResult.ruleRowCountAfterAdd, 7);
+    assert.equal(settingsResult.catHas8After, true);
+    assert.equal(settingsResult.catReflectsEdit, true);
+    assert.equal(settingsResult.catHas4AfterDel, true);
+    assert.equal(settingsResult.mdSafeAmp, true);
+    assert.equal(settingsResult.mdSafeStar, true);
     assert.equal(settingsResult.hasCompatGrid, true);
     assert.equal(settingsResult.updateBoxFoundNew, true);
     assert.equal(settingsResult.closedAfterSave, true);

@@ -332,6 +332,9 @@ function atomicWriteJson(filePath, data) {
   }
 }
 
+const MAX_STORED_SESSIONS = 80;
+const SESSION_DEBOUNCE_MS = 250;
+
 export class StateStore {
   constructor(dataDir) {
     this.dataDir = dataDir;
@@ -339,6 +342,8 @@ export class StateStore {
     this.sessionsFile = path.join(dataDir, 'sessions.json');
     this.settings = { ...DEFAULT_SETTINGS };
     this.sessions = {};
+    this._sessionsDirty = false;
+    this._saveTimer = null;
     this.#load();
   }
 
@@ -362,12 +367,63 @@ export class StateStore {
     } catch {}
   }
 
+  #pruneOldSessionsIfNeeded() {
+    const keys = Object.keys(this.sessions);
+    if (keys.length <= MAX_STORED_SESSIONS) return;
+    // Prefer evicting oldest conversations without pinned groups first
+    keys.sort((a, b) => {
+      const sa = this.sessions[a];
+      const sb = this.sessions[b];
+      const aHasGroups = Array.isArray(sa?.groups) && sa.groups.length > 0 ? 1 : 0;
+      const bHasGroups = Array.isArray(sb?.groups) && sb.groups.length > 0 ? 1 : 0;
+      if (aHasGroups !== bHasGroups) return aHasGroups - bHasGroups;
+      return Number(sa?.updatedAt || 0) - Number(sb?.updatedAt || 0);
+    });
+    const toRemove = keys.slice(0, keys.length - MAX_STORED_SESSIONS);
+    for (const k of toRemove) {
+      if (k !== 'default') delete this.sessions[k];
+    }
+  }
+
   #saveSettings() {
     atomicWriteJson(this.settingsFile, this.settings);
   }
 
-  #saveSessions() {
-    atomicWriteJson(this.sessionsFile, this.sessions);
+  #saveSessions({ immediate = true } = {}) {
+    this.#pruneOldSessionsIfNeeded();
+    if (immediate) {
+      if (this._saveTimer) {
+        clearTimeout(this._saveTimer);
+        this._saveTimer = null;
+      }
+      this._sessionsDirty = false;
+      atomicWriteJson(this.sessionsFile, this.sessions);
+      return;
+    }
+    this._sessionsDirty = true;
+    if (this._saveTimer) return;
+    this._saveTimer = setTimeout(() => {
+      this._saveTimer = null;
+      if (!this._sessionsDirty) return;
+      this._sessionsDirty = false;
+      try {
+        atomicWriteJson(this.sessionsFile, this.sessions);
+      } catch {}
+    }, SESSION_DEBOUNCE_MS);
+    this._saveTimer.unref?.();
+  }
+
+  flush() {
+    if (this._saveTimer) {
+      clearTimeout(this._saveTimer);
+      this._saveTimer = null;
+    }
+    if (this._sessionsDirty) {
+      this._sessionsDirty = false;
+      try {
+        atomicWriteJson(this.sessionsFile, this.sessions);
+      } catch {}
+    }
   }
 
   getSettings() {
@@ -607,7 +663,7 @@ export class StateStore {
       if (groupId && g.id !== groupId) continue;
       if (canonicalKey(g.anchorPath) === key) {
         sess.activeGroupId = g.id;
-        this.#saveSessions();
+        this.#saveSessions({ immediate: false });
         return this.getSession(conversationId);
       }
       const ch = g.children.find((c) => canonicalKey(c.path) === key);
@@ -615,7 +671,7 @@ export class StateStore {
         ch.lastAccessedAt = Date.now();
         sess.activeGroupId = g.id;
         sess.updatedAt = Date.now();
-        this.#saveSessions();
+        this.#saveSessions({ immediate: false });
         return this.getSession(conversationId);
       }
     }
@@ -694,7 +750,7 @@ export class StateStore {
       }
     }
     sess.updatedAt = Date.now();
-    this.#saveSessions();
+    this.#saveSessions({ immediate: false });
     return { session: this.getSession(conversationId), targetEntry };
   }
 }

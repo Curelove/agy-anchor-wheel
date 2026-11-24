@@ -25,17 +25,22 @@
   }
 
   function renderInline(rawText, deadTargetSet) {
-    let text = esc(rawText);
-
-    // Inline code `...` — turn local file paths inside backticks into draggable file chips
-    text = text.replace(/`([^`]+)`/g, (_m, inner) => {
-      const clean = inner.trim();
+    // Protect inline code spans first with unique tokens so & is not double-escaped and * inside code is never turned into <em>
+    const codeTokens = [];
+    const protectedText = String(rawText ?? '').replace(/`([^`]+)`/g, (_m, rawInner) => {
+      const clean = rawInner.trim();
+      let html;
       if (isLocalTarget(clean) && !/\s{2,}/.test(clean) && KNOWN_EXT_RE.test(clean.replace(/#L\d+(?:-L?\d+)?$/i, ''))) {
         const isDead = deadTargetSet?.has(clean);
-        return `<a class="aw-md-file-chip" href="#" draggable="true" data-aw-link="${esc(clean)}" data-dead="${isDead ? '1' : '0'}">${clean}</a>`;
+        html = `<a class="aw-md-file-chip" href="#" draggable="true" data-aw-link="${esc(clean)}" data-dead="${isDead ? '1' : '0'}">${esc(clean)}</a>`;
+      } else {
+        html = `<code>${esc(rawInner)}</code>`;
       }
-      return `<code>${inner}</code>`;
+      const idx = codeTokens.push(html) - 1;
+      return `\u0000AWCODE${idx}\u0000`;
     });
+
+    let text = esc(protectedText);
 
     // Standard Markdown links [label](href)
     text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_m, label, href) => {
@@ -56,9 +61,14 @@
       return `<a class="aw-md-file-link" href="#" draggable="true" data-aw-link="${target.trim()}">${label}</a>`;
     });
 
-    // Bold & Italic
+    // Bold & Italic (safe from touching inline code tokens)
     text = text.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
     text = text.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+
+    // Restore protected inline code HTML
+    if (codeTokens.length) {
+      text = text.replace(/\u0000AWCODE(\d+)\u0000/g, (_m, i) => codeTokens[Number(i)] || '');
+    }
     return text;
   }
 

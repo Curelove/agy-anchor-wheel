@@ -207,9 +207,16 @@ async function runAudit() {
     await cdp.send('Page.navigate', { url: baseUrl });
     await new Promise((r) => setTimeout(r, 700));
 
-    // 1. 1440px Dark Obsidian Home Desk + record multi-level lineage (00_总纲 -> V2_验收)
+    // 1. 1440px Dark Obsidian Home Desk + verify [hidden] subbar pills & encoding banner are truly hidden (0px height!)
     await cdp.evalAsync(`document.documentElement.setAttribute('data-aw-theme', 'obsidian')`);
     await new Promise((r) => setTimeout(r, 150));
+    const hiddenCheckHome = await cdp.evalAsync(`(() => {
+      const ids = ['aw-encoding-banner', 'aw-btn-tree', 'aw-btn-pin-anchor', 'aw-btn-links', 'aw-btn-encoding'];
+      return ids.filter((id) => {
+        const el = document.getElementById(id);
+        return el && el.getBoundingClientRect().height > 0;
+      });
+    })()`);
     await cdp.screenshot(path.join(outDir, '01_1440_obsidian_home.png'));
 
     // Navigate grandparent -> summary so ancestor trunk has grandparent + parent!
@@ -266,7 +273,21 @@ async function runAudit() {
     await new Promise((r) => setTimeout(r, 320));
     await cdp.screenshot(path.join(outDir, '04b_1440_obsidian_settings_reactive.png'));
 
-    // 4c. 1440px Obsidian Settings Storage / Update & Compat Diagnostics (scroll down to reveal full compat + update card)
+    // 4c. 1440px Obsidian Categories Tab with 7 custom categories + '其他' (8 total sectors, zero overlap!)
+    await cdp.evalAsync(`(() => {
+      document.querySelector('[data-aw-sm-tab="categories"]')?.click();
+    })()`);
+    await new Promise((r) => setTimeout(r, 120));
+    await cdp.evalAsync(`(() => {
+      const add = document.getElementById('aw-sm-add-rule');
+      if (add) { add.click(); add.click(); add.click(); add.click(); }
+      const body = document.querySelector('.aw-settings-body');
+      if (body) body.scrollTop = 0;
+    })()`);
+    await new Promise((r) => setTimeout(r, 260));
+    await cdp.screenshot(path.join(outDir, '04c_1440_obsidian_settings_7cats.png'));
+
+    // 4d. 1440px Obsidian Settings Storage / Update & Compat Diagnostics (scroll down to reveal full compat + update card)
     await cdp.evalAsync(`(() => {
       document.querySelector('[data-aw-sm-tab="storage"]')?.click();
       setTimeout(() => {
@@ -276,6 +297,14 @@ async function runAudit() {
     })()`);
     await new Promise((r) => setTimeout(r, 280));
     await cdp.screenshot(path.join(outDir, '08b_1440_obsidian_settings_compat.png'));
+
+    // 4e. Close settings and inspect Backlinks / Outlinks Popover at 1440px
+    await cdp.evalAsync(`(() => {
+      document.getElementById('aw-sm-close')?.click();
+      document.getElementById('aw-btn-links')?.click();
+    })()`);
+    await new Promise((r) => setTimeout(r, 220));
+    await cdp.screenshot(path.join(outDir, '04d_1440_obsidian_links_popover.png'));
 
     // 5. 1100px Alabaster Light Theme AE Tree with stacked corner expanded
     await cdp.setViewport(1100, 860);
@@ -312,12 +341,18 @@ async function runAudit() {
 
     await cdp.evalAsync(`document.querySelector('[data-aw-sm-tab="storage"]')?.click()`);
     await new Promise((r) => setTimeout(r, 250));
+    await cdp.evalAsync(`
+      const body = document.querySelector('.aw-settings-body');
+      if (body) body.scrollTop = body.scrollHeight;
+    `);
+    await new Promise((r) => setTimeout(r, 150));
     const overflowSettingsCompat = await cdp.evalAsync(`document.documentElement.scrollWidth - document.documentElement.clientWidth`);
     await cdp.screenshot(path.join(outDir, '09_390_alabaster_settings_compat.png'));
 
     console.log(JSON.stringify({
       ok: true,
       outDir,
+      hiddenCheckHome,
       overflowBilateral,
       overflowTree,
       overflowSettings,

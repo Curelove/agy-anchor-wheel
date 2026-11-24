@@ -81,3 +81,18 @@ test('blocks sensitive credential files from encoding inspection', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+test('does not misclassify truncated multi-byte UTF-8 Chinese slices as legacy GB18030', () => {
+  const fullBuf = Buffer.from('这是一段标准的中文测试文档，用来验证截断到多字节字符中间时不会误报乱码。', 'utf8');
+  // Cut 1 byte off the last 3-byte Chinese character
+  const cut1 = fullBuf.subarray(0, fullBuf.length - 1);
+  const cut2 = fullBuf.subarray(0, fullBuf.length - 2);
+  for (const slice of [cut1, cut2]) {
+    const det = detectEncoding(slice, { truncated: true });
+    assert.equal(det.encoding, 'utf-8');
+    const dec = decodeBuffer(slice, '', { truncated: true });
+    assert.equal(dec.isNonUtf8, false);
+    assert.equal(dec.mojibakeHint, false);
+    assert.equal(dec.text.includes('\uFFFD'), false);
+  }
+});

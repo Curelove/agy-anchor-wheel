@@ -25,6 +25,8 @@ const SKIP_DIRS = new Set([
 ]);
 
 const MAX_MD_BYTES = 2 * 1024 * 1024;
+const MAX_SCAN_FILES = 12000;
+const AUTO_RESCAN_COOLDOWN_MS = 60000;
 const KNOWN_FILE_EXT_RE =
   /\.(?:md|mdx|txt|log|rst|json|jsonc|yaml|yml|toml|ini|js|mjs|cjs|jsx|ts|mts|cts|tsx|py|rb|go|rs|java|kt|c|h|cpp|hpp|cs|php|lua|sh|bash|ps1|bat|cmd|sql|css|scss|less|html|htm|xml|svg|png|jpg|jpeg|webp|gif|avif|bmp|ico|mp4|webm|mov|mkv|avi|mp3|wav|ogg|flac|m4a|aac|srt|ass|ssa|pdf|csv|tsv|jsonl|docx|xlsx|pptx)$/i;
 
@@ -75,7 +77,16 @@ function looksLikeLocalFileCandidate(token) {
   return KNOWN_FILE_EXT_RE.test(pathPart) && !pathPart.includes(' ');
 }
 
-function resolveCandidateTarget(rawTarget, sourceDir, searchRoots, basenameMap) {
+function pathExistsFast(candidatePath, allFilesMap, existsCache) {
+  const key = canonicalKey(candidatePath);
+  if (allFilesMap && allFilesMap.has(key)) return true;
+  if (existsCache && existsCache.has(key)) return existsCache.get(key);
+  const ok = fs.existsSync(candidatePath);
+  if (existsCache) existsCache.set(key, ok);
+  return ok;
+}
+
+function resolveCandidateTarget(rawTarget, sourceDir, searchRoots, basenameMap, allFilesMap = null, existsCache = null) {
   let clean = String(rawTarget || '').trim();
   if (clean.startsWith('<') && clean.endsWith('>')) clean = clean.slice(1, -1).trim();
   // Strip optional markdown link title: foo.md "Title"
@@ -88,7 +99,7 @@ function resolveCandidateTarget(rawTarget, sourceDir, searchRoots, basenameMap) 
 
   // Absolute path
   if (path.isAbsolute(targetPath)) {
-    const exists = fs.existsSync(targetPath);
+    const exists = pathExistsFast(targetPath, allFilesMap, existsCache);
     return {
       resolvedPath: targetPath,
       resolvedKey: canonicalKey(targetPath),
@@ -100,7 +111,7 @@ function resolveCandidateTarget(rawTarget, sourceDir, searchRoots, basenameMap) 
 
   // Relative to source markdown directory
   const relCandidate = path.resolve(sourceDir, targetPath);
-  if (fs.existsSync(relCandidate)) {
+  if (pathExistsFast(relCandidate, allFilesMap, existsCache)) {
     return {
       resolvedPath: relCandidate,
       resolvedKey: canonicalKey(relCandidate),
@@ -115,7 +126,7 @@ function resolveCandidateTarget(rawTarget, sourceDir, searchRoots, basenameMap) 
   for (const root of searchRoots) {
     if (!root) continue;
     const rootCand = path.resolve(root, trimmedRel);
-    if (fs.existsSync(rootCand)) {
+    if (pathExistsFast(rootCand, allFilesMap, existsCache)) {
       return {
         resolvedPath: rootCand,
         resolvedKey: canonicalKey(rootCand),
@@ -172,22 +183,74 @@ export class BacklinkIndex {
     this.allFiles = new Map(); // canonicalKey -> { path, name, ext, isArtifact, convId, mtimeMs }
     this.lastScanMs = 0;
     this.scanning = false;
+    this.configDirty = false;
+    this.scanCapped = false;
+    this._bgRescanTimer = null;
+  }
+
+  dispose() {
+    if (this._bgRescanTimer) {
+      clearTimeout(this._bgRescanTimer);
+      this._bgRescanTimer = null;
+    }
   }
 
   updateConfig({ workspaceRoots, extraScanDirs, scanWorkspace, scanArtifacts, brainDir } = {}) {
+    let changed = false;
     if (Array.isArray(workspaceRoots)) {
-      this.workspaceRoots = workspaceRoots.map((r) => normalizeFilePath(r)).filter(Boolean);
+      const next = workspaceRoots.map((r) => normalizeFilePath(r)).filter(Boolean);
+      if (next.join('|') !== this.workspaceRoots.join('|')) {
+        this.workspaceRoots = next;
+        changed = true;
+      }
     }
     if (Array.isArray(extraScanDirs)) {
-      this.extraScanDirs = extraScanDirs.map((r) => normalizeFilePath(r)).filter(Boolean);
+      const next = extraScanDirs.map((r) => normalizeFilePath(r)).filter(Boolean);
+      if (next.join('|') !== this.extraScanDirs.join('|')) {
+        this.extraScanDirs = next;
+        changed = true;
+      }
     }
-    if (typeof scanWorkspace === 'boolean') this.scanWorkspace = scanWorkspace;
-    if (typeof scanArtifacts === 'boolean') this.scanArtifacts = scanArtifacts;
-    if (typeof brainDir === 'string' && brainDir) this.brainDir = normalizeFilePath(brainDir);
+    if (typeof scanWorkspace === 'boolean' && scanWorkspace !== this.scanWorkspace) {
+      this.scanWorkspace = scanWorkspace;
+      changed = true;
+    }
+    if (typeof scanArtifacts === 'boolean' && scanArtifacts !== this.scanArtifacts) {
+      this.scanArtifacts = scanArtifacts;
+      changed = true;
+    }
+    if (typeof brainDir === 'string' && brainDir) {
+      const next = normalizeFilePath(brainDir);
+      if (next !== this.brainDir) {
+        this.brainDir = next;
+        changed = true;
+      }
+    }
+    if (changed) this.configDirty = true;
+    return changed;
+  }
+
+  scheduleBackgroundRescan({ cooldownMs = AUTO_RESCAN_COOLDOWN_MS, force = false } = {}) {
+    if (this.lastScanMs === 0) {
+      this.rescan({ force: false });
+      return;
+    }
+    const stale = force || this.configDirty || Date.now() - this.lastScanMs > cooldownMs;
+    if (!stale || this.scanning || this._bgRescanTimer) return;
+    this._bgRescanTimer = setTimeout(() => {
+      this._bgRescanTimer = null;
+      try {
+        this.rescan({ force });
+      } catch {}
+    }, 15);
+    this._bgRescanTimer.unref?.();
   }
 
   #walkDir(dirPath, { isArtifact = false, convId = '', maxDepth = 8, depth = 0, outFiles = [] } = {}) {
-    if (depth > maxDepth || !dirPath) return;
+    if (depth > maxDepth || !dirPath || this.allFiles.size >= MAX_SCAN_FILES) {
+      if (this.allFiles.size >= MAX_SCAN_FILES) this.scanCapped = true;
+      return;
+    }
     let entries;
     try {
       entries = fs.readdirSync(dirPath, { withFileTypes: true });
@@ -195,6 +258,10 @@ export class BacklinkIndex {
       return;
     }
     for (const ent of entries) {
+      if (this.allFiles.size >= MAX_SCAN_FILES) {
+        this.scanCapped = true;
+        return;
+      }
       if (SKIP_DIRS.has(ent.name)) continue;
       if (ent.name.startsWith('.') && ent.name !== '.agents') continue;
       const full = path.join(dirPath, ent.name);
@@ -230,6 +297,7 @@ export class BacklinkIndex {
 
   #collectMarkdownTargets() {
     this.allFiles.clear();
+    this.scanCapped = false;
     const mdFiles = [];
     const seenKeys = new Set();
 
@@ -366,14 +434,14 @@ export class BacklinkIndex {
     return basenameMap;
   }
 
-  #resolveOutlinksForRefs(mdPath, rawRefs, basenameMap) {
+  #resolveOutlinksForRefs(mdPath, rawRefs, basenameMap, existsCache = null) {
     const sourceDir = path.dirname(mdPath);
     const searchRoots = [...this.workspaceRoots, ...this.extraScanDirs];
     const outlinks = [];
     const dedupOut = new Set();
 
     for (const ref of rawRefs) {
-      const resolved = resolveCandidateTarget(ref.rawTarget, sourceDir, searchRoots, basenameMap);
+      const resolved = resolveCandidateTarget(ref.rawTarget, sourceDir, searchRoots, basenameMap, this.allFiles, existsCache);
       if (!resolved) continue;
       const outKey = `${resolved.resolvedKey}|${ref.line}`;
       if (dedupOut.has(outKey)) continue;
@@ -408,6 +476,7 @@ export class BacklinkIndex {
       }
 
       const basenameMap = this.#buildBasenameMap();
+      const existsCache = new Map();
 
       for (const f of mdFiles) {
         const cached = this.fileCache.get(f.key);
@@ -440,7 +509,7 @@ export class BacklinkIndex {
       this.backlinksByTarget.clear();
 
       for (const entry of this.fileCache.values()) {
-        const outlinks = this.#resolveOutlinksForRefs(entry.path, entry.rawRefs, basenameMap);
+        const outlinks = this.#resolveOutlinksForRefs(entry.path, entry.rawRefs, basenameMap, existsCache);
         for (const outItem of outlinks) {
           if (!this.backlinksByTarget.has(outItem.resolvedKey)) {
             this.backlinksByTarget.set(outItem.resolvedKey, []);
@@ -461,6 +530,7 @@ export class BacklinkIndex {
       }
 
       this.lastScanMs = Date.now();
+      this.configDirty = false;
       return this.getStats();
     } finally {
       this.scanning = false;
@@ -475,6 +545,7 @@ export class BacklinkIndex {
       totalIndexedFiles: this.allFiles.size,
       totalLinks: totalBacklinks,
       lastScanMs: this.lastScanMs,
+      scanCapped: this.scanCapped,
       workspaceRoots: [...this.workspaceRoots],
       extraScanDirs: [...this.extraScanDirs],
     };

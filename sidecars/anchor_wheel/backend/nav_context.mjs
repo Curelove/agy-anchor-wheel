@@ -1,5 +1,4 @@
 import path from 'node:path';
-import { decodeBuffer } from './encoding.mjs';
 import { canonicalKey, isSensitiveFilePath, normalizeFilePath } from './security.mjs';
 import { DEFAULT_CATEGORY_RULES, resolveAncestors, sanitizeCategoryRules } from './state_store.mjs';
 
@@ -273,6 +272,5 @@ export function buildNavContext({
     totalCurrentChildren: allCurrentChildrenCount,
     openedCurrentChildren: currentChildren.filter((c) => c.isOpenedTab).length,
     rules: rules.map((r) => ({ id: r.id, label: r.label, extensions: [...r.extensions] })),
-    decodeTitleFallback: typeof decodeBuffer === 'function',
   };
 }

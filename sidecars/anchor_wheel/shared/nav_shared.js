@@ -365,13 +365,21 @@
       const vh = doc.defaultView?.innerHeight || 800;
       const cardW = Math.min(288, vw - 24);
       const cardH = Math.min(240, vh - 24);
+      let effectivePlacement = placement;
+      if (placement === 'side') {
+        const roomRight = vw - anchorRect.right - 12;
+        const roomLeft = anchorRect.left - 12;
+        if (roomRight < cardW && roomLeft < cardW) {
+          effectivePlacement = 'below';
+        }
+      }
       let left;
       let top;
-      if (placement === 'below') {
+      if (effectivePlacement === 'below') {
         left = Math.max(10, Math.min(vw - cardW - 10, anchorRect.left));
-        top = anchorRect.bottom + 12;
+        top = anchorRect.bottom + 10;
         if (top + cardH > vh - 10) {
-          top = Math.max(10, anchorRect.top - cardH - 12);
+          top = Math.max(10, anchorRect.top - cardH - 10);
         }
       } else {
         left = anchorRect.right + 12;
@@ -545,46 +553,80 @@
       const childDeg = (dirDeg + 180) % 360;
       const wheelOnRight = pDir === 'right';
       const cx = wheelOnRight ? 228 : 92;
-      const cy = 82;
-      const rIn = 27;
-      const rOut = 64;
-      const rMid = (rIn + rOut) * 0.52;
+      const cy = 80;
+      const rIn = 24;
+      const rOut = 70;
+      const rMid = (rIn + rOut) * 0.53;
 
-      const parentPath = guideSectorPath(cx, cy, rIn + 3, rOut, dirDeg - 76, dirDeg + 76, 3);
+      const parentPath = guideSectorPath(cx, cy, rIn + 3, rOut, dirDeg - 76, dirDeg + 76, 2.8);
       const [plx, ply] = guidePolar(cx, cy, rMid, dirDeg);
 
-      const customRules = sanitizeRulesClient(cfg.categoryRules).slice(0, 3);
-      const catList = [...customRules, { id: 'other', label: '其他' }];
-      const span = 162;
-      const step = span / catList.length;
+      // Reflect ALL 1..8 user-defined categories + mandatory '其他' (2..9 total sectors)
+      const customRules = sanitizeRulesClient(cfg.categoryRules);
+      const catList = [...customRules, { id: 'other', label: '其他', extensions: [] }];
+      const totalCats = catList.length;
+      const span = totalCats >= 7 ? 168 : 162;
+      const step = span / totalCats;
+      const sectorGap = totalCats >= 7 ? 1.25 : totalCats >= 5 ? 1.8 : 2.4;
+      const fontSize = totalCats >= 7 ? 7.4 : totalCats >= 5 ? 9.0 : 10.5;
+
       const catArcs = catList
         .map((c, idx) => {
           const a0 = childDeg - span / 2 + idx * step;
           const a1 = a0 + step;
           const mid = a0 + step / 2;
-          const [tx, ty] = guidePolar(cx, cy, rMid, mid);
+          // Stagger alternating inner/outer label radii at 7..9 sectors with clean clearance from center ring, rim & neighbors
+          const labelR =
+            totalCats >= 7
+              ? rIn + (rOut - rIn) * (idx % 2 === 0 ? 0.43 : 0.77)
+              : totalCats >= 5
+              ? rIn + (rOut - rIn) * 0.58
+              : rMid;
+          const [tx, ty] = guidePolar(cx, cy, labelR, mid);
           const isFocus = idx === 0;
-          const shortLabel = esc(String(c.label || '').slice(0, 3));
+          const rawLabel = String(c.label || '').trim();
+          const shortLabel = esc(rawLabel.length <= 3 ? rawLabel : rawLabel.slice(0, totalCats >= 7 ? 2 : 3));
           return `
-            <path class="${isFocus ? 'aw-anim-bi-cat' : ''}" d="${guideSectorPath(cx, cy, rIn + 3, rOut, a0, a1, 2.5)}" fill="${isFocus ? 'var(--aw-accent-soft)' : 'var(--aw-card)'}" stroke="${isFocus ? 'var(--aw-accent)' : 'var(--aw-card-border)'}" stroke-width="${isFocus ? '1.3' : '1.1'}"/>
-            <text x="${tx.toFixed(1)}" y="${(ty + 3.5).toFixed(1)}" fill="${isFocus ? 'var(--aw-fg)' : 'var(--aw-fg-muted)'}" font-size="9.5" font-weight="${isFocus ? '600' : '500'}" text-anchor="middle">${shortLabel}</text>
+            <path class="${isFocus ? 'aw-anim-bi-cat' : ''}" d="${guideSectorPath(cx, cy, rIn + 3, rOut, a0, a1, sectorGap)}" fill="${isFocus ? 'var(--aw-accent-soft)' : 'var(--aw-card)'}" stroke="${isFocus ? 'var(--aw-accent)' : 'var(--aw-card-border)'}" stroke-width="${isFocus ? '1.3' : '1.05'}"/>
+            <text x="${tx.toFixed(1)}" y="${(ty + fontSize * 0.36).toFixed(1)}" fill="${isFocus ? 'var(--aw-fg)' : 'var(--aw-fg-muted)'}" font-size="${fontSize}" font-weight="${isFocus ? '600' : '500'}" text-anchor="middle">${shortLabel}</text>
           `;
         })
         .join('');
 
       const panelX = wheelOnRight ? 12 : 172;
       const panelW = 136;
-      const railY = 20;
+      const railY = 18;
       const railH = 30;
       const clipX = panelX + 4;
       const clipW = panelW - 8;
       const firstCatShort = esc(String(catList[0]?.label || '图片').slice(0, 2));
+      const firstExt = String(catList[0]?.extensions?.[0] || '').toUpperCase().slice(0, 5);
+      const firstExtBadge = firstExt ? `.${esc(firstExt.toLowerCase())}` : '';
       const [aimX, aimY] = guidePolar(cx, cy, rMid, childDeg - span / 2 + step / 2);
       const cursorDx = aimX - cx;
       const cursorDy = aimY - cy;
       const railTargetX = (wheelOnRight ? panelX + panelW - 36 : panelX + 36) - cx;
       const railTargetY = railY + railH / 2 - cy;
-      const dirCaption = { left: '母页在左 · 子类向右滑轨', right: '母页在右 · 子类向左滑轨', top: '母页在上 · 子类向下扇区', bottom: '母页在下 · 子类向上扇区' }[pDir];
+      const dirCaption = { left: '母页在左', right: '母页在右', top: '母页在上', bottom: '母页在下' }[pDir] || '母页在左';
+
+      // Align rail pills cleanly toward the wheel so reverse-glide animation reveals item D without empty gaps
+      const railPillsHtml = wheelOnRight
+        ? ['A', 'B', 'C', 'D']
+            .map((ch, idx) => {
+              const rx = clipX + clipW - 42 - idx * 44;
+              const isAct = idx === 0;
+              return `<rect x="${rx}" y="${railY + 5}" width="40" height="20" rx="10" fill="${isAct ? 'var(--aw-accent-soft)' : 'var(--aw-card)'}" stroke="${isAct ? 'var(--aw-accent)' : 'var(--aw-border)'}" stroke-width="1"/>
+                <text x="${rx + 20}" y="${railY + 18.5}" fill="${isAct ? 'var(--aw-fg)' : 'var(--aw-fg-muted)'}" font-size="9.5" font-weight="${isAct ? '600' : '500'}" text-anchor="middle">${firstCatShort} ${ch}</text>`;
+            })
+            .join('')
+        : ['A', 'B', 'C', 'D']
+            .map((ch, idx) => {
+              const rx = clipX + 2 + idx * 44;
+              const isAct = idx === 0;
+              return `<rect x="${rx}" y="${railY + 5}" width="40" height="20" rx="10" fill="${isAct ? 'var(--aw-accent-soft)' : 'var(--aw-card)'}" stroke="${isAct ? 'var(--aw-accent)' : 'var(--aw-border)'}" stroke-width="1"/>
+                <text x="${rx + 20}" y="${railY + 18.5}" fill="${isAct ? 'var(--aw-fg)' : 'var(--aw-fg-muted)'}" font-size="9.5" font-weight="${isAct ? '600' : '500'}" text-anchor="middle">${firstCatShort} ${ch}</text>`;
+            })
+            .join('');
 
       return `
       <svg class="aw-guide-svg" viewBox="0 0 320 182" aria-hidden="true" style="--aw-cur-dx1:${cursorDx.toFixed(1)}px;--aw-cur-dy1:${cursorDy.toFixed(1)}px;--aw-cur-dx2:${railTargetX.toFixed(1)}px;--aw-cur-dy2:${railTargetY.toFixed(1)}px;--aw-rail-shift:${wheelOnRight ? '42px' : '-42px'}">
@@ -599,35 +641,27 @@
         </defs>
         <rect x="4" y="4" width="312" height="174" rx="12" fill="var(--aw-bg)" stroke="var(--aw-border)"/>
         <path d="${parentPath}" fill="var(--aw-card)" stroke="var(--aw-card-border)" stroke-width="1.2"/>
-        <text x="${plx.toFixed(1)}" y="${(ply + 3.5).toFixed(1)}" fill="var(--aw-fg-muted)" font-size="10.5" font-weight="500" text-anchor="middle">母页</text>
+        <text x="${plx.toFixed(1)}" y="${(ply + 3.8).toFixed(1)}" fill="var(--aw-fg-muted)" font-size="11" font-weight="500" text-anchor="middle">母页</text>
         ${catArcs}
         <circle cx="${cx}" cy="${cy}" r="${rIn}" fill="var(--aw-card)" stroke="var(--aw-accent)" stroke-width="1.7"/>
-        <text x="${cx}" y="${cy + 4}" fill="var(--aw-fg)" font-size="10.5" font-weight="600" text-anchor="middle">当前页</text>
-        <!-- Clipped reverse-glide horizontal rail (zero text overflow!) -->
+        <text x="${cx}" y="${cy + 3.8}" fill="var(--aw-fg)" font-size="10.5" font-weight="600" text-anchor="middle">当前页</text>
+        <!-- Clipped reverse-glide horizontal rail (zero text overflow or blank gap!) -->
         <rect x="${panelX}" y="${railY}" width="${panelW}" height="${railH}" rx="15" fill="var(--aw-popover)" stroke="var(--aw-accent)" stroke-width="1.25"/>
         <g clip-path="url(#${uid}_clip)">
-          <g class="aw-anim-rail-track">
-            <rect x="${clipX + 3}" y="${railY + 5}" width="40" height="20" rx="10" fill="var(--aw-accent-soft)" stroke="var(--aw-accent)" stroke-width="1"/>
-            <text x="${clipX + 23}" y="${railY + 18.5}" fill="var(--aw-fg)" font-size="9.5" font-weight="600" text-anchor="middle">${firstCatShort} A</text>
-            <rect x="${clipX + 47}" y="${railY + 5}" width="40" height="20" rx="10" fill="var(--aw-card)" stroke="var(--aw-border)" stroke-width="1"/>
-            <text x="${clipX + 67}" y="${railY + 18.5}" fill="var(--aw-fg-muted)" font-size="9.5" text-anchor="middle">${firstCatShort} B</text>
-            <rect x="${clipX + 91}" y="${railY + 5}" width="40" height="20" rx="10" fill="var(--aw-card)" stroke="var(--aw-border)" stroke-width="1"/>
-            <text x="${clipX + 111}" y="${railY + 18.5}" fill="var(--aw-fg-muted)" font-size="9.5" text-anchor="middle">${firstCatShort} C</text>
-            <rect x="${clipX + 135}" y="${railY + 5}" width="40" height="20" rx="10" fill="var(--aw-card)" stroke="var(--aw-border)" stroke-width="1"/>
-            <text x="${clipX + 155}" y="${railY + 18.5}" fill="var(--aw-fg-muted)" font-size="9.5" text-anchor="middle">${firstCatShort} D</text>
-          </g>
+          <g class="aw-anim-rail-track">${railPillsHtml}</g>
         </g>
         <!-- Luminous miniature preview card (never black!) -->
         <g class="aw-anim-bi-prev">
-          <rect x="${panelX}" y="60" width="${panelW}" height="82" rx="9" fill="var(--aw-popover)" stroke="var(--aw-card-border)"/>
-          <rect x="${panelX + 8}" y="68" width="${panelW - 16}" height="44" rx="6" fill="url(#${uid}_thumb)" stroke="var(--aw-accent)" stroke-opacity="0.3"/>
+          <rect x="${panelX}" y="58" width="${panelW}" height="84" rx="9" fill="var(--aw-popover)" stroke="var(--aw-card-border)"/>
+          <rect x="${panelX + 8}" y="66" width="${panelW - 16}" height="46" rx="6" fill="url(#${uid}_thumb)" stroke="var(--aw-accent)" stroke-opacity="0.3"/>
           ${
             previewOn
-              ? `<circle cx="${panelX + 32}" cy="84" r="7" fill="var(--aw-accent)" fill-opacity="0.72"/>
+              ? `<circle cx="${panelX + 30}" cy="82" r="7" fill="var(--aw-accent)" fill-opacity="0.72"/>
                  <path d="M ${panelX + 18} 106 L ${panelX + 44} 88 L ${panelX + 66} 98 L ${panelX + 92} 78 L ${panelX + 114} 106 Z" fill="var(--aw-accent)" fill-opacity="0.45"/>
-                 <text x="${panelX + panelW / 2}" y="129" fill="var(--aw-fg)" font-size="10" font-weight="600" text-anchor="middle">${delayMs}ms 悬停快览</text>`
-              : `<text x="${panelX + panelW / 2}" y="94" fill="var(--aw-fg-muted)" font-size="10" text-anchor="middle">快览已关闭</text>
-                 <text x="${panelX + panelW / 2}" y="129" fill="var(--aw-fg-muted)" font-size="9.5" text-anchor="middle">松手中键即打开</text>`
+                 ${firstExtBadge ? `<rect x="${panelX + panelW - 46}" y="70" width="34" height="14" rx="4" fill="var(--aw-card)" stroke="var(--aw-border)"/><text x="${panelX + panelW - 29}" y="80" fill="var(--aw-accent)" font-size="8.5" font-weight="600" text-anchor="middle">${firstExtBadge}</text>` : ''}
+                 <text x="${panelX + panelW / 2}" y="129" fill="var(--aw-fg)" font-size="10.5" font-weight="600" text-anchor="middle">${delayMs}ms 悬停快览</text>`
+              : `<text x="${panelX + panelW / 2}" y="93" fill="var(--aw-fg-muted)" font-size="10.5" text-anchor="middle">快览已关闭</text>
+                 <text x="${panelX + panelW / 2}" y="129" fill="var(--aw-fg-muted)" font-size="10" text-anchor="middle">松手中键即打开</text>`
           }
         </g>
         <!-- Animated cursor dot & release ripple -->
@@ -635,7 +669,7 @@
           <circle cx="${cx}" cy="${cy}" r="8" fill="none" stroke="var(--aw-accent)" stroke-width="1.4" class="aw-anim-bi-ripple"/>
           <circle cx="${cx}" cy="${cy}" r="4.5" fill="var(--aw-accent)"/>
         </g>
-        <text x="160" y="166" fill="var(--aw-fg-muted)" font-size="10.5" text-anchor="middle">${dirCaption} · 滑轨反向平滑裁切</text>
+        <text x="160" y="166" fill="var(--aw-fg-muted)" font-size="10.5" text-anchor="middle">${dirCaption} · 共 ${totalCats} 分类扇区 · 滑轨反向平滑</text>
       </svg>`;
     }
 

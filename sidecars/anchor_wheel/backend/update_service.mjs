@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
 import https from 'node:https';
@@ -9,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_PLUGIN_ROOT = path.resolve(__dirname, '..', '..');
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+const MAX_UPDATE_RESP_BYTES = 2 * 1024 * 1024;
 
 export function parseGithubRepo(repoUrl) {
   const raw = String(repoUrl || '').trim();
@@ -52,13 +54,38 @@ export function compareSemver(a, b) {
   return pa.pre > pb.pre ? 1 : -1;
 }
 
+export function decodeHtmlEntities(str) {
+  return String(str || '')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&#x([0-9a-f]+);/gi, (_, hex) => {
+      const cp = parseInt(hex, 16);
+      return Number.isFinite(cp) && cp > 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : '';
+    })
+    .replace(/&#(\d+);/g, (_, dec) => {
+      const cp = parseInt(dec, 10);
+      return Number.isFinite(cp) && cp > 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : '';
+    })
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&apos;/gi, "'")
+    .replace(/&amp;/gi, '&');
+}
+
 export function extractTargetAgyFromNotes(body) {
   const text = String(body || '');
   if (!text) return '';
   const tagMatch = /<!--\s*aw-compat:\s*agy=([^\s>]+)\s*-->/i.exec(text);
-  if (tagMatch?.[1]) return tagMatch[1].trim();
-  const zhMatch = /(?:适配|适用|兼容)\s*(?:Antigravity|AGY)\s*[：:]\s*([^\r\n]+)/i.exec(text);
-  if (zhMatch?.[1]) return zhMatch[1].replace(/^[`*\s]+|[`*\s]+$/g, '').slice(0, 64);
+  if (tagMatch?.[1]) return decodeHtmlEntities(tagMatch[1].trim());
+  const plain = decodeHtmlEntities(text.replace(/<[^>]+>/g, ' '));
+  const zhMatch = /(?:适配|适用|兼容)\s*(?:Antigravity|AGY)\s*[：:]\s*([^\r\n]+)/i.exec(plain);
+  if (zhMatch?.[1]) {
+    let picked = decodeHtmlEntities(zhMatch[1]).replace(/^[`*\s]+|[`*\s]+$/g, '');
+    // Trim verbose parenthetical suffixes when a clean version/range precedes them
+    const concise = /^([A-Za-z0-9.+_-]+(?:\s*[~～-]\s*[A-Za-z0-9.+_-]+)?)\s*[（(].+$/.exec(picked);
+    if (concise?.[1]) picked = concise[1].trim();
+    return picked.slice(0, 48);
+  }
   return '';
 }
 
@@ -177,11 +204,21 @@ function requestViaHttpConnect(targetUrl, proxyUrl, { timeoutMs = 7000, headers 
         },
         (httpsRes) => {
           const chunks = [];
-          httpsRes.on('data', (c) => chunks.push(c));
+          let totalBytes = 0;
+          httpsRes.on('error', finishErr);
+          httpsRes.on('data', (c) => {
+            totalBytes += c.length;
+            if (totalBytes > MAX_UPDATE_RESP_BYTES) {
+              finishErr(new Error('HTTPS response exceeded size limit'));
+              return;
+            }
+            chunks.push(c);
+          });
           httpsRes.on('end', () => {
             if (settled) return;
             settled = true;
             clearTimeout(timer);
+            try { tlsSock?.destroy?.(); } catch {}
             resolve({
               statusCode: httpsRes.statusCode || 0,
               headers: httpsRes.headers || {},
@@ -204,6 +241,13 @@ function requestDirectHttps(targetUrl, { timeoutMs = 7000, headers = {} } = {}) 
   return new Promise((resolve, reject) => {
     const target = new URL(targetUrl);
     let settled = false;
+    const finishErr = (err) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try { req.destroy(); } catch {}
+      reject(err);
+    };
     const req = https.request(
       {
         hostname: target.hostname,
@@ -218,7 +262,16 @@ function requestDirectHttps(targetUrl, { timeoutMs = 7000, headers = {} } = {}) 
       },
       (res) => {
         const chunks = [];
-        res.on('data', (c) => chunks.push(c));
+        let totalBytes = 0;
+        res.on('error', finishErr);
+        res.on('data', (c) => {
+          totalBytes += c.length;
+          if (totalBytes > MAX_UPDATE_RESP_BYTES) {
+            finishErr(new Error('HTTPS response exceeded size limit'));
+            return;
+          }
+          chunks.push(c);
+        });
         res.on('end', () => {
           if (settled) return;
           settled = true;
@@ -233,18 +286,10 @@ function requestDirectHttps(targetUrl, { timeoutMs = 7000, headers = {} } = {}) 
     );
 
     const timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      try { req.destroy(); } catch {}
-      reject(new Error(`HTTPS request timed out after ${timeoutMs}ms`));
+      finishErr(new Error(`HTTPS request timed out after ${timeoutMs}ms`));
     }, timeoutMs);
 
-    req.on('error', (err) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      reject(err);
-    });
+    req.on('error', finishErr);
     req.end();
   });
 }
@@ -254,11 +299,13 @@ export async function httpsGetText(url, { proxyUrl = '', timeoutMs = 7000, heade
   for (let hop = 0; hop <= maxRedirects; hop++) {
     let resp;
     if (proxyUrl) {
+      const proxyTimeout = Math.min(timeoutMs, 4500);
+      const directTimeout = Math.min(timeoutMs, 3500);
       try {
-        resp = await requestViaHttpConnect(curUrl, proxyUrl, { timeoutMs, headers });
+        resp = await requestViaHttpConnect(curUrl, proxyUrl, { timeoutMs: proxyTimeout, headers });
       } catch (proxyErr) {
         try {
-          resp = await requestDirectHttps(curUrl, { timeoutMs, headers });
+          resp = await requestDirectHttps(curUrl, { timeoutMs: directTimeout, headers });
         } catch {
           throw proxyErr;
         }
@@ -290,12 +337,7 @@ export async function httpsGetJson(url, opts = {}) {
 }
 
 function decodeXmlEntities(str) {
-  return String(str || '')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;|&#x27;/gi, "'")
-    .replace(/&amp;/g, '&');
+  return decodeHtmlEntities(str);
 }
 
 export function parseReleasesAtom(xml, fallbackRepoUrl = 'https://github.com/Curelove/agy-anchor-wheel') {
@@ -328,15 +370,24 @@ export function parseReleasesAtom(xml, fallbackRepoUrl = 'https://github.com/Cur
   }
   if (!tagName) return null;
 
-  const title = decodeXmlEntities((titleMatch?.[1] || '').replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')).trim();
+  // Title may be double-encoded inside XML Atom feeds; decode cleanly
+  const title = decodeHtmlEntities(
+    decodeXmlEntities((titleMatch?.[1] || '').replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1'))
+  ).trim();
   const updated = (updatedMatch?.[1] || '').trim();
-  const rawContent = decodeXmlEntities((contentMatch?.[1] || '').replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1'));
-  const targetAntigravity = extractTargetAgyFromNotes(rawContent);
-  const plainBody = rawContent
-    .replace(/<!--[\s\S]*?-->/g, '')
-    .replace(/<\/(?:p|li|h[1-6]|div|tr|blockquote)>/gi, '\n')
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<[^>]+>/g, '')
+  // Pass 1: unwrap Atom XML layer -> raw HTML
+  const rawHtml = decodeXmlEntities((contentMatch?.[1] || '').replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1'));
+  const targetAntigravity = extractTargetAgyFromNotes(rawHtml);
+  // Pass 2: strip HTML tags and decode HTML-layer entities (fixes double-encoded &gt; / &amp; / &quot;)
+  const plainBody = decodeHtmlEntities(
+    rawHtml
+      .replace(/<!--[\s\S]*?-->/g, '')
+      .replace(/<\/(?:p|li|h[1-6]|div|tr|blockquote)>/gi, '\n')
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<[^>]+>/g, '')
+  )
+    .replace(/\r/g, '')
+    .replace(/[ \t]+\n/g, '\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim()
     .slice(0, 900);
@@ -474,6 +525,7 @@ export class UpdateService {
     this.detectProxyImpl = detectProxyImpl;
     this._localAgyCache = null;
     this._localAgyAt = 0;
+    this._inflightCheck = null;
   }
 
   readManifest() {
@@ -483,7 +535,7 @@ export class UpdateService {
     } catch {
       return {
         name: 'agy-anchor-wheel',
-        version: '0.5.0',
+        version: '0.0.0',
         repository: { url: 'https://github.com/Curelove/agy-anchor-wheel' },
         compatibility: {},
       };
@@ -505,7 +557,7 @@ export class UpdateService {
 
   getPluginMeta() {
     const mf = this.readManifest();
-    const version = String(mf.version || '0.5.0');
+    const version = String(mf.version || '0.0.0');
     const repoUrl = String(mf.repository?.url || 'https://github.com/Curelove/agy-anchor-wheel').replace(/\.git$/i, '');
     const parsed = parseGithubRepo(repoUrl) || { owner: 'Curelove', repo: 'agy-anchor-wheel' };
     const compatibility = mf.compatibility || {};
@@ -533,12 +585,16 @@ export class UpdateService {
 
   _writeCacheFile(obj) {
     if (!this.cachePath) return;
+    const tmp = `${this.cachePath}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`;
+    const payload = JSON.stringify(obj, null, 2) + '\n';
     try {
       fs.mkdirSync(path.dirname(this.cachePath), { recursive: true });
-      const tmp = `${this.cachePath}.tmp`;
-      fs.writeFileSync(tmp, JSON.stringify(obj, null, 2), 'utf8');
+      fs.writeFileSync(tmp, payload, 'utf8');
       fs.renameSync(tmp, this.cachePath);
-    } catch {}
+    } catch {
+      try { fs.unlinkSync(tmp); } catch {}
+      try { fs.writeFileSync(this.cachePath, payload, 'utf8'); } catch {}
+    }
   }
 
   getCachedResult() {
@@ -546,8 +602,12 @@ export class UpdateService {
     const cached = this._readCacheFile();
     if (!cached || !cached.latestVersion) return null;
     const updateAvailable = compareSemver(cached.latestVersion, meta.version) > 0;
+    const cleanTargetAgy = cached.targetAntigravity ? decodeHtmlEntities(cached.targetAntigravity) : '';
+    const cleanSnippet = cached.bodySnippet ? decodeHtmlEntities(cached.bodySnippet) : '';
     return {
       ...cached,
+      targetAntigravity: cleanTargetAgy,
+      bodySnippet: cleanSnippet,
       currentVersion: meta.version,
       updateAvailable,
       repoUrl: meta.repoUrl,
@@ -586,6 +646,17 @@ export class UpdateService {
         return cached;
       }
     }
+    if (this._inflightCheck) {
+      return this._inflightCheck;
+    }
+    const run = this._performCheckForUpdates(meta).finally(() => {
+      if (this._inflightCheck === run) this._inflightCheck = null;
+    });
+    this._inflightCheck = run;
+    return run;
+  }
+
+  async _performCheckForUpdates(meta) {
 
     const latestApi = `https://api.github.com/repos/${meta.owner}/${meta.repo}/releases/latest`;
     const listApi = `https://api.github.com/repos/${meta.owner}/${meta.repo}/releases?per_page=1`;

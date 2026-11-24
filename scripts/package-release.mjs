@@ -23,7 +23,15 @@ function copyFiltered(src, dst, skipNames = new Set(['data', 'backups', 'node_mo
 
 function buildReleaseZip() {
   const manifest = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'plugin.json'), 'utf8'));
-  const version = String(manifest.version || '0.5.0').trim();
+  const pkg = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'package.json'), 'utf8'));
+  const version = String(manifest.version || '').trim();
+  const pkgVersion = String(pkg.version || '').trim();
+  if (!version) {
+    throw new Error('plugin.json is missing a valid version');
+  }
+  if (pkgVersion !== version) {
+    throw new Error(`Version mismatch: plugin.json (${version}) !== package.json (${pkgVersion})`);
+  }
   const distDir = path.join(REPO_ROOT, 'dist');
   fs.mkdirSync(distDir, { recursive: true });
   const outZip = path.join(distDir, `agy-anchor-wheel-v${version}.zip`);

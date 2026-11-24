@@ -130,8 +130,9 @@
       const vw = doc.defaultView?.innerWidth || 1200;
       const vh = doc.defaultView?.innerHeight || 800;
       const anchorRect = anchorPillEl.getBoundingClientRect();
-      const railW = Math.min(310, vw - 28);
-      const dir = st.expandDir || (vw - anchorRect.right >= Math.min(220, railW * 0.72) ? 'right' : 'left');
+      const railW = Math.min(310, vw - 24);
+      const isNarrow = vw <= 520;
+      const dir = isNarrow ? 'right' : st.expandDir || (vw - anchorRect.right >= Math.min(220, railW * 0.72) ? 'right' : 'left');
       st.railDir = dir;
 
       const rail = S.markNode(doc.createElement('div'));
@@ -139,9 +140,17 @@
       rail.setAttribute('data-dir', dir);
       rail.style.width = `${railW}px`;
 
-      let left = dir === 'right' ? anchorRect.right + 6 : anchorRect.left - railW - 6;
-      left = clamp(left, 10, vw - railW - 10);
-      const top = clamp(anchorRect.top - 4, 10, vh - 58);
+      let left;
+      let top;
+      if (isNarrow) {
+        left = clamp(Math.round((vw - railW) / 2), 10, vw - railW - 10);
+        const spaceBelow = vh - anchorRect.bottom - 14;
+        top = spaceBelow >= 50 ? anchorRect.bottom + 8 : clamp(anchorRect.top - 52, 10, vh - 58);
+      } else {
+        left = dir === 'right' ? anchorRect.right + 6 : anchorRect.left - railW - 6;
+        left = clamp(left, 10, vw - railW - 10);
+        top = clamp(anchorRect.top - 4, 10, vh - 58);
+      }
       rail.style.left = `${left}px`;
       rail.style.top = `${top}px`;
 
@@ -213,7 +222,10 @@
       const vw = doc.defaultView?.innerWidth || 1200;
       const vh = doc.defaultView?.innerHeight || 800;
 
-      // Determine safe horizontal fan direction so Antigravity right-edge pane never clips out of screen
+      // On narrow side-panes, dock sub-list cleanly above or below wheel so sectors stay unobstructed
+      const isNarrow = vw <= 520;
+      const listW = isNarrow ? Math.min(264, vw - 24) : Math.min(204, vw - 24);
+      const estH = Math.min(cat.items.length, 4) * 35 + 14;
       const stageAnchorX = st.cx + ux * (R_OUTER + 12) * st.scale;
       const stageAnchorY = st.cy + uy * (R_OUTER + 12) * st.scale;
       const roomRight = vw - stageAnchorX;
@@ -225,11 +237,24 @@
       sublist.className = 'aw-bi-sublist';
       sublist.setAttribute('data-dir', dir);
 
-      const listW = Math.min(204, vw - 24);
-      let left = dir === 'right' ? stageAnchorX + 4 : stageAnchorX - listW - 4;
-      left = clamp(left, 10, vw - listW - 10);
-      const estH = Math.min(cat.items.length, 4) * 34 + 12;
-      const top = clamp(stageAnchorY - estH / 2, 10, vh - estH - 12);
+      let left;
+      let top;
+      if (isNarrow) {
+        left = clamp(Math.round((vw - listW) / 2), 10, vw - listW - 10);
+        const wheelTop = st.cy - R_OUTER * st.scale;
+        const wheelBottom = st.cy + R_OUTER * st.scale;
+        const spaceAbove = wheelTop - 16;
+        const spaceBelow = vh - wheelBottom - 16;
+        if (spaceBelow >= estH || spaceBelow >= spaceAbove) {
+          top = clamp(wheelBottom + 10, 10, vh - estH - 10);
+        } else {
+          top = clamp(wheelTop - estH - 10, 10, vh - estH - 10);
+        }
+      } else {
+        left = dir === 'right' ? stageAnchorX + 4 : stageAnchorX - listW - 4;
+        left = clamp(left, 10, vw - listW - 10);
+        top = clamp(stageAnchorY - estH / 2, 10, vh - estH - 12);
+      }
       sublist.style.width = `${listW}px`;
       sublist.style.left = `${left}px`;
       sublist.style.top = `${top}px`;
@@ -260,7 +285,7 @@
         const more = S.markNode(doc.createElement('button'));
         more.type = 'button';
         more.className = 'aw-bi-more-pill';
-        more.innerHTML = `<span>折叠全部 (${cat.items.length - 3} 更多)</span>${S.ICONS.chevronRight}`;
+        more.innerHTML = `<span>展开其余 ${cat.items.length - 3} 项</span>${S.ICONS.chevronRight}`;
         more.addEventListener('mouseenter', () => {
           clearTimeout(closeHoverTimer);
           openRailForCategory(catIdx, more);
@@ -512,11 +537,15 @@
       st.parentCenterDeg = DIR_DEG[st.parentDirection || ctx.parentDirection || 'left'] ?? 270;
       st.childCenterDeg = (st.parentCenterDeg + 180) % 360;
       const count = Math.max(1, cats.length);
-      st.catStep = 164 / count;
-      st.catAngles = cats.map((_, i) => st.childCenterDeg - 82 + st.catStep * (i + 0.5));
+      const catSpan = count >= 7 ? 168 : 164;
+      st.catStep = catSpan / count;
+      st.catAngles = cats.map((_, i) => st.childCenterDeg - catSpan / 2 + st.catStep * (i + 0.5));
+      const density = count >= 7 ? 'dense' : count >= 5 ? 'compact' : 'normal';
+      const sectorGap = count >= 7 ? 1.4 : count >= 5 ? 1.8 : 2.2;
 
       const stage = S.markNode(doc.createElement('div'));
       stage.className = 'aw-bi-stage';
+      stage.setAttribute('data-density', density);
       stage.style.left = `${st.cx}px`;
       stage.style.top = `${st.cy}px`;
       stage.style.setProperty('--aw-wheel-scale', String(st.scale));
@@ -560,10 +589,10 @@
       labelsWrap.appendChild(pNode);
 
       cats.forEach((cat, i) => {
-        const a0 = st.childCenterDeg - 82 + i * st.catStep;
+        const a0 = st.childCenterDeg - catSpan / 2 + i * st.catStep;
         const a1 = a0 + st.catStep;
         const pathEl = doc.createElementNS(SVG_NS, 'path');
-        pathEl.setAttribute('d', sectorPath(CX, CY, R_INNER + 6, R_OUTER, a0, a1, 2.2));
+        pathEl.setAttribute('d', sectorPath(CX, CY, R_INNER + 6, R_OUTER, a0, a1, sectorGap));
         pathEl.setAttribute('class', 'aw-wheel-sector aw-bi-cat-arc');
         const nItems = cat.items?.length || 0;
         if (!nItems) pathEl.setAttribute('data-empty', '1');
@@ -576,14 +605,28 @@
         }
         svg.appendChild(pathEl);
 
-        const [lx, ly] = polar(CX, CY, (R_INNER + R_OUTER) * 0.56, st.catAngles[i]);
+        // Adaptive radial placement prevents collisions even with 8 custom categories + '其他' (9 sectors)
+        const labelRadius =
+          density === 'dense'
+            ? R_INNER + 6 + (R_OUTER - R_INNER - 6) * (i % 2 === 0 ? 0.36 : 0.72)
+            : density === 'compact'
+            ? (R_INNER + R_OUTER) * 0.58
+            : (R_INNER + R_OUTER) * 0.56;
+        const [lx, ly] = polar(CX, CY, labelRadius, st.catAngles[i]);
         const cNode = S.markNode(doc.createElement('div'));
         cNode.className = 'aw-wheel-node aw-stagger-in';
+        cNode.setAttribute('data-density', density);
         cNode.style.setProperty('--aw-i', String(i));
         cNode.style.left = `${lx.toFixed(1)}px`;
         cNode.style.top = `${ly.toFixed(1)}px`;
         cNode.style.opacity = nItems ? '1' : '0.45';
-        cNode.innerHTML = `${S.pickIconForCategory(cat)}<span class="aw-wheel-node-title">${S.esc(cat.label)}</span><span class="aw-wheel-node-meta">${nItems}</span>`;
+        if (density === 'dense') {
+          cNode.innerHTML = `<span class="aw-wheel-node-inline"><span class="aw-wheel-node-title">${S.esc(String(cat.label || '').slice(0, 3))}</span><span class="aw-wheel-node-meta">${nItems}</span></span>`;
+        } else if (density === 'compact') {
+          cNode.innerHTML = `${S.pickIconForCategory(cat)}<span class="aw-wheel-node-inline"><span class="aw-wheel-node-title">${S.esc(cat.label)}</span><span class="aw-wheel-node-meta">${nItems}</span></span>`;
+        } else {
+          cNode.innerHTML = `${S.pickIconForCategory(cat)}<span class="aw-wheel-node-title">${S.esc(cat.label)}</span><span class="aw-wheel-node-meta">${nItems}</span>`;
+        }
         labelsWrap.appendChild(cNode);
       });
 
@@ -680,8 +723,9 @@
       if (persistOnScroll && !holdMode) {
         backdropEl.setAttribute('data-aw-nonmodal', '1');
       }
-      if (options.theme && options.theme !== 'auto') {
-        backdropEl.setAttribute('data-aw-theme', options.theme);
+      const resolvedTheme = options.getTheme ? options.getTheme() : options.theme;
+      if (resolvedTheme && resolvedTheme !== 'auto') {
+        backdropEl.setAttribute('data-aw-theme', resolvedTheme);
       }
 
       backdropEl.addEventListener('click', (e) => {

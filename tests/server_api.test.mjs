@@ -3,7 +3,13 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { startServer } from '../sidecars/anchor_wheel/main.mjs';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const PLUGIN_VERSION = JSON.parse(
+  fs.readFileSync(path.resolve(__dirname, '..', 'plugin.json'), 'utf8')
+).version;
 
 test('standalone HTTP API serves UI assets, session ops, backlinks, and encoding inspect/read', async () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aw-api-'));
@@ -24,13 +30,13 @@ test('standalone HTTP API serves UI assets, session ops, backlinks, and encoding
     path.join(dataDir, 'update_cache.json'),
     JSON.stringify({
       ok: true,
-      currentVersion: '0.5.0',
-      latestVersion: '0.5.0',
-      tagName: 'v0.5.0',
+      currentVersion: PLUGIN_VERSION,
+      latestVersion: PLUGIN_VERSION,
+      tagName: `v${PLUGIN_VERSION}`,
       updateAvailable: false,
       repoUrl: 'https://github.com/Curelove/agy-anchor-wheel',
       releasesUrl: 'https://github.com/Curelove/agy-anchor-wheel/releases',
-      releaseUrl: 'https://github.com/Curelove/agy-anchor-wheel/releases/tag/v0.5.0',
+      releaseUrl: `https://github.com/Curelove/agy-anchor-wheel/releases/tag/v${PLUGIN_VERSION}`,
       checkedAt: Date.now(),
     }),
     'utf8'
@@ -56,13 +62,35 @@ test('standalone HTTP API serves UI assets, session ops, backlinks, and encoding
 
     const statusRes = await (await fetch(`${base}/api/status`)).json();
     assert.equal(statusRes.ok, true);
-    assert.equal(statusRes.version, '0.5.0');
+    assert.equal(statusRes.version, PLUGIN_VERSION);
     assert.ok(Array.isArray(statusRes.compatibility?.testedAntigravityVersions));
 
     const updRes = await (await fetch(`${base}/api/update/check`)).json();
     assert.equal(updRes.ok, true);
-    assert.equal(updRes.latestVersion, '0.5.0');
+    assert.equal(updRes.latestVersion, PLUGIN_VERSION);
     assert.equal(updRes.fromCache, true);
+
+    // Invalid JSON returns 400 cleanly
+    const badJsonRes = await fetch(`${base}/api/settings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{bad json',
+    });
+    assert.equal(badJsonRes.status, 400);
+
+    // Launcher generator writes pure 7-bit ASCII scripts on Windows
+    const launchRes = await (
+      await fetch(`${base}/api/launcher/generate`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+    ).json();
+    assert.equal(launchRes.ok, true);
+    if (process.platform === 'win32') {
+      const cmdRaw = fs.readFileSync(launchRes.launcherPath, 'utf8');
+      const vbsRaw = fs.readFileSync(launchRes.vbsPath, 'utf8');
+      assert.equal(/^[\x00-\x7F]*$/.test(cmdRaw), true);
+      assert.equal(/^[\x00-\x7F]*$/.test(vbsRaw), true);
+      assert.ok(cmdRaw.includes('%~dp0'));
+      assert.ok(vbsRaw.includes('%LOCALAPPDATA%'));
+    }
 
     const readGbk = await (
       await fetch(`${base}/api/file/read`, {

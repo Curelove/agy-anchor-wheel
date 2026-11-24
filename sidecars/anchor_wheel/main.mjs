@@ -49,16 +49,36 @@ function parseCliArgs(argv) {
   return args;
 }
 
+const MAX_REQUEST_BODY_BYTES = 2 * 1024 * 1024;
+
+function resolveAllowedOrigin(req) {
+  const origin = String(req?.headers?.origin || '').trim();
+  if (!origin) return '';
+  if (origin === 'null') return 'null';
+  if (/^(?:https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?|vscode-file:\/\/[^\s]+|app:\/\/[^\s]+|file:\/\/.*)$/i.test(origin)) {
+    return origin;
+  }
+  return '';
+}
+
+function applySafeCorsHeaders(req, res) {
+  const allowed = resolveAllowedOrigin(req);
+  if (allowed) {
+    res.setHeader('Access-Control-Allow-Origin', allowed);
+    res.setHeader('Vary', 'Origin');
+  }
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Sidecar-Token');
+  res.setHeader('Access-Control-Max-Age', '600');
+}
+
 function attachCorsAndPreflight(server) {
   if (!server || typeof server.listeners !== 'function') return;
   const existing = server.listeners('request');
   if (!existing.length) return;
   server.removeAllListeners('request');
   server.on('request', (req, res) => {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Sidecar-Token');
-    res.setHeader('Access-Control-Max-Age', '600');
+    applySafeCorsHeaders(req, res);
     if (String(req.method || '').toUpperCase() === 'OPTIONS') {
       res.writeHead(204);
       res.end();
@@ -151,6 +171,9 @@ export async function startServer(options = {}) {
       async stop() {
         clearTimeout(bgUpdateTimer);
         await cdpBridge?.stop?.();
+        previewService.dispose();
+        backlinkIndex.dispose();
+        stateStore.flush();
         await app.close();
       },
     };
@@ -169,9 +192,7 @@ export async function startServer(options = {}) {
   });
 
   const server = http.createServer((req, res) => {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Sidecar-Token');
+    applySafeCorsHeaders(req, res);
     if (String(req.method || '').toUpperCase() === 'OPTIONS') {
       res.writeHead(204);
       res.end();
@@ -187,13 +208,42 @@ export async function startServer(options = {}) {
     }
 
     const handler = routes.get(routeKey);
-    let body = '';
-    req.on('data', (chunk) => { body += chunk; });
+    const chunks = [];
+    let bodyBytes = 0;
+    let tooLarge = false;
+    req.on('data', (chunk) => {
+      if (tooLarge) return;
+      bodyBytes += chunk.length;
+      if (bodyBytes > MAX_REQUEST_BODY_BYTES) {
+        tooLarge = true;
+        res.writeHead(413, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ ok: false, error: 'Request payload too large' }));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
     req.on('end', async () => {
+      if (tooLarge) return;
       try {
         const data = {};
         for (const [k, v] of url.searchParams.entries()) data[k] = v;
-        if (body) Object.assign(data, JSON.parse(body));
+        if (chunks.length) {
+          const body = Buffer.concat(chunks).toString('utf8');
+          if (body.trim()) {
+            let parsed;
+            try {
+              parsed = JSON.parse(body);
+            } catch {
+              res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' });
+              res.end(JSON.stringify({ ok: false, error: 'Invalid JSON request body' }));
+              return;
+            }
+            if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+              Object.assign(data, parsed);
+            }
+          }
+        }
         const out = await handler(data);
         if (out && typeof out === 'object' && out.contentType && out.body !== undefined) {
           res.writeHead(out.status || 200, { 'Content-Type': out.contentType, ...(out.headers || {}) });
@@ -223,6 +273,9 @@ export async function startServer(options = {}) {
     async stop() {
       clearTimeout(bgUpdateTimer);
       await cdpBridge?.stop?.();
+      previewService.dispose();
+      backlinkIndex.dispose();
+      stateStore.flush();
       await new Promise((resolve) => server.close(() => resolve()));
     },
   };

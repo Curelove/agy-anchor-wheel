@@ -44,6 +44,7 @@
 
   const S = window.AnchorWheelNavShared;
   const ICONS = window.AnchorWheelUI.ICONS;
+  let lastHostPrismTheme = '';
   const previewOpts = {
     document,
     mountRoot: document.body,
@@ -52,12 +53,17 @@
     getDelayMs: () => state.settings?.hoverPreviewDelayMs ?? 250,
     getAnimated: () => state.settings?.videoPreviewAnimated !== false,
     isPreviewEnabled: () => state.settings?.hoverPreviewEnabled !== false,
+    getHotkey: () => state.settings?.tabCustomHotkey || 'Tab',
     standaloneRawUrl: (p) => `/api/file/raw?path=${encodeURIComponent(p)}`,
   };
   const wheel = window.AnchorWheelUI.createRadialWheel({ document, mountRoot: document.body });
   const bilateral = window.AnchorWheelBilateral.createBilateralWheel(previewOpts);
   const aeTree = window.AnchorWheelTree.createAeTree(previewOpts);
-  const settingsModal = window.AnchorWheelSettingsModal.createSettingsModal({ document, mountRoot: document.body });
+  const settingsModal = window.AnchorWheelSettingsModal.createSettingsModal({
+    document,
+    mountRoot: document.body,
+    resolveHostTheme: () => lastHostPrismTheme,
+  });
 
   function normKey(p) {
     return String(p || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
@@ -71,7 +77,8 @@
   function applyThemeFromSettings() {
     const t = state.settings?.theme || 'auto';
     if (t === 'auto') {
-      document.documentElement.removeAttribute('data-aw-theme');
+      if (lastHostPrismTheme) document.documentElement.setAttribute('data-aw-theme', lastHostPrismTheme);
+      else document.documentElement.removeAttribute('data-aw-theme');
     } else {
       document.documentElement.setAttribute('data-aw-theme', t);
     }
@@ -80,10 +87,11 @@
   window.addEventListener('message', (ev) => {
     if (ev.data?.type === 'ag-prism-workbench-sync') {
       const p = ev.data;
+      const mapped = p.theme === 'light'
+        ? (p.lightPreset === 'alabaster' ? 'alabaster' : 'crystal')
+        : (p.palette === 'warm' || p.palette === 'claude' ? 'warm' : 'obsidian');
+      lastHostPrismTheme = mapped;
       if (state.settings?.theme === 'auto') {
-        const mapped = p.theme === 'light'
-          ? (p.lightPreset === 'alabaster' ? 'alabaster' : 'crystal')
-          : (p.palette === 'warm' || p.palette === 'claude' ? 'warm' : 'obsidian');
         document.documentElement.setAttribute('data-aw-theme', mapped);
       }
     }
@@ -834,7 +842,10 @@
           if (grpId) {
             void adoptAndOpen(resolved.target, grpId, { openInForeground: false });
           } else {
-            state.tabs.push({ path: resolved.target, title: baseName(resolved.target) });
+            const targetKey = normKey(resolved.target);
+            if (!state.tabs.some((t) => normKey(t.path) === targetKey)) {
+              state.tabs.push({ path: resolved.target, title: baseName(resolved.target) });
+            }
             renderTabsBar();
             showToast(`已后台新建标签：${baseName(resolved.target)}`);
           }
@@ -879,7 +890,7 @@
             (f) => `
           <button type="button" class="aw-link-row" data-open-path="${window.AnchorWheelMarkdown.esc(f.path)}">
             <div class="aw-link-row-top">
-              <span class="aw-link-row-title">${window.AnchorWheelMarkdown.esc(f.title || f.name)}</span>
+              <span class="aw-link-row-title" style="display:inline-flex;align-items:center;gap:6px">${S.pickIconForItem(f.path)}<span style="overflow:hidden;text-overflow:ellipsis">${window.AnchorWheelMarkdown.esc(f.title || f.name)}</span></span>
               <span class="aw-link-row-badge">${f.isArtifact ? '会话报告' : '工作区'}${f.outlinkCount ? ` · ${f.outlinkCount} 链` : ''}</span>
             </div>
             <div class="aw-link-row-snippet">${window.AnchorWheelMarkdown.esc(f.path)}</div>
@@ -895,7 +906,7 @@
             <img src="/logo.svg" alt="AnchorWheel Logo" />
             <div>
               <h1 class="aw-hero-title">锚点轮盘 · AnchorWheel</h1>
-              <p class="aw-hero-sub">点击 MD 链接默认不覆盖原页 · 拖到顶栏新建标签 · 按住中键或点母页徽章呼出轮盘 · 双端状态：${cdpOk ? '原生侧栏增强已在线' : '独立工作台运行中'}</p>
+              <p class="aw-hero-sub">点击 MD 链接默认不覆盖原页，按住中键或按 Tab 随时呼出导览（${cdpOk ? '原生侧栏增强已在线' : '独立工作台运行中'}）</p>
             </div>
           </div>
           <div class="aw-open-bar">
@@ -1220,7 +1231,7 @@
       evicted: state.session?.recentlyEvicted || [],
       cdpStatus: state.status?.cdp || { connected: false },
       versionInfo: {
-        version: state.status?.version || '0.5.0',
+        version: state.status?.version || '',
         repoUrl: state.status?.repoUrl || 'https://github.com/Curelove/agy-anchor-wheel',
         releasesUrl: state.status?.releasesUrl || 'https://github.com/Curelove/agy-anchor-wheel/releases',
       },

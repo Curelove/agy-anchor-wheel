@@ -1,4 +1,4 @@
-// AnchorWheel Native Mode 1 Enhancer v0.5.0 (injected via Zero-ASAR CDP)
+// AnchorWheel Native Mode 1 Enhancer (injected via Zero-ASAR CDP)
 // Zero React DOM mutation: mounts independent `[data-aw-owned="1"]` Companion Strip & Portals,
 // provides dual-channel navigation (Hold Middle -> Bilateral Wheel; Tab -> Persistent AE Tree),
 // built-in GitHub Release update checker + AGY compatibility diagnostics,
@@ -26,6 +26,7 @@
   const pendingRpc = new Map();
   let settings = BOOT.settings || {};
   let session = null;
+  let lastConversationId = '';
   let localHistory = { entries: [], index: -1 };
   let activeFilePath = '';
   let activeFileLinks = { backlinks: [], outlinks: [] };
@@ -37,7 +38,11 @@
   let activePopoverName = '';
   let dragPayload = null;
   let domObserver = null;
+  let obsThrottle = null;
   let syncTimer = null;
+  let bgUpdateTimer = null;
+  let suppressAuxTimer = null;
+  let suppressCtxTimer = null;
   let lastObservedTabKey = '';
   let wheelInstance = null;
   let bilateralInstance = null;
@@ -47,13 +52,26 @@
   let suppressNextAuxClick = false;
   let suppressNextContextMenu = false;
   let bootMeta = {
-    version: '0.5.0',
-    repoUrl: 'https://github.com/Curelove/agy-anchor-wheel',
-    releasesUrl: 'https://github.com/Curelove/agy-anchor-wheel/releases',
-    compatibility: null,
+    version: BOOT.version || '',
+    repoUrl: BOOT.repoUrl || 'https://github.com/Curelove/agy-anchor-wheel',
+    releasesUrl: BOOT.releasesUrl || 'https://github.com/Curelove/agy-anchor-wheel/releases',
+    compatibility: BOOT.compatibility || null,
   };
   let latestUpdateInfo = null;
   let bgUpdateAttempted = false;
+
+  function applyThemeAttr(el) {
+    if (!el || !el.setAttribute) return;
+    const t = settings?.theme || 'auto';
+    if (t && t !== 'auto') el.setAttribute('data-aw-theme', t);
+    else el.removeAttribute('data-aw-theme');
+  }
+
+  function applyThemeToNativeNodes() {
+    applyThemeAttr(D.getElementById(STRIP_ID));
+    applyThemeAttr(D.getElementById(PORTAL_ID));
+    applyThemeAttr(D.getElementById(OVERLAY_ID));
+  }
 
   function markOwned(el) {
     return S ? S.markNode(el) : el;
@@ -302,9 +320,16 @@
   }
 
   function getRightPaneColumn() {
-    const aux = D.querySelector('[data-testid="aux-pane-split"]');
-    if (!aux || !aux.lastElementChild) return null;
-    return aux.lastElementChild.querySelector('.flex.flex-col.browser-hole-ancestor') || null;
+    const aux = D.querySelector('[data-testid="aux-pane-split"], [data-testid="side-panel-split"]');
+    if (aux && aux.lastElementChild) {
+      const hit =
+        aux.lastElementChild.querySelector('.flex.flex-col.browser-hole-ancestor') ||
+        aux.lastElementChild.querySelector('[data-testid="side-panel-column"]') ||
+        (aux.lastElementChild.querySelector('.agy-aux-tab')?.closest?.('.flex.flex-col') || null);
+      if (hit) return hit;
+    }
+    const anyTab = D.querySelector('.agy-aux-tab');
+    return anyTab ? anyTab.closest('.flex.flex-col.browser-hole-ancestor') || anyTab.closest('.flex.flex-col') : null;
   }
 
   function getNativeTabBar(col) {
@@ -576,7 +601,7 @@
       session,
       settings,
       activePath: activeFilePath,
-      activeLinks,
+      activeLinks: activeFileLinks,
       openTabs,
       scopeOverride,
     });
@@ -604,14 +629,17 @@
   }
 
   function ensureSharedInstances() {
+    const getTheme = () => settings?.theme || 'auto';
+    const getHotkey = () => settings?.tabCustomHotkey || 'Tab';
     if (!wheelInstance && W.AnchorWheelUI) {
-      wheelInstance = W.AnchorWheelUI.createRadialWheel({ document: D, mountRoot: D.body });
+      wheelInstance = W.AnchorWheelUI.createRadialWheel({ document: D, mountRoot: D.body, getTheme });
     }
     if (!bilateralInstance && W.AnchorWheelBilateral) {
       bilateralInstance = W.AnchorWheelBilateral.createBilateralWheel({
         document: D,
         mountRoot: D.body,
         fetchPreview,
+        getTheme,
         getDelayMs: () => settings.hoverPreviewDelayMs ?? 250,
         getAnimated: () => settings.videoPreviewAnimated !== false,
         isPreviewEnabled: () => settings.hoverPreviewEnabled !== false,
@@ -622,6 +650,8 @@
         document: D,
         mountRoot: D.body,
         fetchPreview,
+        getTheme,
+        getHotkey,
         getDelayMs: () => settings.hoverPreviewDelayMs ?? 250,
         getAnimated: () => settings.videoPreviewAnimated !== false,
         isPreviewEnabled: () => settings.hoverPreviewEnabled !== false,
@@ -871,6 +901,7 @@
       portal.id = PORTAL_ID;
       D.body.appendChild(portal);
     }
+    applyThemeAttr(portal);
     return portal;
   }
 
@@ -1034,9 +1065,9 @@
 
     pop.innerHTML = `
       <div class="aw-popover-head">
-        <div style="display:flex;gap:4px;flex:1">
-          <button type="button" class="aw-tray-btn" data-aw-ltab="backlinks" data-active="${tab === 'backlinks' ? '1' : '0'}">反向引用 (${backInit.length})</button>
-          <button type="button" class="aw-tray-btn" data-aw-ltab="outlinks" data-active="${tab === 'outlinks' ? '1' : '0'}">本文出链 (${outInit.length})</button>
+        <div class="aw-tray" style="flex:1">
+          <button type="button" class="aw-tray-btn" style="flex:1" data-aw-ltab="backlinks" data-active="${tab === 'backlinks' ? '1' : '0'}">反向引用 (${backInit.length})</button>
+          <button type="button" class="aw-tray-btn" style="flex:1" data-aw-ltab="outlinks" data-active="${tab === 'outlinks' ? '1' : '0'}">本文出链 (${outInit.length})</button>
         </div>
         <button type="button" class="aw-tray-btn" id="aw-np-close">${S.ICONS.close}</button>
       </div>
@@ -1160,6 +1191,7 @@
     const overlay = existing || markOwned(D.createElement('div'));
     overlay.id = OVERLAY_ID;
     overlay.className = 'aw-encoding-overlay';
+    applyThemeAttr(overlay);
     const isMd = /\.(md|mdx)$/i.test(activeFilePath);
     const bodyHtml = isMd
       ? `<article class="aw-md-doc">${W.AnchorWheelMarkdown.renderMarkdown(res.text)}</article>`
@@ -1219,7 +1251,7 @@
       settings,
       evicted: session?.recentlyEvicted || [],
       versionInfo: {
-        version: bootMeta.version || '0.5.0',
+        version: bootMeta.version || '',
         repoUrl: bootMeta.repoUrl,
         releasesUrl: bootMeta.releasesUrl,
       },
@@ -1242,6 +1274,7 @@
           settings = { ...settings, ...next };
         }
         navScopeOverride = '';
+        applyThemeToNativeNodes();
         applyNonDestructiveTabFolding();
         cachedNavContext = await fetchNavContext();
         renderStrip();
@@ -1268,6 +1301,7 @@
       strip.className = 'aw-native-strip';
       col.insertBefore(strip, contentEl);
     }
+    applyThemeAttr(strip);
 
     const hist = getEffectiveHistory();
     const canBack = hist.index > 0;
@@ -1435,6 +1469,20 @@
 
   async function refreshState() {
     if (destroyed) return;
+    const curCid = resolveConversationId();
+    const switchedConv = Boolean(lastConversationId && curCid !== lastConversationId);
+    if (switchedConv) {
+      // Isolate session state cleanly when user switches Antigravity conversations
+      session = null;
+      cachedNavContext = null;
+      activeFileLinks = { backlinks: [], outlinks: [] };
+      activeEncodingInfo = null;
+      localHistory = { entries: [], index: -1 };
+      closeAllNavigators();
+      closePopover();
+    }
+    lastConversationId = curCid;
+
     const { browserCtx, reduxStore } = discoverHostBridge();
     const { pane } = getPaneSlice(reduxStore, browserCtx);
     const curFile = getActiveNativeFilePath(pane);
@@ -1451,10 +1499,13 @@
           releasesUrl: bootRes.releasesUrl || bootMeta.releasesUrl,
           compatibility: bootRes.compatibility || bootMeta.compatibility,
         };
+        applyThemeToNativeNodes();
         if (bootRes.updateInfo) latestUpdateInfo = bootRes.updateInfo;
         if (settings.autoCheckUpdates !== false && !bgUpdateAttempted) {
           bgUpdateAttempted = true;
-          setTimeout(async () => {
+          clearTimeout(bgUpdateTimer);
+          bgUpdateTimer = setTimeout(async () => {
+            bgUpdateTimer = null;
             if (destroyed) return;
             const u = await callRpc('checkUpdate', { force: false }, 9000);
             if (!destroyed && u && (u.ok || u.error)) {
@@ -1709,10 +1760,12 @@
     if (midMode === 'off') return false;
     if (origin.button === 1) {
       suppressNextAuxClick = true;
-      setTimeout(() => { suppressNextAuxClick = false; }, 160);
+      clearTimeout(suppressAuxTimer);
+      suppressAuxTimer = setTimeout(() => { suppressNextAuxClick = false; suppressAuxTimer = null; }, 160);
     } else if (origin.button === 2) {
       suppressNextContextMenu = true;
-      setTimeout(() => { suppressNextContextMenu = false; }, 160);
+      clearTimeout(suppressCtxTimer);
+      suppressCtxTimer = setTimeout(() => { suppressNextContextMenu = false; suppressCtxTimer = null; }, 160);
     }
     if (midMode === 'classic_wheel') {
       const target = getWheelTargetGroup();
@@ -1880,7 +1933,6 @@
 
     ensureStoreSubscription();
 
-    let obsThrottle = null;
     domObserver = new MutationObserver(() => {
       if (destroyed || obsThrottle) return;
       obsThrottle = setTimeout(() => {
@@ -1907,11 +1959,14 @@
   }
 
   W.__agAnchorWheel = {
-    version: '0.5.0',
+    get version() {
+      return bootMeta.version || BOOT.version || '';
+    },
     getDebugState() {
       const col = getRightPaneColumn();
       return {
-        version: '0.5.0',
+        version: bootMeta.version || BOOT.version || '',
+        conversationId: lastConversationId || resolveConversationId(),
         activeFilePath,
         activePopoverName,
         outlinkCount: activeFileLinks.outlinks?.length || 0,
@@ -1926,7 +1981,10 @@
     },
     onBackendSync(payload) {
       if (destroyed || !payload) return;
-      if (payload.settings) settings = payload.settings;
+      if (payload.settings) {
+        settings = payload.settings;
+        applyThemeToNativeNodes();
+      }
       if (payload.session && (!payload.conversationId || payload.conversationId === resolveConversationId())) {
         session = payload.session;
       }
@@ -1939,6 +1997,22 @@
       destroyed = true;
       clearTimeout(syncTimer);
       clearTimeout(holdTimer);
+      clearTimeout(obsThrottle);
+      clearTimeout(bgUpdateTimer);
+      clearTimeout(suppressAuxTimer);
+      clearTimeout(suppressCtxTimer);
+      syncTimer = null;
+      holdTimer = null;
+      obsThrottle = null;
+      bgUpdateTimer = null;
+      suppressAuxTimer = null;
+      suppressCtxTimer = null;
+      for (const rec of pendingRpc.values()) {
+        clearTimeout(rec.timer);
+        try { rec.resolve({ ok: false, destroyed: true }); } catch {}
+      }
+      pendingRpc.clear();
+      try { delete W.__agAnchorWheelResolve; } catch {}
       try { storeUnsubscribe?.(); } catch {}
       storeUnsubscribe = null;
       domObserver?.disconnect?.();

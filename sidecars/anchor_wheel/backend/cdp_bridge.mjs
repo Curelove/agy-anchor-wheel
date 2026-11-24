@@ -158,10 +158,28 @@ class MiniCdpSession {
   }
 
   close() {
+    if (this.closed) return;
     this.closed = true;
+    for (const req of this.pending.values()) {
+      clearTimeout(req.timer);
+      req.reject(new Error('CDP closed'));
+    }
+    this.pending.clear();
+    this.listeners.clear();
     try { this.ws.close(); } catch {}
   }
 }
+
+const BUNDLE_SOURCE_FILES = Object.freeze([
+  ['shared', 'wheel_styles.css'],
+  ['shared', 'nav_shared.js'],
+  ['shared', 'radial_wheel.js'],
+  ['shared', 'bilateral_wheel.js'],
+  ['shared', 'ae_tree.js'],
+  ['shared', 'settings_modal.js'],
+  ['shared', 'markdown_render.js'],
+  ['native', 'native_enhancer.js'],
+]);
 
 function safeJson(val) {
   return JSON.stringify(val ?? null).replace(/[<>/\u2028\u2029]/g, (ch) =>
@@ -179,15 +197,35 @@ export class CdpBridge {
     this.sessions = new Map(); // target.id -> entry
     this.timer = null;
     this.running = false;
+    this.tickInFlight = false;
     this.currentPort = null;
     this.lastError = '';
-    this.lastBundleHash = '';
+    this.lastSourceFingerprint = '';
+    this._cachedBundle = null;
+    this._cachedBundleFingerprint = '';
+  }
+
+  computeSourceFingerprint() {
+    const parts = [];
+    for (const segs of BUNDLE_SOURCE_FILES) {
+      const p = path.join(SIDECAR_ROOT, ...segs);
+      try {
+        const st = fs.statSync(p);
+        parts.push(`${segs.join('/')}:${st.mtimeMs}:${st.size}`);
+      } catch {
+        parts.push(`${segs.join('/')}:missing`);
+      }
+    }
+    return parts.join('|');
   }
 
   computeBundle() {
+    const fp = this.computeSourceFingerprint();
     const bundle = this.buildInjectBundle();
-    const hash = crypto.createHash('sha256').update(bundle).digest('hex');
-    return { bundle, hash };
+    const hash = crypto.createHash('sha256').update(fp).digest('hex');
+    this._cachedBundle = bundle;
+    this._cachedBundleFingerprint = fp;
+    return { bundle, hash, fingerprint: fp };
   }
 
   buildInjectBundle() {
@@ -199,10 +237,15 @@ export class CdpBridge {
     const settingsModalJs = fs.readFileSync(path.join(SIDECAR_ROOT, 'shared', 'settings_modal.js'), 'utf8');
     const mdJs = fs.readFileSync(path.join(SIDECAR_ROOT, 'shared', 'markdown_render.js'), 'utf8');
     const nativeJs = fs.readFileSync(path.join(SIDECAR_ROOT, 'native', 'native_enhancer.js'), 'utf8');
+    const meta = this.updateService?.getPluginMeta?.() || null;
 
     const bootConfig = {
       settings: this.stateStore.getSettings(),
       wheelCss,
+      version: meta?.version || '0.0.0',
+      repoUrl: meta?.repoUrl || 'https://github.com/Curelove/agy-anchor-wheel',
+      releasesUrl: meta?.releasesUrl || 'https://github.com/Curelove/agy-anchor-wheel/releases',
+      compatibility: meta ? { ...meta.compatibility, localAntigravity: meta.localAntigravity } : null,
     };
 
     return [
@@ -279,7 +322,7 @@ export class CdpBridge {
       case 'getBoot': {
         const meta = this.updateService
           ? this.updateService.getPluginMeta()
-          : { version: '0.5.0', repoUrl: 'https://github.com/Curelove/agy-anchor-wheel', releasesUrl: 'https://github.com/Curelove/agy-anchor-wheel/releases', compatibility: {}, localAntigravity: null };
+          : { version: '0.0.0', repoUrl: 'https://github.com/Curelove/agy-anchor-wheel', releasesUrl: 'https://github.com/Curelove/agy-anchor-wheel/releases', compatibility: {}, localAntigravity: null };
         return {
           ok: true,
           version: meta.version,
@@ -322,11 +365,14 @@ export class CdpBridge {
         return { ok: false, error: `Unknown op: ${op}` };
       }
       case 'getNavContext': {
+        let changed = false;
         if (Array.isArray(req.workspaceRoots) && req.workspaceRoots.length) {
-          this.backlinkIndex.updateConfig({ workspaceRoots: req.workspaceRoots });
+          changed = this.backlinkIndex.updateConfig({ workspaceRoots: req.workspaceRoots });
         }
-        if (Date.now() - this.backlinkIndex.lastScanMs > 15000) {
+        if (changed || this.backlinkIndex.lastScanMs === 0) {
           this.backlinkIndex.rescan({ force: false });
+        } else {
+          this.backlinkIndex.scheduleBackgroundRescan();
         }
         return {
           ok: true,
@@ -350,21 +396,26 @@ export class CdpBridge {
       }
       case 'updateSettings': {
         const next = this.stateStore.updateSettings(req.settings || {});
-        this.backlinkIndex.updateConfig({
+        const cfgChanged = this.backlinkIndex.updateConfig({
           extraScanDirs: next.extraScanDirs,
           scanWorkspace: next.scanWorkspace,
           scanArtifacts: next.scanArtifacts,
         });
-        this.backlinkIndex.rescan({ force: false });
+        if (cfgChanged) {
+          this.backlinkIndex.scheduleBackgroundRescan({ force: false });
+        }
         this.pushSync({ settings: next });
         return { ok: true, settings: next };
       }
       case 'getBacklinks': {
+        let changed = false;
         if (Array.isArray(req.workspaceRoots) && req.workspaceRoots.length) {
-          this.backlinkIndex.updateConfig({ workspaceRoots: req.workspaceRoots });
+          changed = this.backlinkIndex.updateConfig({ workspaceRoots: req.workspaceRoots });
         }
-        if (Date.now() - this.backlinkIndex.lastScanMs > 15000) {
+        if (changed || this.backlinkIndex.lastScanMs === 0) {
           this.backlinkIndex.rescan({ force: false });
+        } else {
+          this.backlinkIndex.scheduleBackgroundRescan();
         }
         return { ok: true, ...this.backlinkIndex.getLinksForFile(req.path || '') };
       }
@@ -463,8 +514,8 @@ export class CdpBridge {
     }
 
     await session.send('Runtime.addBinding', { name: AW_BINDING }).catch(() => {});
-    const { bundle, hash } = this.computeBundle();
-    this.lastBundleHash = hash;
+    const { bundle, fingerprint } = this.computeBundle();
+    this.lastSourceFingerprint = fingerprint;
     const scriptRes = await session
       .send('Page.addScriptToEvaluateOnNewDocument', { source: bundle })
       .catch(() => null);
@@ -490,49 +541,57 @@ export class CdpBridge {
   }
 
   async tick() {
-    const port = readDevToolsPort(this.portFilePath);
-    if (!port) {
-      this.currentPort = null;
-      this.lastError = 'DevToolsActivePort not found';
-      return;
-    }
-    this.currentPort = port;
-    let pages;
+    if (this.tickInFlight) return;
+    this.tickInFlight = true;
     try {
-      const res = await fetch(`http://127.0.0.1:${port}/json/list`, {
-        signal: AbortSignal.timeout(2000),
-      });
-      pages = await res.json();
-    } catch {
-      this.lastError = `Port ${port} unreachable`;
-      return;
-    }
-
-    const eligible = (Array.isArray(pages) ? pages : []).filter(isEligibleAntigravityTarget);
-    const eligibleIds = new Set(eligible.map((t) => t.id));
-    for (const [id, entry] of this.sessions.entries()) {
-      if (!eligibleIds.has(id)) {
-        try { entry.session.close(); } catch {}
-        this.sessions.delete(id);
+      const port = readDevToolsPort(this.portFilePath);
+      if (!port) {
+        this.currentPort = null;
+        this.lastError = 'DevToolsActivePort not found';
+        return;
       }
-    }
-
-    for (const target of eligible) {
-      if (this.sessions.has(target.id)) continue;
+      this.currentPort = port;
+      let pages;
       try {
-        await this._attachTarget(target);
-        this.lastError = '';
-      } catch (err) {
-        this.lastError = String(err?.message || err);
+        const res = await fetch(`http://127.0.0.1:${port}/json/list`, {
+          signal: AbortSignal.timeout(2000),
+        });
+        pages = await res.json();
+      } catch {
+        this.lastError = `Port ${port} unreachable`;
+        return;
       }
-    }
 
-    if (this.sessions.size > 0) {
-      const { bundle, hash } = this.computeBundle();
-      if (hash !== this.lastBundleHash) {
-        this.lastBundleHash = hash;
-        await this._hotReloadSessions(bundle);
+      const eligible = (Array.isArray(pages) ? pages : []).filter(isEligibleAntigravityTarget);
+      const eligibleIds = new Set(eligible.map((t) => t.id));
+      for (const [id, entry] of this.sessions.entries()) {
+        if (!eligibleIds.has(id)) {
+          try { entry.session.close(); } catch {}
+          this.sessions.delete(id);
+        }
       }
+
+      for (const target of eligible) {
+        if (this.sessions.has(target.id)) continue;
+        try {
+          await this._attachTarget(target);
+          this.lastError = '';
+        } catch (err) {
+          this.lastError = String(err?.message || err);
+        }
+      }
+
+      // Lightweight stat-only fingerprint check: zero disk reads unless source files actually changed
+      if (this.sessions.size > 0) {
+        const fp = this.computeSourceFingerprint();
+        if (fp !== this.lastSourceFingerprint) {
+          const { bundle } = this.computeBundle();
+          this.lastSourceFingerprint = fp;
+          await this._hotReloadSessions(bundle);
+        }
+      }
+    } finally {
+      this.tickInFlight = false;
     }
   }
 }

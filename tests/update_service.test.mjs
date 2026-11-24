@@ -124,7 +124,7 @@ test('UpdateService checks latest GitHub release, caches result, and handles off
     assert.equal(failed.ok, false);
     assert.ok(failed.error.includes('ETIMEDOUT'));
 
-    // Fallback to releases.atom when api.github.com returns HTTP 403 rate limit!
+    // Fallback to releases.atom when api.github.com returns HTTP 403 rate limit (including double-encoded HTML entities!)
     const sampleAtom = `<?xml version="1.0" encoding="UTF-8"?>
 <feed xmlns="http://www.w3.org/2005/Atom">
   <title>Release notes from agy-anchor-wheel</title>
@@ -132,13 +132,34 @@ test('UpdateService checks latest GitHub release, caches result, and handles off
     <id>tag:github.com,2008:Repository/12345/v0.5.0</id>
     <updated>2026-11-24T03:05:00Z</updated>
     <link rel="alternate" type="text/html" href="https://github.com/Curelove/agy-anchor-wheel/releases/tag/v0.5.0"/>
-    <title>v0.5.0 — 修复悬停预览卡死残留</title>
-    <content type="html">&lt;!-- aw-compat: agy=2.34.x --&gt;&lt;p&gt;修复预览残留，适配 Antigravity 2.34.0&lt;/p&gt;</content>
+    <title>v0.5.0 — 修复悬停预览卡死 &amp;amp; 适配 Node.js &amp;gt;= 22</title>
+    <content type="html">&lt;!-- aw-compat: agy=2.34.x --&gt;&lt;p&gt;修复预览残留，适配 Antigravity 2.34.0（本地需 Node.js &amp;gt;= 22 &amp;amp; &amp;quot;Zero-ASAR&amp;quot;）&lt;/p&gt;</content>
   </entry>
 </feed>`;
     const parsedAtom = parseReleasesAtom(sampleAtom, 'https://github.com/Curelove/agy-anchor-wheel');
     assert.equal(parsedAtom?.tag_name, 'v0.5.0');
     assert.equal(parsedAtom?.targetAntigravity, '2.34.x');
+    assert.equal(parsedAtom?.name.includes('&gt;'), false);
+    assert.equal(parsedAtom?.name.includes('>= 22'), true);
+    assert.equal(parsedAtom?.body.includes('&gt;'), false);
+    assert.equal(parsedAtom?.body.includes('&amp;'), false);
+    assert.equal(parsedAtom?.body.includes('Node.js >= 22 & "Zero-ASAR"'), true);
+
+    // Also verify verbose parenthetical notes in zh-compat line without aw-compat comment get decoded & trimmed
+    const sampleAtomNoComment = `<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <id>tag:github.com,2008:Repository/12345/v0.6.0</id>
+    <updated>2026-11-24T06:00:00Z</updated>
+    <link rel="alternate" type="text/html" href="https://github.com/Curelove/agy-anchor-wheel/releases/tag/v0.6.0"/>
+    <title>v0.6.0</title>
+    <content type="html">&lt;p&gt;适配 Antigravity：2.34.0（2.34.x 已实测，本地需 Node.js &amp;gt;= 22）&lt;/p&gt;</content>
+  </entry>
+</feed>`;
+    const parsedAtom2 = parseReleasesAtom(sampleAtomNoComment, 'https://github.com/Curelove/agy-anchor-wheel');
+    assert.equal(parsedAtom2?.targetAntigravity, '2.34.0');
+    assert.equal(parsedAtom2?.body.includes('&gt;'), false);
+    assert.equal(parsedAtom2?.body.includes('Node.js >= 22'), true);
 
     const atomSvc = new UpdateService({
       dataDir,

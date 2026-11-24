@@ -116,7 +116,32 @@ function scoreDecodedText(text, enc) {
   return { score, repCount, commonZh, totalCjk, kana };
 }
 
-export function detectEncoding(rawBuffer) {
+function trimIncompleteUtf8Tail(buf) {
+  const len = buf.length;
+  if (len === 0) return buf;
+  // Walk back at most 3 bytes to see if the buffer ends mid-character in UTF-8
+  let checkStart = Math.max(0, len - 3);
+  for (let i = len - 1; i >= checkStart; i--) {
+    const b = buf[i];
+    if ((b & 0x80) === 0) {
+      // Plain ASCII byte -> no incomplete sequence after it
+      return buf;
+    }
+    if ((b & 0xc0) !== 0x80) {
+      // Leading byte of a multi-byte UTF-8 sequence
+      let expected = 1;
+      if ((b & 0xe0) === 0xc0) expected = 2;
+      else if ((b & 0xf0) === 0xe0) expected = 3;
+      else if ((b & 0xf8) === 0xf0) expected = 4;
+      else return buf; // invalid leading byte; keep intact so fatal UTF-8 fails honestly
+      const actual = len - i;
+      return actual < expected ? buf.subarray(0, i) : buf;
+    }
+  }
+  return buf;
+}
+
+export function detectEncoding(rawBuffer, { truncated = false } = {}) {
   const buf = Buffer.isBuffer(rawBuffer) ? rawBuffer : Buffer.from(rawBuffer || '');
   if (buf.length === 0) {
     return { encoding: 'utf-8', confidence: 1, hasBom: false, isBinary: false, hasReplacementChars: false };
@@ -144,10 +169,11 @@ export function detectEncoding(rawBuffer) {
     return { encoding: 'binary', confidence: 0.95, hasBom: false, isBinary: true, hasReplacementChars: false };
   }
 
-  // 4. Strict UTF-8 check
+  // 4. Strict UTF-8 check (trim dangling multi-byte tail when slice was truncated mid-file)
+  const utf8Candidate = truncated ? trimIncompleteUtf8Tail(buf) : buf;
   let hasHighBytes = false;
-  for (let i = 0; i < buf.length; i++) {
-    if (buf[i] >= 0x80) {
+  for (let i = 0; i < utf8Candidate.length; i++) {
+    if (utf8Candidate[i] >= 0x80) {
       hasHighBytes = true;
       break;
     }
@@ -157,7 +183,7 @@ export function detectEncoding(rawBuffer) {
   }
 
   try {
-    const strictText = new TextDecoder('utf-8', { fatal: true }).decode(buf);
+    const strictText = new TextDecoder('utf-8', { fatal: true }).decode(utf8Candidate);
     const hasRep = strictText.includes('\uFFFD');
     return {
       encoding: 'utf-8',
@@ -202,9 +228,9 @@ export function detectEncoding(rawBuffer) {
   };
 }
 
-export function decodeBuffer(rawBuffer, overrideEncoding = '') {
+export function decodeBuffer(rawBuffer, overrideEncoding = '', { truncated = false } = {}) {
   const buf = Buffer.isBuffer(rawBuffer) ? rawBuffer : Buffer.from(rawBuffer || '');
-  const detected = detectEncoding(buf);
+  const detected = detectEncoding(buf, { truncated });
   const requested = overrideEncoding ? normalizeEncodingName(overrideEncoding) : detected.encoding;
 
   if (requested === 'binary' || detected.isBinary) {
@@ -225,6 +251,9 @@ export function decodeBuffer(rawBuffer, overrideEncoding = '') {
   let decodeTarget = buf;
   if (requested === 'utf-8-bom' || (requested === 'utf-8' && buf.length >= 3 && buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf)) {
     decodeTarget = buf.subarray(3);
+  }
+  if (truncated && (requested === 'utf-8' || requested === 'utf-8-bom')) {
+    decodeTarget = trimIncompleteUtf8Tail(decodeTarget);
   }
   const decName = TEXT_ENCODER_DEC_MAP[requested] || 'utf-8';
   let text = '';
@@ -256,39 +285,48 @@ export function decodeBuffer(rawBuffer, overrideEncoding = '') {
 export function inspectFileEncoding(rawPath, { maxBytes = 4 * 1024 * 1024, overrideEncoding = '' } = {}) {
   const safe = resolveSafeReadPath(rawPath);
   if (!safe.ok) return { ok: false, error: safe.error };
-  if (safe.stat.size > maxBytes) {
-    // Still inspect head 256KB for encoding metadata without choking memory
-    const fd = fs.openSync(safe.filePath, 'r');
-    try {
-      const headLen = Math.min(safe.stat.size, 256 * 1024);
-      const headBuf = Buffer.allocUnsafe(headLen);
-      const bytesRead = fs.readSync(fd, headBuf, 0, headLen, 0);
-      const decoded = decodeBuffer(headBuf.subarray(0, bytesRead), overrideEncoding);
-      return {
-        ok: true,
-        path: safe.filePath,
-        truncated: true,
-        ...decoded,
-        sizeBytes: safe.stat.size,
-      };
-    } finally {
-      fs.closeSync(fd);
+  try {
+    if (safe.stat.size > maxBytes) {
+      // Still inspect head 256KB for encoding metadata without choking memory
+      const fd = fs.openSync(safe.filePath, 'r');
+      try {
+        const headLen = Math.min(safe.stat.size, 256 * 1024);
+        const headBuf = Buffer.allocUnsafe(headLen);
+        const bytesRead = fs.readSync(fd, headBuf, 0, headLen, 0);
+        const decoded = decodeBuffer(headBuf.subarray(0, bytesRead), overrideEncoding, { truncated: true });
+        return {
+          ok: true,
+          path: safe.filePath,
+          truncated: true,
+          ...decoded,
+          sizeBytes: safe.stat.size,
+        };
+      } finally {
+        try { fs.closeSync(fd); } catch {}
+      }
     }
+    const buf = fs.readFileSync(safe.filePath);
+    const decoded = decodeBuffer(buf, overrideEncoding);
+    return {
+      ok: true,
+      path: safe.filePath,
+      truncated: false,
+      ...decoded,
+    };
+  } catch (err) {
+    return { ok: false, error: String(err?.message || err) };
   }
-  const buf = fs.readFileSync(safe.filePath);
-  const decoded = decodeBuffer(buf, overrideEncoding);
-  return {
-    ok: true,
-    path: safe.filePath,
-    truncated: false,
-    ...decoded,
-  };
 }
 
 export function convertFileToUtf8(rawPath, sourceEncoding = '') {
   const safe = resolveSafeWritePath(rawPath);
   if (!safe.ok) return { ok: false, error: safe.error };
-  const rawBuf = fs.readFileSync(safe.filePath);
+  let rawBuf;
+  try {
+    rawBuf = fs.readFileSync(safe.filePath);
+  } catch (err) {
+    return { ok: false, error: String(err?.message || err) };
+  }
   const decoded = decodeBuffer(rawBuf, sourceEncoding);
   if (decoded.isBinary) {
     return { ok: false, error: 'Cannot convert binary file to UTF-8' };
@@ -298,8 +336,12 @@ export function convertFileToUtf8(rawPath, sourceEncoding = '') {
   }
 
   const backupPath = `${safe.filePath}.bak.encoding`;
-  if (!fs.existsSync(backupPath)) {
-    fs.writeFileSync(backupPath, rawBuf);
+  try {
+    if (!fs.existsSync(backupPath)) {
+      fs.writeFileSync(backupPath, rawBuf);
+    }
+  } catch (err) {
+    return { ok: false, error: `Failed to write encoding backup: ${err?.message || err}` };
   }
 
   const dir = path.dirname(safe.filePath);
@@ -311,7 +353,11 @@ export function convertFileToUtf8(rawPath, sourceEncoding = '') {
   } catch (err) {
     try { fs.unlinkSync(tmpPath); } catch {}
     if (process.platform === 'win32') {
-      fs.writeFileSync(safe.filePath, decoded.text, 'utf8');
+      try {
+        fs.writeFileSync(safe.filePath, decoded.text, 'utf8');
+      } catch (winErr) {
+        return { ok: false, error: String(winErr?.message || winErr) };
+      }
     } else {
       return { ok: false, error: String(err?.message || err) };
     }
