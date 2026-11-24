@@ -249,7 +249,7 @@ function requestDirectHttps(targetUrl, { timeoutMs = 7000, headers = {} } = {}) 
   });
 }
 
-export async function httpsGetJson(url, { proxyUrl = '', timeoutMs = 7000, headers = {}, maxRedirects = 3 } = {}) {
+export async function httpsGetText(url, { proxyUrl = '', timeoutMs = 7000, headers = {}, maxRedirects = 3 } = {}) {
   let curUrl = url;
   for (let hop = 0; hop <= maxRedirects; hop++) {
     let resp;
@@ -279,9 +279,78 @@ export async function httpsGetJson(url, { proxyUrl = '', timeoutMs = 7000, heade
       throw err;
     }
 
-    return JSON.parse(resp.body || 'null');
+    return resp.body || '';
   }
   throw new Error('Too many redirects');
+}
+
+export async function httpsGetJson(url, opts = {}) {
+  const text = await httpsGetText(url, opts);
+  return JSON.parse(text || 'null');
+}
+
+function decodeXmlEntities(str) {
+  return String(str || '')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;|&#x27;/gi, "'")
+    .replace(/&amp;/g, '&');
+}
+
+export function parseReleasesAtom(xml, fallbackRepoUrl = 'https://github.com/Curelove/agy-anchor-wheel') {
+  const entryMatch = /<entry\b[^>]*>([\s\S]*?)<\/entry>/i.exec(String(xml || ''));
+  if (!entryMatch) return null;
+  const entryXml = entryMatch[1];
+
+  const linkMatch = /<link\b[^>]*href=["']([^"']+)["'][^>]*>/i.exec(entryXml);
+  const titleMatch = /<title\b[^>]*>([\s\S]*?)<\/title>/i.exec(entryXml);
+  const updatedMatch = /<updated\b[^>]*>([\s\S]*?)<\/updated>/i.exec(entryXml);
+  const contentMatch = /<content\b[^>]*>([\s\S]*?)<\/content>/i.exec(entryXml);
+  const idMatch = /<id\b[^>]*>([\s\S]*?)<\/id>/i.exec(entryXml);
+
+  const rawHref = linkMatch?.[1] ? decodeXmlEntities(linkMatch[1].trim()) : '';
+  let releaseUrl = `${fallbackRepoUrl}/releases`;
+  if (rawHref) {
+    try {
+      releaseUrl = new URL(rawHref, fallbackRepoUrl).toString();
+    } catch {}
+  }
+
+  let tagName = '';
+  const tagFromUrl = /\/releases\/tag\/([^/?#]+)/i.exec(releaseUrl);
+  if (tagFromUrl?.[1]) {
+    try { tagName = decodeURIComponent(tagFromUrl[1].trim()); } catch { tagName = tagFromUrl[1].trim(); }
+  }
+  if (!tagName && idMatch?.[1]) {
+    const idSegs = idMatch[1].trim().split('/');
+    tagName = idSegs[idSegs.length - 1] || '';
+  }
+  if (!tagName) return null;
+
+  const title = decodeXmlEntities((titleMatch?.[1] || '').replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')).trim();
+  const updated = (updatedMatch?.[1] || '').trim();
+  const rawContent = decodeXmlEntities((contentMatch?.[1] || '').replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1'));
+  const targetAntigravity = extractTargetAgyFromNotes(rawContent);
+  const plainBody = rawContent
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/<\/(?:p|li|h[1-6]|div|tr|blockquote)>/gi, '\n')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+    .slice(0, 900);
+
+  return {
+    tag_name: tagName,
+    name: title || tagName,
+    html_url: releaseUrl,
+    published_at: updated,
+    body: plainBody,
+    targetAntigravity,
+    assets: [],
+    _source: 'github_atom',
+  };
 }
 
 function parseUninstallBlocks(regOutput) {
@@ -392,6 +461,7 @@ export class UpdateService {
     dataDir,
     pluginRoot = DEFAULT_PLUGIN_ROOT,
     fetchJsonImpl = null,
+    fetchTextImpl = null,
     detectAgyImpl = null,
     detectProxyImpl = null,
   } = {}) {
@@ -399,6 +469,7 @@ export class UpdateService {
     this.pluginRoot = pluginRoot;
     this.cachePath = dataDir ? path.join(dataDir, 'update_cache.json') : '';
     this.fetchJsonImpl = fetchJsonImpl;
+    this.fetchTextImpl = fetchTextImpl;
     this.detectAgyImpl = detectAgyImpl;
     this.detectProxyImpl = detectProxyImpl;
     this._localAgyCache = null;
@@ -495,6 +566,18 @@ export class UpdateService {
     return httpsGetJson(url, { proxyUrl, timeoutMs: 7000 });
   }
 
+  async _fetchGithubText(url) {
+    const proxyUrl = this.detectProxyImpl ? this.detectProxyImpl() : detectSystemProxyUrl();
+    if (this.fetchTextImpl) {
+      return this.fetchTextImpl(url, { proxyUrl });
+    }
+    return httpsGetText(url, {
+      proxyUrl,
+      timeoutMs: 7000,
+      headers: { Accept: 'application/atom+xml, application/xml, text/xml;q=0.9, text/html;q=0.8' },
+    });
+  }
+
   async checkForUpdates({ force = false } = {}) {
     const meta = this.getPluginMeta();
     if (!force) {
@@ -506,10 +589,12 @@ export class UpdateService {
 
     const latestApi = `https://api.github.com/repos/${meta.owner}/${meta.repo}/releases/latest`;
     const listApi = `https://api.github.com/repos/${meta.owner}/${meta.repo}/releases?per_page=1`;
+    const atomUrl = `${meta.repoUrl}/releases.atom`;
     const checkedAt = Date.now();
 
     try {
       let release = null;
+      let apiErr = null;
       try {
         release = await this._fetchGithubJson(latestApi);
       } catch (err) {
@@ -519,11 +604,31 @@ export class UpdateService {
             release = list[0];
           }
         } else {
-          throw err;
+          apiErr = err;
         }
       }
 
+      // Fallback to GitHub Releases Atom feed whenever API hits rate limit (403/429), fails, or returns empty
+      let atomEmptyConfirmed = false;
       if (!release || !release.tag_name) {
+        try {
+          const atomXml = await this._fetchGithubText(atomUrl);
+          const atomRelease = parseReleasesAtom(atomXml, meta.repoUrl);
+          if (atomRelease && atomRelease.tag_name) {
+            release = atomRelease;
+            apiErr = null;
+          } else {
+            atomEmptyConfirmed = true;
+            apiErr = null;
+          }
+        } catch (atomErr) {
+          if (!apiErr) apiErr = atomErr;
+        }
+      }
+
+      if (apiErr) throw apiErr;
+
+      if (!release || !release.tag_name || atomEmptyConfirmed) {
         return {
           ok: false,
           noReleases: true,
@@ -554,6 +659,7 @@ export class UpdateService {
 
       const result = {
         ok: true,
+        source: release._source || 'github_api',
         currentVersion: meta.version,
         latestVersion,
         tagName,
@@ -561,7 +667,7 @@ export class UpdateService {
         updateAvailable: compareSemver(latestVersion, meta.version) > 0,
         releaseUrl: String(release.html_url || meta.releasesUrl),
         publishedAt: String(release.published_at || ''),
-        targetAntigravity: extractTargetAgyFromNotes(bodyRaw),
+        targetAntigravity: release.targetAntigravity || extractTargetAgyFromNotes(bodyRaw),
         bodySnippet,
         assets,
         repoUrl: meta.repoUrl,

@@ -9,6 +9,7 @@ import {
   evaluateCompatibility,
   extractTargetAgyFromNotes,
   parseGithubRepo,
+  parseReleasesAtom,
 } from '../sidecars/anchor_wheel/backend/update_service.mjs';
 
 test('parseGithubRepo and compareSemver handle GitHub URLs and tags cleanly', () => {
@@ -106,7 +107,7 @@ test('UpdateService checks latest GitHub release, caches result, and handles off
     assert.equal(third.fromCache, false);
     assert.equal(fetchCalls, 2);
 
-    // Graceful failure on network error
+    // Graceful failure on network error when both API and Atom fail
     const errSvc = new UpdateService({
       dataDir,
       pluginRoot: fakePluginRoot,
@@ -115,10 +116,52 @@ test('UpdateService checks latest GitHub release, caches result, and handles off
       fetchJsonImpl: async () => {
         throw new Error('connect ETIMEDOUT');
       },
+      fetchTextImpl: async () => {
+        throw new Error('connect ETIMEDOUT');
+      },
     });
     const failed = await errSvc.checkForUpdates({ force: true });
     assert.equal(failed.ok, false);
     assert.ok(failed.error.includes('ETIMEDOUT'));
+
+    // Fallback to releases.atom when api.github.com returns HTTP 403 rate limit!
+    const sampleAtom = `<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Release notes from agy-anchor-wheel</title>
+  <entry>
+    <id>tag:github.com,2008:Repository/12345/v0.5.0</id>
+    <updated>2026-11-24T03:05:00Z</updated>
+    <link rel="alternate" type="text/html" href="https://github.com/Curelove/agy-anchor-wheel/releases/tag/v0.5.0"/>
+    <title>v0.5.0 — 修复悬停预览卡死残留</title>
+    <content type="html">&lt;!-- aw-compat: agy=2.34.x --&gt;&lt;p&gt;修复预览残留，适配 Antigravity 2.34.0&lt;/p&gt;</content>
+  </entry>
+</feed>`;
+    const parsedAtom = parseReleasesAtom(sampleAtom, 'https://github.com/Curelove/agy-anchor-wheel');
+    assert.equal(parsedAtom?.tag_name, 'v0.5.0');
+    assert.equal(parsedAtom?.targetAntigravity, '2.34.x');
+
+    const atomSvc = new UpdateService({
+      dataDir,
+      pluginRoot: fakePluginRoot,
+      detectAgyImpl: () => '2.34.0',
+      detectProxyImpl: () => 'http://127.0.0.1:7897',
+      fetchJsonImpl: async () => {
+        const err = new Error('HTTP 403');
+        err.statusCode = 403;
+        throw err;
+      },
+      fetchTextImpl: async (url) => {
+        assert.equal(url, 'https://github.com/Curelove/agy-anchor-wheel/releases.atom');
+        return sampleAtom;
+      },
+    });
+    const atomRes = await atomSvc.checkForUpdates({ force: true });
+    assert.equal(atomRes.ok, true);
+    assert.equal(atomRes.source, 'github_atom');
+    assert.equal(atomRes.latestVersion, '0.5.0');
+    assert.equal(atomRes.updateAvailable, true);
+    assert.equal(atomRes.targetAntigravity, '2.34.x');
+    assert.equal(atomRes.releaseUrl, 'https://github.com/Curelove/agy-anchor-wheel/releases/tag/v0.5.0');
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
