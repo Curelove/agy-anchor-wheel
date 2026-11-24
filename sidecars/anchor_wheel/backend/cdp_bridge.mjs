@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { convertFileToUtf8, inspectFileEncoding } from './encoding.mjs';
 import { buildNavContext } from './nav_context.mjs';
 import { PreviewService } from './preview_service.mjs';
+import { UpdateService } from './update_service.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SIDECAR_ROOT = path.resolve(__dirname, '..');
@@ -169,10 +170,11 @@ function safeJson(val) {
 }
 
 export class CdpBridge {
-  constructor({ stateStore, backlinkIndex, previewService, portFilePath } = {}) {
+  constructor({ stateStore, backlinkIndex, previewService, updateService, portFilePath } = {}) {
     this.stateStore = stateStore;
     this.backlinkIndex = backlinkIndex;
     this.previewService = previewService || (stateStore ? new PreviewService(stateStore.dataDir) : null);
+    this.updateService = updateService || (stateStore ? new UpdateService({ dataDir: stateStore.dataDir }) : null);
     this.portFilePath = portFilePath || getDefaultPortFilePath();
     this.sessions = new Map(); // target.id -> entry
     this.timer = null;
@@ -274,13 +276,28 @@ export class CdpBridge {
     const { action } = req;
     const cid = String(req.conversationId || 'default').trim() || 'default';
     switch (action) {
-      case 'getBoot':
+      case 'getBoot': {
+        const meta = this.updateService
+          ? this.updateService.getPluginMeta()
+          : { version: '0.5.0', repoUrl: 'https://github.com/Curelove/agy-anchor-wheel', releasesUrl: 'https://github.com/Curelove/agy-anchor-wheel/releases', compatibility: {}, localAntigravity: null };
         return {
           ok: true,
+          version: meta.version,
+          repoUrl: meta.repoUrl,
+          releasesUrl: meta.releasesUrl,
+          compatibility: { ...meta.compatibility, localAntigravity: meta.localAntigravity },
+          updateInfo: this.updateService?.getCachedResult?.() || null,
           settings: this.stateStore.getSettings(),
           session: this.stateStore.getSession(cid),
           indexStats: this.backlinkIndex.getStats(),
         };
+      }
+      case 'checkUpdate':
+        if (!this.updateService) return { ok: false, error: 'Update service unavailable' };
+        return this.updateService.checkForUpdates({ force: Boolean(req.force) });
+      case 'getCompatStatus':
+        if (!this.updateService) return { ok: false, error: 'Update service unavailable' };
+        return { ok: true, ...this.updateService.getPluginMeta(), cdp: this.getStatus() };
       case 'getSession':
         return { ok: true, session: this.stateStore.getSession(cid) };
       case 'sessionOp': {

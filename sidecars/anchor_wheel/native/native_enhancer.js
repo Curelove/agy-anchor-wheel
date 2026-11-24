@@ -1,6 +1,7 @@
-// AnchorWheel Native Mode 1 Enhancer v0.3.0 (injected via Zero-ASAR CDP)
+// AnchorWheel Native Mode 1 Enhancer v0.5.0 (injected via Zero-ASAR CDP)
 // Zero React DOM mutation: mounts independent `[data-aw-owned="1"]` Companion Strip & Portals,
 // provides dual-channel navigation (Hold Middle -> Bilateral Wheel; Tab -> Persistent AE Tree),
+// built-in GitHub Release update checker + AGY compatibility diagnostics,
 // and harmonizes completely with `obsidian-prism` (`data-omni-ignore="1"` / `data-prism-ignore="1"`).
 (function () {
   'use strict';
@@ -45,6 +46,14 @@
   let storeUnsubscribe = null;
   let suppressNextAuxClick = false;
   let suppressNextContextMenu = false;
+  let bootMeta = {
+    version: '0.5.0',
+    repoUrl: 'https://github.com/Curelove/agy-anchor-wheel',
+    releasesUrl: 'https://github.com/Curelove/agy-anchor-wheel/releases',
+    compatibility: null,
+  };
+  let latestUpdateInfo = null;
+  let bgUpdateAttempted = false;
 
   function markOwned(el) {
     return S ? S.markNode(el) : el;
@@ -629,11 +638,20 @@
     );
   }
 
+  function sweepOrphanPreviewCards() {
+    try {
+      for (const el of D.querySelectorAll('.aw-preview-card')) {
+        try { el.remove(); } catch {}
+      }
+    } catch {}
+  }
+
   function closeAllNavigators() {
     activeTabTriggerMode = false;
     wheelInstance?.close?.();
     bilateralInstance?.close?.();
     aeTreeInstance?.close?.();
+    sweepOrphanPreviewCards();
   }
 
   async function refreshPersistentNavigatorIfOpen() {
@@ -1180,6 +1198,18 @@
     renderStrip();
   }
 
+  function getHostCompatibilityDiag() {
+    const { browserCtx, reduxStore, router } = discoverHostBridge();
+    const col = getRightPaneColumn();
+    return {
+      hasRedux: Boolean(reduxStore),
+      hasBrowserCtx: Boolean(browserCtx),
+      hasRouter: Boolean(router),
+      hasRightPane: Boolean(col),
+      hasContentWrap: Boolean(getContentContainer(col)),
+    };
+  }
+
   function openSettingsModal() {
     closePopover();
     closeAllNavigators();
@@ -1188,6 +1218,22 @@
     settingsModalInstance.open({
       settings,
       evicted: session?.recentlyEvicted || [],
+      versionInfo: {
+        version: bootMeta.version || '0.5.0',
+        repoUrl: bootMeta.repoUrl,
+        releasesUrl: bootMeta.releasesUrl,
+      },
+      compatInfo: bootMeta.compatibility,
+      hostDiag: getHostCompatibilityDiag(),
+      updateInfo: latestUpdateInfo,
+      onCheckUpdate: async (force = true) => {
+        const res = await callRpc('checkUpdate', { force: Boolean(force) }, 10000);
+        if (res && (res.ok || res.error)) {
+          latestUpdateInfo = res;
+          renderStrip();
+        }
+        return res;
+      },
       onSave: async (next) => {
         const res = await callRpc('updateSettings', { settings: next });
         if (res.ok && res.settings) {
@@ -1373,7 +1419,12 @@
     const setBtn = markOwned(D.createElement('button'));
     setBtn.className = 'aw-tray-btn';
     setBtn.setAttribute('data-aw-role', 'settings-btn');
-    setBtn.title = '锚点轮盘设置与交互图解';
+    if (latestUpdateInfo?.ok && latestUpdateInfo?.updateAvailable) {
+      setBtn.setAttribute('data-has-update', '1');
+      setBtn.title = `锚点轮盘设置（发现新版 v${latestUpdateInfo.latestVersion}）`;
+    } else {
+      setBtn.title = '锚点轮盘设置与交互图解';
+    }
     setBtn.innerHTML = '<svg class="aw-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>';
     setBtn.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -1394,6 +1445,24 @@
       if (bootRes.ok) {
         settings = bootRes.settings || settings;
         session = bootRes.session;
+        bootMeta = {
+          version: bootRes.version || bootMeta.version,
+          repoUrl: bootRes.repoUrl || bootMeta.repoUrl,
+          releasesUrl: bootRes.releasesUrl || bootMeta.releasesUrl,
+          compatibility: bootRes.compatibility || bootMeta.compatibility,
+        };
+        if (bootRes.updateInfo) latestUpdateInfo = bootRes.updateInfo;
+        if (settings.autoCheckUpdates !== false && !bgUpdateAttempted) {
+          bgUpdateAttempted = true;
+          setTimeout(async () => {
+            if (destroyed) return;
+            const u = await callRpc('checkUpdate', { force: false }, 9000);
+            if (!destroyed && u && (u.ok || u.error)) {
+              latestUpdateInfo = u;
+              renderStrip();
+            }
+          }, 2200);
+        }
       }
     }
 
@@ -1790,6 +1859,7 @@
   }
 
   function boot() {
+    sweepOrphanPreviewCards();
     ensureStyleTag();
     ensureSharedInstances();
 
@@ -1837,11 +1907,11 @@
   }
 
   W.__agAnchorWheel = {
-    version: '0.4.0',
+    version: '0.5.0',
     getDebugState() {
       const col = getRightPaneColumn();
       return {
-        version: '0.4.0',
+        version: '0.5.0',
         activeFilePath,
         activePopoverName,
         outlinkCount: activeFileLinks.outlinks?.length || 0,
@@ -1898,6 +1968,7 @@
       for (const el of D.querySelectorAll('[data-aw-owned="1"]')) {
         try { el.remove(); } catch {}
       }
+      sweepOrphanPreviewCards();
       try { D.getElementById(STYLE_ID)?.remove(); } catch {}
     },
   };

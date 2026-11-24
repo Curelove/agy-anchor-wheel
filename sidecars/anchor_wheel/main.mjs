@@ -7,6 +7,7 @@ import { createRouterHandlers } from './backend/http_router.mjs';
 import { PreviewService } from './backend/preview_service.mjs';
 import { normalizeFilePath } from './backend/security.mjs';
 import { StateStore } from './backend/state_store.mjs';
+import { UpdateService } from './backend/update_service.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = path.resolve(__dirname, '..', '..');
@@ -75,6 +76,7 @@ export async function startServer(options = {}) {
 
   const stateStore = new StateStore(dataDir);
   const previewService = new PreviewService(dataDir);
+  const updateService = new UpdateService({ dataDir, pluginRoot: PLUGIN_ROOT });
   const settings = stateStore.getSettings();
   const backlinkIndex = new BacklinkIndex({
     workspaceRoots: options.workspaceRoots || [],
@@ -89,11 +91,19 @@ export async function startServer(options = {}) {
     try { backlinkIndex.rescan({ force: false }); } catch {}
   });
 
+  let bgUpdateTimer = null;
+  if (settings.autoCheckUpdates !== false && !options.noUpdateCheck) {
+    bgUpdateTimer = setTimeout(() => {
+      void updateService.checkForUpdates({ force: false });
+    }, 5000);
+    bgUpdateTimer.unref?.();
+  }
+
   let cdpBridge = null;
   if (!options.noCdp) {
     try {
       const mod = await import('./backend/cdp_bridge.mjs');
-      cdpBridge = new mod.CdpBridge({ stateStore, backlinkIndex, previewService });
+      cdpBridge = new mod.CdpBridge({ stateStore, backlinkIndex, previewService, updateService });
       cdpBridge.start();
     } catch (err) {
       console.error('[anchor-wheel] cdp_bridge start skipped:', err?.message || err);
@@ -111,6 +121,7 @@ export async function startServer(options = {}) {
       stateStore,
       backlinkIndex,
       previewService,
+      updateService,
       getCdpStatus,
       pushNativeSync,
       ResponseCtor: Response,
@@ -135,8 +146,10 @@ export async function startServer(options = {}) {
       port: server.address().port,
       stateStore,
       backlinkIndex,
+      updateService,
       cdpBridge,
       async stop() {
+        clearTimeout(bgUpdateTimer);
         await cdpBridge?.stop?.();
         await app.close();
       },
@@ -148,6 +161,7 @@ export async function startServer(options = {}) {
     stateStore,
     backlinkIndex,
     previewService,
+    updateService,
     getCdpStatus,
     pushNativeSync,
     ResponseCtor: null,
@@ -204,8 +218,10 @@ export async function startServer(options = {}) {
     port: actualPort,
     stateStore,
     backlinkIndex,
+    updateService,
     cdpBridge,
     async stop() {
+      clearTimeout(bgUpdateTimer);
       await cdpBridge?.stop?.();
       await new Promise((resolve) => server.close(() => resolve()));
     },

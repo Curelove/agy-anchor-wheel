@@ -167,6 +167,7 @@ async function runAudit() {
   const inst = await startServer({
     standalone: true,
     noCdp: true,
+    noUpdateCheck: true,
     port: 0,
     dataDir,
     workspaceRoots: [wsDir],
@@ -265,6 +266,17 @@ async function runAudit() {
     await new Promise((r) => setTimeout(r, 320));
     await cdp.screenshot(path.join(outDir, '04b_1440_obsidian_settings_reactive.png'));
 
+    // 4c. 1440px Obsidian Settings Storage / Update & Compat Diagnostics (scroll down to reveal full compat + update card)
+    await cdp.evalAsync(`(() => {
+      document.querySelector('[data-aw-sm-tab="storage"]')?.click();
+      setTimeout(() => {
+        const box = document.getElementById('aw-sm-update-box');
+        box?.scrollIntoView({ block: 'end' });
+      }, 60);
+    })()`);
+    await new Promise((r) => setTimeout(r, 280));
+    await cdp.screenshot(path.join(outDir, '08b_1440_obsidian_settings_compat.png'));
+
     // 5. 1100px Alabaster Light Theme AE Tree with stacked corner expanded
     await cdp.setViewport(1100, 860);
     await cdp.evalAsync(`document.documentElement.setAttribute('data-aw-theme', 'alabaster')`);
@@ -291,12 +303,17 @@ async function runAudit() {
     const overflowTree = await cdp.evalAsync(`document.documentElement.scrollWidth - document.documentElement.clientWidth`);
     await cdp.screenshot(path.join(outDir, '07_390_crystal_aetree.png'));
 
-    // 8. 390px Alabaster Settings Modal
+    // 8. 390px Alabaster Settings Modal (categories + storage compat)
     await cdp.evalAsync(`document.documentElement.setAttribute('data-aw-theme', 'alabaster')`);
     await cdp.evalAsync(`window.__awWorkbench.openSettingsModal('categories')`);
     await new Promise((r) => setTimeout(r, 250));
     const overflowSettings = await cdp.evalAsync(`document.documentElement.scrollWidth - document.documentElement.clientWidth`);
     await cdp.screenshot(path.join(outDir, '08_390_alabaster_settings.png'));
+
+    await cdp.evalAsync(`document.querySelector('[data-aw-sm-tab="storage"]')?.click()`);
+    await new Promise((r) => setTimeout(r, 250));
+    const overflowSettingsCompat = await cdp.evalAsync(`document.documentElement.scrollWidth - document.documentElement.clientWidth`);
+    await cdp.screenshot(path.join(outDir, '09_390_alabaster_settings_compat.png'));
 
     console.log(JSON.stringify({
       ok: true,
@@ -304,6 +321,7 @@ async function runAudit() {
       overflowBilateral,
       overflowTree,
       overflowSettings,
+      overflowSettingsCompat,
       consoleErrors: cdp.errors,
     }, null, 2));
   } finally {

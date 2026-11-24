@@ -25,13 +25,19 @@
       getAnimated: options.getAnimated,
       isEnabled: options.isPreviewEnabled,
       standaloneRawUrl: options.standaloneRawUrl,
+      isOwnerOpen: () => Boolean(wrapperEl && wrapperEl.isConnected && state),
     });
 
     let wrapperEl = null;
     let state = null;
 
+    function onWindowBlur() {
+      previewCtrl.hide();
+    }
+
     function close() {
       previewCtrl.hide();
+      try { doc.defaultView?.removeEventListener?.('blur', onWindowBlur); } catch {}
       if (!wrapperEl) return;
       doc.removeEventListener('keydown', onKeyDown, true);
       const cb = state?.onClose;
@@ -89,6 +95,7 @@
     }
 
     function renderPanel() {
+      previewCtrl.hide();
       if (!wrapperEl || !state) return;
       const panel = wrapperEl.querySelector('.aw-tree-panel');
       if (!panel) return;
@@ -111,6 +118,7 @@
       head.querySelectorAll('[data-aw-tree-scope]').forEach((btn) => {
         btn.addEventListener('click', (e) => {
           e.stopPropagation();
+          previewCtrl.hide();
           const nextScope = btn.getAttribute('data-aw-tree-scope');
           if (nextScope && nextScope !== state.scope) {
             state.scope = nextScope;
@@ -323,6 +331,7 @@
         if (wrapperEl) wrapperEl.setAttribute('data-open', '1');
       });
       doc.addEventListener('keydown', onKeyDown, true);
+      try { doc.defaultView?.addEventListener?.('blur', onWindowBlur); } catch {}
     }
 
     function updateContext(nextContext) {

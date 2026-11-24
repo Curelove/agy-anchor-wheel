@@ -266,12 +266,16 @@
 
   /**
    * Unified 0.25s debounced hover preview card (non-blocking pointer-events: none).
+   * Enforces strict single-card ownership, same-item dedup, owner-alive checks, and global cleanup.
    */
   function createPreviewController(options = {}) {
     const doc = options.document || document;
     const mountRoot = options.mountRoot || doc.body;
+    const isOwnerOpen = typeof options.isOwnerOpen === 'function' ? options.isOwnerOpen : null;
     let delayTimer = null;
     let animPollTimer = null;
+    let watchdogTimer = null;
+    let lifecycleBound = false;
     let cardEl = null;
     let hoveredKey = '';
     let seq = 0;
@@ -283,14 +287,76 @@
       animPollTimer = null;
     }
 
-    function hide() {
-      clearTimers();
-      hoveredKey = '';
-      seq++;
+    function removeAllCards() {
       if (cardEl) {
         try { cardEl.remove(); } catch {}
         cardEl = null;
       }
+      try {
+        for (const el of mountRoot?.querySelectorAll?.('.aw-preview-card') || []) {
+          try { el.remove(); } catch {}
+        }
+      } catch {}
+      try {
+        if (doc && doc !== mountRoot) {
+          for (const el of doc.querySelectorAll?.('.aw-preview-card') || []) {
+            try { el.remove(); } catch {}
+          }
+        }
+      } catch {}
+    }
+
+    function onGlobalBlur() {
+      hide();
+    }
+
+    function onVisibilityChange() {
+      if (doc.hidden) hide();
+    }
+
+    function onEscapeKey(ev) {
+      if (ev.key === 'Escape') hide();
+    }
+
+    function attachLifecycle() {
+      if (!lifecycleBound) {
+        lifecycleBound = true;
+        try { doc.defaultView?.addEventListener?.('blur', onGlobalBlur); } catch {}
+        try { doc.addEventListener('visibilitychange', onVisibilityChange); } catch {}
+        try { doc.addEventListener('keydown', onEscapeKey, true); } catch {}
+      }
+      if (!watchdogTimer) {
+        watchdogTimer = setInterval(() => {
+          if (isOwnerOpen && !isOwnerOpen()) {
+            hide();
+            return;
+          }
+          if (cardEl && !cardEl.isConnected) {
+            hide();
+          }
+        }, 400);
+      }
+    }
+
+    function detachLifecycle() {
+      if (watchdogTimer) {
+        clearInterval(watchdogTimer);
+        watchdogTimer = null;
+      }
+      if (lifecycleBound) {
+        lifecycleBound = false;
+        try { doc.defaultView?.removeEventListener?.('blur', onGlobalBlur); } catch {}
+        try { doc.removeEventListener('visibilitychange', onVisibilityChange); } catch {}
+        try { doc.removeEventListener('keydown', onEscapeKey, true); } catch {}
+      }
+    }
+
+    function hide() {
+      clearTimers();
+      hoveredKey = '';
+      seq++;
+      removeAllCards();
+      detachLifecycle();
     }
 
     function positionCard(el, anchorRect, placement = 'side') {
@@ -371,15 +437,34 @@
 
     function scheduleShow(item, anchorRect, placement = 'side') {
       if (options.isEnabled && !options.isEnabled()) return;
+      if (isOwnerOpen && !isOwnerOpen()) return;
       if (!item?.path || !options.fetchPreview) return;
-      clearTimers();
       const key = normKey(item.path);
+
+      // Deduplicate continuous pointermove jitter over the exact same item
+      if (hoveredKey === key && ((cardEl && cardEl.isConnected) || delayTimer !== null)) {
+        if (cardEl && cardEl.isConnected) {
+          positionCard(cardEl, anchorRect, placement);
+        }
+        return;
+      }
+
+      // Switching to a different item: immediately clear timers and remove any existing card
+      clearTimers();
+      removeAllCards();
       hoveredKey = key;
       const mySeq = ++seq;
       const delayMs = Math.max(0, Math.min(1500, Number(options.getDelayMs?.() ?? 250)));
+      attachLifecycle();
 
       delayTimer = setTimeout(async () => {
+        delayTimer = null;
         if (hoveredKey !== key || mySeq !== seq) return;
+        if (isOwnerOpen && !isOwnerOpen()) {
+          hide();
+          return;
+        }
+        removeAllCards();
         cardEl = markNode(doc.createElement('div'));
         cardEl.className = 'aw-preview-card';
         cardEl.innerHTML = `<div class="aw-preview-head"><span class="aw-preview-title">${esc(baseDisplayName(item.title || item.path))}</span></div><div class="aw-preview-empty">加载开头预览...</div>`;
@@ -388,16 +473,29 @@
 
         const animated = options.getAnimated ? Boolean(options.getAnimated()) : true;
         const data = await options.fetchPreview(item.path, { animated }).catch(() => null);
-        if (hoveredKey !== key || mySeq !== seq || !cardEl) return;
+        if (isOwnerOpen && !isOwnerOpen()) {
+          hide();
+          return;
+        }
+        if (hoveredKey !== key || mySeq !== seq || !cardEl || !cardEl.isConnected) return;
         renderPreviewPayload(cardEl, item, data);
         positionCard(cardEl, anchorRect, placement);
 
         // Upgrade video poster to 3s animated clip once background encode finishes
         if (data?.kind === 'video' && data.animPending && animated) {
           animPollTimer = setTimeout(async () => {
+            animPollTimer = null;
             if (hoveredKey !== key || mySeq !== seq || !cardEl) return;
+            if (isOwnerOpen && !isOwnerOpen()) {
+              hide();
+              return;
+            }
             const res2 = await options.fetchPreview(item.path, { animated: true }).catch(() => null);
-            if (hoveredKey === key && mySeq === seq && cardEl && res2?.animDataUrl) {
+            if (isOwnerOpen && !isOwnerOpen()) {
+              hide();
+              return;
+            }
+            if (hoveredKey === key && mySeq === seq && cardEl && cardEl.isConnected && res2?.animDataUrl) {
               renderPreviewPayload(cardEl, item, res2);
               positionCard(cardEl, anchorRect, placement);
             }

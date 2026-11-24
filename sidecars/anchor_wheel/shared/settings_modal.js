@@ -103,6 +103,7 @@
       if (g('#aw-sm-max')) draft.maxChildrenPerGroup = Math.max(1, Math.min(30, Number(g('#aw-sm-max').value || 6)));
       if (g('#aw-sm-fold')) draft.foldChildTabsInNativeBar = Boolean(g('#aw-sm-fold').checked);
       if (g('#aw-sm-auto')) draft.autoAnchorSummaryMd = Boolean(g('#aw-sm-auto').checked);
+      if (g('#aw-sm-auto-update')) draft.autoCheckUpdates = Boolean(g('#aw-sm-auto-update').checked);
       if (g('#aw-sm-sectors')) draft.wheelSectors = Number(g('#aw-sm-sectors').value || 8);
       if (g('#aw-sm-theme')) {
         draft.theme = g('#aw-sm-theme').value;
@@ -168,6 +169,63 @@
       const advMini = modalEl.querySelector('#aw-sm-adv-live-preview');
       if (advMini) {
         advMini.innerHTML = `<div class="aw-mini-preview-col" style="max-width:340px;margin:0 auto">${S.renderModeGuideSvg('classic_wheel', draft)}</div>`;
+      }
+    }
+
+    function renderUpdateBoxHtml(upd, pluginVer, fallbackReleasesUrl) {
+      const releasesUrl = upd?.releasesUrl || fallbackReleasesUrl || 'https://github.com/Curelove/agy-anchor-wheel/releases';
+      if (!upd) {
+        return `
+          <div class="aw-update-status-row">
+            <span>当前版本 <strong>v${S.esc(pluginVer)}</strong> · 点击右侧按钮即可从 GitHub Releases 检查新版</span>
+            <a class="aw-inline-link" href="${S.esc(releasesUrl)}" target="_blank" rel="noopener">查看 Releases</a>
+          </div>
+        `;
+      }
+      if (!upd.ok) {
+        return `
+          <div class="aw-update-status-row">
+            <span>${S.esc(upd.error || '更新检查暂不可用')}</span>
+            <a class="aw-inline-link" href="${S.esc(upd.releaseUrl || releasesUrl)}" target="_blank" rel="noopener">前往 Releases 页</a>
+          </div>
+        `;
+      }
+      const dateStr = upd.publishedAt ? String(upd.publishedAt).slice(0, 10) : '';
+      const targetAgy = upd.targetAntigravity ? ` · 适配 ${S.esc(upd.targetAntigravity)}` : '';
+      if (upd.updateAvailable) {
+        return `
+          <div class="aw-update-status-row">
+            <span><strong>发现新版本 v${S.esc(upd.latestVersion)}</strong>（当前 v${S.esc(upd.currentVersion)}${dateStr ? ` · ${S.esc(dateStr)}` : ''}${targetAgy}）</span>
+          </div>
+          ${upd.bodySnippet ? `<div class="aw-update-notes">${S.esc(upd.bodySnippet)}</div>` : ''}
+          <div class="aw-update-actions">
+            <a class="aw-primary-btn aw-inline-link" href="${S.esc(upd.releaseUrl || releasesUrl)}" target="_blank" rel="noopener">下载 v${S.esc(upd.latestVersion)}</a>
+            <button type="button" class="aw-ghost-btn" id="aw-sm-copy-update-cmd">复制更新命令</button>
+          </div>
+        `;
+      }
+      return `
+        <div class="aw-update-status-row">
+          <span><strong>已是最新版本 v${S.esc(upd.currentVersion || pluginVer)}</strong>${dateStr ? `（最新 Release 发布于 ${S.esc(dateStr)}${targetAgy}）` : ''}</span>
+          <a class="aw-inline-link" href="${S.esc(upd.releaseUrl || releasesUrl)}" target="_blank" rel="noopener">查看更新日志</a>
+        </div>
+      `;
+    }
+
+    function bindUpdateBoxButtons(modalEl) {
+      const copyBtn = modalEl.querySelector('#aw-sm-copy-update-cmd');
+      if (copyBtn) {
+        copyBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const cmd = 'git pull && npm run install:plugin';
+          try {
+            doc.defaultView?.navigator?.clipboard?.writeText?.(cmd);
+            copyBtn.textContent = '已复制命令';
+            setTimeout(() => { copyBtn.textContent = '复制更新命令'; }, 1600);
+          } catch {
+            copyBtn.textContent = cmd;
+          }
+        });
       }
     }
 
@@ -417,6 +475,68 @@
           </div>
 
           <div class="aw-settings-group">
+            <div class="aw-settings-group-title">版本更新与 Antigravity 适配</div>
+            ${(() => {
+              const pluginVer = currentCallbacks?.versionInfo?.version || '0.5.0';
+              const fallbackRel = currentCallbacks?.versionInfo?.releasesUrl || 'https://github.com/Curelove/agy-anchor-wheel/releases';
+              const compat = currentCallbacks?.compatInfo || {};
+              const localAgy = compat?.localAntigravity || currentCallbacks?.updateInfo?.localAntigravity || null;
+              const agyVerText = localAgy?.installedVersion ? `Antigravity ${localAgy.installedVersion}` : '未自动识别（非 Windows 或便携版）';
+              const testedRange = compat?.testedRange || 'Antigravity 2.34.x';
+              const level = localAgy?.compatLevel || 'unknown';
+              const levelLabel =
+                level === 'verified'
+                  ? '已验证适配'
+                  : level === 'same_major'
+                  ? '同大版本待测'
+                  : level === 'untested'
+                  ? '跨版本提醒'
+                  : '参考基准';
+              const levelTone = level === 'verified' ? 'verified' : 'warn';
+              const diag = currentCallbacks?.hostDiag || null;
+              const diagOk = diag && diag.hasRedux && diag.hasBrowserCtx && diag.hasRightPane && diag.hasContentWrap;
+              return `
+                <div class="aw-compat-grid">
+                  <div class="aw-compat-item">
+                    <span>插件版本 / 已验证宿主</span>
+                    <strong>v${S.esc(pluginVer)} · ${S.esc(testedRange)}</strong>
+                  </div>
+                  <div class="aw-compat-item">
+                    <span>本机 Antigravity 状态</span>
+                    <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+                      <strong>${S.esc(agyVerText)}</strong>
+                      <span class="aw-compat-pill" data-level="${levelTone}">${levelLabel}</span>
+                    </div>
+                  </div>
+                </div>
+                ${
+                  diag
+                    ? `<div class="aw-compat-diag">${
+                        diagOk
+                          ? '原生侧栏钩子自检：Redux / Router / 右侧栏容器全部正常就绪。'
+                          : '原生侧栏部分钩子未命中：若 AGY 刚升级导致侧栏异常，可使用官方侧栏「锚点轮盘工作台」并检查插件更新。'
+                      }</div>`
+                    : `<div class="aw-compat-diag">${S.esc(
+                        compat?.nativeEnhancerNotice ||
+                          'Mode 1（原生侧栏增强）依赖调试端口与前端内部结构，AGY 大改版后可能需要随插件升级；Mode 2 工作台基于官方接口，跨版本更稳定。'
+                      )}</div>`
+                }
+                <div class="aw-form-row">
+                  <div class="aw-form-label"><strong>启动时静默检查 GitHub 更新</strong><span>自动适配本机代理，发现新 Release 时在设置图标亮起提示点</span></div>
+                  <input type="checkbox" id="aw-sm-auto-update" ${s.autoCheckUpdates !== false ? 'checked' : ''} />
+                </div>
+                <div class="aw-form-row">
+                  <div class="aw-form-label"><strong>检查 GitHub Releases 最新版本</strong><span>支持下载打包好的安装包直接覆盖升级，保留全部个人配置</span></div>
+                  <button type="button" id="aw-sm-check-update" class="aw-ghost-btn">${currentCallbacks?.onCheckUpdate ? '立即检查更新' : '打开 Releases'}</button>
+                </div>
+                <div class="aw-update-box" id="aw-sm-update-box">
+                  ${renderUpdateBoxHtml(currentCallbacks?.updateInfo || null, pluginVer, fallbackRel)}
+                </div>
+              `;
+            })()}
+          </div>
+
+          <div class="aw-settings-group">
             <div class="aw-settings-group-title">最近自动收纳（点击捞回）</div>
             ${
               evicted.length
@@ -525,6 +645,38 @@
         });
       });
 
+      bindUpdateBoxButtons(modal);
+
+      modal.querySelector('#aw-sm-check-update')?.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const btn = e.currentTarget;
+        const box = modal.querySelector('#aw-sm-update-box');
+        const pluginVer = currentCallbacks?.versionInfo?.version || '0.5.0';
+        const fallbackRel = currentCallbacks?.versionInfo?.releasesUrl || 'https://github.com/Curelove/agy-anchor-wheel/releases';
+        if (!currentCallbacks?.onCheckUpdate) {
+          doc.defaultView?.open?.(fallbackRel, '_blank', 'noopener');
+          return;
+        }
+        btn.disabled = true;
+        const prevText = btn.textContent;
+        btn.textContent = '检查中...';
+        try {
+          const res = await currentCallbacks.onCheckUpdate(true);
+          if (currentCallbacks) currentCallbacks.updateInfo = res;
+          if (box) {
+            box.innerHTML = renderUpdateBoxHtml(res, pluginVer, fallbackRel);
+            bindUpdateBoxButtons(modal);
+          }
+        } catch (err) {
+          if (box) {
+            box.innerHTML = renderUpdateBoxHtml({ ok: false, error: String(err?.message || err) }, pluginVer, fallbackRel);
+          }
+        } finally {
+          btn.disabled = false;
+          btn.textContent = prevText;
+        }
+      });
+
       modal.querySelector('#aw-sm-launcher')?.addEventListener('click', async () => {
         await currentCallbacks?.onGenerateLauncher?.();
       });
@@ -549,7 +701,21 @@
       });
     }
 
-    function open({ settings, evicted = [], cdpStatus = null, initialTab = 'modes', initialFocusChannel = 'middle', onSave, onRestoreEvicted, onGenerateLauncher }) {
+    function open({
+      settings,
+      evicted = [],
+      cdpStatus = null,
+      versionInfo = null,
+      compatInfo = null,
+      hostDiag = null,
+      updateInfo = null,
+      initialTab = 'modes',
+      initialFocusChannel = 'middle',
+      onSave,
+      onRestoreEvicted,
+      onGenerateLauncher,
+      onCheckUpdate,
+    }) {
       close();
       activeTab = initialTab || 'modes';
       focusChannel = initialFocusChannel === 'tab' ? 'tab' : 'middle';
@@ -558,7 +724,18 @@
         categoryRules: S.sanitizeRulesClient(settings?.categoryRules).map((r) => ({ ...r, extensions: [...r.extensions] })),
         extraScanDirs: [...(settings?.extraScanDirs || [])],
       };
-      currentCallbacks = { evicted, cdpStatus, onSave, onRestoreEvicted, onGenerateLauncher };
+      currentCallbacks = {
+        evicted,
+        cdpStatus,
+        versionInfo,
+        compatInfo,
+        hostDiag,
+        updateInfo,
+        onSave,
+        onRestoreEvicted,
+        onGenerateLauncher,
+        onCheckUpdate,
+      };
 
       backdropEl = S.markNode(doc.createElement('div'));
       backdropEl.className = 'aw-settings-backdrop';

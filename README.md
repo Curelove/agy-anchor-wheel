@@ -54,6 +54,7 @@ AI 对话总结出一份含十几个参考文件的 Markdown 报告时，在 Ant
 
 - **严格单主亮三态对比卡片**：任意时刻仅当前选中的主交互卡片全亮显示，其余模式卡片自动退为柔和灰显；悬停任一灰显卡片立刻过渡到清晰预览态查看动效细节，点击即可直接切换模式。
 - **全参数零延迟实时驱动动画**：调节「母页所在方向」「自定义分类规则」「快捷键」「经典轮盘扇区数（4 / 6 / 8）」「子页范围」「快览延迟」或「四套主题」时，上方示意图解毫秒级同步旋转、增减扇区并刷新亮暗演示。
+- **内置 GitHub 更新检查与宿主适配自检**：在「设置 -> 收纳与高级 -> 版本更新与 Antigravity 适配」面板内可一键检查 GitHub Releases 最新版本（自动适配系统代理），并实时查看本机 Antigravity 版本及原生钩子状态。
 
 ---
 
@@ -66,9 +67,27 @@ AI 对话总结出一份含十几个参考文件的 Markdown 报告时，在 Ant
 
 ---
 
-## 3 步快速安装
+## Antigravity 版本适配与升级说明
+
+- **当前已验证适配基线**：**`Antigravity 2.34.0`**（本机需具备 Node.js `>= 22`）。
+- **Antigravity 更新后是否会失效？**
+  - **不会损坏客户端本体**：本插件采用 Zero-ASAR 设计，绝不改写 Antigravity 安装目录内任何程序文件，客户端官方更新可放心安装。
+  - **Mode 1（原生侧栏伴生增强）与客户端版本耦合**：原生链接防覆盖、顶部伴生条、按住中键轮盘和 `Tab` 浮层依赖 Antigravity 调试端口及右侧栏内部的 React / Redux / Router 结构；若 Antigravity 推出**大版本界面重构**，Mode 1 的部分挂钩可能随新版 DOM/状态变更失效，需要同步更新到对应的 AnchorWheel 新版本。
+  - **Mode 2（独立 Sidecar 工作台）跨版本更稳健**：工作台基于官方 Sidecar 协议独立运行，在等待插件适配新版本期间可作为可靠备选继续使用。
+- **内置检查更新**：在工作台或原生伴生条点击右上角齿轮打开 **设置 -> 收纳与高级**，即可在「**版本更新与 Antigravity 适配**」卡片内查看当前宿主版本匹配情况并一键检查 [GitHub Releases](https://github.com/Curelove/agy-anchor-wheel/releases)。
+
+---
+
+## 快速安装与升级
 
 仅需本机已安装 **Node.js `>= 22`**（纯原生实现，零第三方 npm 依赖）。可选安装 `ffmpeg` 以解锁长视频 3 秒动态预览缓存，未安装也可流畅使用其它全部功能。
+
+### 方式一：下载 GitHub Release 压缩包（零命令行 · 推荐）
+
+1. 前往 [GitHub Releases](https://github.com/Curelove/agy-anchor-wheel/releases) 下载最新版本的 `agy-anchor-wheel-v*.zip`。
+2. 解压到本地任意中文或英文目录后，直接**双击根目录下的 `install-plugin.cmd`**，脚本会自动备份旧版本（保留 `data/` 内已有分组与设置）并部署到本机 Antigravity 插件目录。
+
+### 方式二：Git 克隆安装与命令行升级
 
 1. 克隆仓库并进入目录：
 
@@ -77,21 +96,24 @@ git clone https://github.com/Curelove/agy-anchor-wheel.git
 cd agy-anchor-wheel
 ```
 
-2. 一键备份并安装到本地 Antigravity 插件目录：
+2. 一键备份并安装（升级时先运行 `git pull`，再重新运行安装命令即可，个人数据自动保留）：
 
 ```bash
 npm run install:plugin
 ```
 
-3. 打开或切换至 Antigravity：
+3. 打开或切换至 Antigravity（若插件原本已启用，请在插件列表将其关闭后再重新开启一次以加载新版后端）：
    - **原生右侧栏无感增强（推荐）**：当 Antigravity 开启调试端口启动（`--remote-debugging-port=0`，如已安装 `obsidian-prism` 或使用设置内生成的调试启动器）时自动附着生效。
    - **独立 Sidecar 工作台**：在 Antigravity 侧栏右上角 `+` 菜单中直接打开「**锚点轮盘工作台**」，免调试端口亦可开箱即用。
 
-### 运行测试与卸载还原
+### 运行测试、打包与卸载还原
 
 ```bash
-# 运行完整单元测试与无头浏览器集成测试
+# 运行完整单元测试、集成测试与无头浏览器回归测试
 npm test
+
+# 构建本地 Release 压缩包至 dist/
+npm run package:release
 
 # 完全卸载插件
 npm run remove:plugin

@@ -269,10 +269,11 @@ test('Mode 1 native_enhancer: DOM container tracking, non-overwriting tab dispat
         childSourceScope: 'opened_and_outlinks',
         parentDirection: 'left',
         hoverPreviewEnabled: true,
-        hoverPreviewDelayMs: 60,
+        hoverPreviewDelayMs: 50,
         videoPreviewAnimated: true,
         wheelSectors: 8,
         autoAnchorSummaryMd: true,
+        autoCheckUpdates: false,
       };
       const outlinks = [
         ...Array.from({ length: 5 }, (_, idx) => ({
@@ -296,10 +297,42 @@ test('Mode 1 native_enhancer: DOM container tracking, non-overwriting tab dispat
       ];
       window.__agAnchorWheelCall = (raw) => {
         const req = JSON.parse(raw);
+        const replyDelay = req.action === 'getPreview' ? 35 : 0;
         setTimeout(() => {
           let res = { ok: true, session: mockSession };
           if (req.action === 'getBoot') {
-            res = { ok: true, settings: mockSettings, session: mockSession };
+            res = {
+              ok: true,
+              version: '0.5.0',
+              repoUrl: 'https://github.com/Curelove/agy-anchor-wheel',
+              releasesUrl: 'https://github.com/Curelove/agy-anchor-wheel/releases',
+              compatibility: {
+                testedAntigravityVersions: ['2.34.0'],
+                testedRange: 'Antigravity 2.34.x',
+                localAntigravity: { installedVersion: '2.34.0', compatLevel: 'verified' },
+              },
+              updateInfo: {
+                ok: true,
+                currentVersion: '0.5.0',
+                latestVersion: '0.5.0',
+                updateAvailable: false,
+                releaseUrl: 'https://github.com/Curelove/agy-anchor-wheel/releases/tag/v0.5.0',
+                publishedAt: '2026-11-24T03:00:00Z',
+              },
+              settings: mockSettings,
+              session: mockSession,
+            };
+          } else if (req.action === 'checkUpdate') {
+            res = {
+              ok: true,
+              currentVersion: '0.5.0',
+              latestVersion: '0.6.0',
+              updateAvailable: true,
+              targetAntigravity: '2.34.x',
+              releaseUrl: 'https://github.com/Curelove/agy-anchor-wheel/releases/tag/v0.6.0',
+              publishedAt: '2026-11-24T04:00:00Z',
+              bodySnippet: 'Mock update available',
+            };
           } else if (req.action === 'updateSettings') {
             mockSettings = { ...mockSettings, ...(req.settings || {}) };
             res = { ok: true, settings: mockSettings };
@@ -385,7 +418,7 @@ test('Mode 1 native_enhancer: DOM container tracking, non-overwriting tab dispat
             res = { ok: true, session: mockSession, evicted: [], targetEntry };
           }
           window.__agAnchorWheelResolve?.(req.id, res);
-        }, 0);
+        }, replyDelay);
       };
 
       window.__agAnchorWheelBoot = { settings: mockSettings, wheelCss: ${JSON.stringify(wheelCss)} };
@@ -410,7 +443,7 @@ test('Mode 1 native_enhancer: DOM container tracking, non-overwriting tab dispat
     })()`);
 
     assert.deepEqual(cdp.errors, []);
-    assert.equal(setupResult.debug.version, '0.4.0');
+    assert.equal(setupResult.debug.version, '0.5.0');
     assert.equal(setupResult.debug.hasContentContainer, true);
     assert.equal(setupResult.debug.contentContainerIndex, 2);
     assert.equal(setupResult.debug.outlinkCount, 12);
@@ -473,6 +506,36 @@ test('Mode 1 native_enhancer: DOM container tracking, non-overwriting tab dispat
       await new Promise((r) => setTimeout(r, 30));
       const closedOnOutsideRelease = !document.querySelector('.aw-bi-stage');
 
+      // Stuck preview regression test: open hold wheel, hover category -> rail, glide across multiple items quickly,
+      // then release outside BEFORE async getPreview finishes, verifying ZERO orphaned .aw-preview-card remain!
+      para.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 1, clientX: 260, clientY: 260 }));
+      await new Promise((r) => setTimeout(r, 150));
+      document.querySelectorAll('.aw-bi-cat-arc:not([data-empty="1"])')[0]?.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+      await new Promise((r) => setTimeout(r, 40));
+      document.querySelector('.aw-bi-more-pill')?.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+      await new Promise((r) => setTimeout(r, 40));
+
+      const railPills = Array.from(document.querySelectorAll('.aw-bi-rail-item'));
+      let maxConcurrentPreviews = 0;
+      railPills[0]?.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+      await new Promise((r) => setTimeout(r, 110)); // first preview card mounted & resolved
+      maxConcurrentPreviews = Math.max(maxConcurrentPreviews, document.querySelectorAll('.aw-preview-card').length);
+
+      railPills[1]?.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+      await new Promise((r) => setTimeout(r, 75)); // second preview loading
+      maxConcurrentPreviews = Math.max(maxConcurrentPreviews, document.querySelectorAll('.aw-preview-card').length);
+
+      railPills[2]?.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+      await new Promise((r) => setTimeout(r, 60)); // third preview in-flight async fetch!
+      maxConcurrentPreviews = Math.max(maxConcurrentPreviews, document.querySelectorAll('.aw-preview-card').length);
+
+      // Release outside while in-flight
+      document.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientX: 10, clientY: 10 }));
+      document.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, button: 1, clientX: 10, clientY: 10 }));
+      const stuckImmediate = document.querySelectorAll('.aw-preview-card').length;
+      await new Promise((r) => setTimeout(r, 140)); // wait past async resolve + poll windows
+      const stuckAfterAsync = document.querySelectorAll('.aw-preview-card').length;
+
       // Re-open hold wheel, hover over parent left arc, and release to open parent!
       para.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 1, clientX: 260, clientY: 260 }));
       await new Promise((r) => setTimeout(r, 150));
@@ -495,6 +558,9 @@ test('Mode 1 native_enhancer: DOM container tracking, non-overwriting tab dispat
         biOpenHold,
         toolbarBtnsInHold,
         closedOnOutsideRelease,
+        maxConcurrentPreviews,
+        stuckImmediate,
+        stuckAfterAsync,
         openedParent,
       };
     })()`);
@@ -503,6 +569,9 @@ test('Mode 1 native_enhancer: DOM container tracking, non-overwriting tab dispat
     assert.equal(wheelResult.biOpenHold, true);
     assert.equal(wheelResult.toolbarBtnsInHold, 0);
     assert.equal(wheelResult.closedOnOutsideRelease, true);
+    assert.ok(wheelResult.maxConcurrentPreviews <= 1);
+    assert.equal(wheelResult.stuckImmediate, 0);
+    assert.equal(wheelResult.stuckAfterAsync, 0);
     assert.equal(wheelResult.openedParent, true);
 
     // Test Tab key override: ignored in chat input, intercepted in right pane to toggle AE Tree + stack expand + preview + persistent click
@@ -528,14 +597,15 @@ test('Mode 1 native_enhancer: DOM container tracking, non-overwriting tab dispat
       await new Promise((r) => setTimeout(r, 30));
       const childrenAfterExpand = document.querySelectorAll('.aw-tree-row[data-current="1"] .aw-tree-child').length;
 
-      // Hover first child for > 60ms mock preview delay to verify preview card renders
+      // Hover first child for > 50ms mock preview delay to verify preview card renders, then click scope toggle to trigger renderPanel
       const firstChild = document.querySelector('.aw-tree-row[data-current="1"] .aw-tree-child');
       firstChild?.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
       await new Promise((r) => setTimeout(r, 120));
       const previewShown = Boolean(document.querySelector('.aw-preview-card'));
 
-      // Toggle scope to 仅已开
+      // Toggle scope to 仅已开 (rebuilds panel -> preview card MUST be hidden immediately!)
       document.querySelector('[data-aw-tree-scope="opened_only"]')?.click();
+      const previewAfterRebuild = document.querySelectorAll('.aw-preview-card').length;
       await new Promise((r) => setTimeout(r, 60));
       const countOpenedOnly = document.querySelectorAll('.aw-tree-row[data-current="1"] .aw-tree-child').length;
       document.querySelector('[data-aw-tree-scope="opened_and_outlinks"]')?.click();
@@ -555,6 +625,7 @@ test('Mode 1 native_enhancer: DOM container tracking, non-overwriting tab dispat
         childrenBeforeExpand,
         childrenAfterExpand,
         previewShown,
+        previewAfterRebuild,
         countOpenedOnly,
         treeClosedOnSecondTab,
       };
@@ -568,6 +639,7 @@ test('Mode 1 native_enhancer: DOM container tracking, non-overwriting tab dispat
     assert.equal(treeResult.childrenBeforeExpand, 3);
     assert.ok(treeResult.childrenAfterExpand > 3);
     assert.equal(treeResult.previewShown, true);
+    assert.equal(treeResult.previewAfterRebuild, 0);
     assert.equal(treeResult.countOpenedOnly, 1);
     assert.equal(treeResult.treeClosedOnSecondTab, true);
 
@@ -610,6 +682,14 @@ test('Mode 1 native_enhancer: DOM container tracking, non-overwriting tab dispat
       document.querySelector('[data-aw-sm-tab="categories"]')?.click();
       await new Promise((r) => setTimeout(r, 30));
       const lockedOtherVisible = Boolean(document.querySelector('.aw-rule-locked'));
+
+      document.querySelector('[data-aw-sm-tab="storage"]')?.click();
+      await new Promise((r) => setTimeout(r, 30));
+      const hasCompatGrid = Boolean(document.querySelector('.aw-compat-grid'));
+      document.querySelector('#aw-sm-check-update')?.click();
+      await new Promise((r) => setTimeout(r, 40));
+      const updateBoxText = document.querySelector('#aw-sm-update-box')?.textContent || '';
+
       document.querySelector('#aw-sm-save')?.click();
       await new Promise((r) => setTimeout(r, 40));
       const closedAfterSave = !document.querySelector('.aw-settings-modal');
@@ -624,6 +704,8 @@ test('Mode 1 native_enhancer: DOM container tracking, non-overwriting tab dispat
         activeKeyAfterClick,
         treeSvgHasAltQ: treeSvgText.includes('Alt+Q'),
         lockedOtherVisible,
+        hasCompatGrid,
+        updateBoxFoundNew: updateBoxText.includes('0.6.0'),
         closedAfterSave,
       };
     })()`);
@@ -637,6 +719,8 @@ test('Mode 1 native_enhancer: DOM container tracking, non-overwriting tab dispat
     assert.equal(settingsResult.activeKeyAfterClick, 'ae_tree');
     assert.equal(settingsResult.treeSvgHasAltQ, true);
     assert.equal(settingsResult.lockedOtherVisible, true);
+    assert.equal(settingsResult.hasCompatGrid, true);
+    assert.equal(settingsResult.updateBoxFoundNew, true);
     assert.equal(settingsResult.closedAfterSave, true);
 
     // Test non-overwriting inline-pill click + double-encoded Chinese URI cleanup + breadcrumb isolation

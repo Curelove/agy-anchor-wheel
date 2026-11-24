@@ -20,9 +20,26 @@ test('standalone HTTP API serves UI assets, session ops, backlinks, and encoding
   const mdFile = path.join(wsDir, 'overview.md');
   fs.writeFileSync(mdFile, '# Overview\nSee [sub.txt](./sub.txt)\n', 'utf8');
 
+  fs.writeFileSync(
+    path.join(dataDir, 'update_cache.json'),
+    JSON.stringify({
+      ok: true,
+      currentVersion: '0.5.0',
+      latestVersion: '0.5.0',
+      tagName: 'v0.5.0',
+      updateAvailable: false,
+      repoUrl: 'https://github.com/Curelove/agy-anchor-wheel',
+      releasesUrl: 'https://github.com/Curelove/agy-anchor-wheel/releases',
+      releaseUrl: 'https://github.com/Curelove/agy-anchor-wheel/releases/tag/v0.5.0',
+      checkedAt: Date.now(),
+    }),
+    'utf8'
+  );
+
   const inst = await startServer({
     standalone: true,
     noCdp: true,
+    noUpdateCheck: true,
     port: 0,
     dataDir,
     workspaceRoots: [wsDir],
@@ -39,6 +56,13 @@ test('standalone HTTP API serves UI assets, session ops, backlinks, and encoding
 
     const statusRes = await (await fetch(`${base}/api/status`)).json();
     assert.equal(statusRes.ok, true);
+    assert.equal(statusRes.version, '0.5.0');
+    assert.ok(Array.isArray(statusRes.compatibility?.testedAntigravityVersions));
+
+    const updRes = await (await fetch(`${base}/api/update/check`)).json();
+    assert.equal(updRes.ok, true);
+    assert.equal(updRes.latestVersion, '0.5.0');
+    assert.equal(updRes.fromCache, true);
 
     const readGbk = await (
       await fetch(`${base}/api/file/read`, {

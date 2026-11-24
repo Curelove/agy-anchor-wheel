@@ -43,6 +43,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
   extraScanDirs: [],
   encodingAutoDetect: true,
   foldChildTabsInNativeBar: true,
+  autoCheckUpdates: true,
   theme: 'auto', // 'auto' | 'obsidian' | 'warm' | 'crystal' | 'alabaster'
 });
 
@@ -143,6 +144,7 @@ export function sanitizeSettings(raw, base = DEFAULT_SETTINGS) {
   }
   if (typeof src.encodingAutoDetect === 'boolean') next.encodingAutoDetect = src.encodingAutoDetect;
   if (typeof src.foldChildTabsInNativeBar === 'boolean') next.foldChildTabsInNativeBar = src.foldChildTabsInNativeBar;
+  if (typeof src.autoCheckUpdates === 'boolean') next.autoCheckUpdates = src.autoCheckUpdates;
   if (VALID_THEMES.has(src.theme)) next.theme = src.theme;
   return next;
 }

@@ -9,6 +9,7 @@
     settings: null,
     session: null,
     status: null,
+    updateInfo: null,
     workspaceRoots: [],
     tabs: [],
     activeTabPath: '',
@@ -1194,18 +1195,46 @@
     });
   }
 
+  function syncUpdateBadge() {
+    if (!els.btnSettings) return;
+    if (state.updateInfo?.ok && state.updateInfo?.updateAvailable) {
+      els.btnSettings.setAttribute('data-has-update', '1');
+      els.btnSettings.title = `锚点轮盘设置（发现新版 v${state.updateInfo.latestVersion}）`;
+    } else {
+      els.btnSettings.removeAttribute('data-has-update');
+      els.btnSettings.title = '锚点轮盘设置';
+    }
+  }
+
   async function openSettingsModalView(initialTab = 'modes') {
     closeOverlays();
     const statusRes = await apiGet('/api/status');
     if (statusRes.ok) {
       state.status = statusRes;
       state.settings = statusRes.settings;
+      if (statusRes.update) state.updateInfo = statusRes.update;
+      syncUpdateBadge();
     }
     settingsModal.open({
       settings: state.settings,
       evicted: state.session?.recentlyEvicted || [],
       cdpStatus: state.status?.cdp || { connected: false },
+      versionInfo: {
+        version: state.status?.version || '0.5.0',
+        repoUrl: state.status?.repoUrl || 'https://github.com/Curelove/agy-anchor-wheel',
+        releasesUrl: state.status?.releasesUrl || 'https://github.com/Curelove/agy-anchor-wheel/releases',
+      },
+      compatInfo: state.status?.compatibility || null,
+      updateInfo: state.updateInfo,
       initialTab,
+      onCheckUpdate: async (force = true) => {
+        const res = await apiGet(`/api/update/check${force ? '?force=1' : ''}`);
+        if (res && (res.ok || res.error)) {
+          state.updateInfo = res;
+          syncUpdateBadge();
+        }
+        return res;
+      },
       onGenerateLauncher: async () => {
         const res = await apiPost('/api/launcher/generate', {});
         if (res.ok) showToast(`已生成调试启动器：${res.launcherPath}`);
@@ -1458,8 +1487,20 @@
     if (stRes.ok) {
       state.status = stRes;
       state.settings = stRes.settings;
+      if (stRes.update) state.updateInfo = stRes.update;
+      syncUpdateBadge();
       if (!state.workspaceRoots.length && Array.isArray(stRes.index?.workspaceRoots)) {
         state.workspaceRoots = stRes.index.workspaceRoots;
+      }
+      if (state.settings?.autoCheckUpdates !== false && !state.updateInfo) {
+        setTimeout(() => {
+          void apiGet('/api/update/check').then((res) => {
+            if (res && (res.ok || res.error)) {
+              state.updateInfo = res;
+              syncUpdateBadge();
+            }
+          }).catch(() => {});
+        }, 2200);
       }
     }
     if (sessRes.ok) {

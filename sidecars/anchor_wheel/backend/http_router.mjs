@@ -5,6 +5,7 @@ import { convertFileToUtf8, inspectFileEncoding } from './encoding.mjs';
 import { buildNavContext } from './nav_context.mjs';
 import { PreviewService } from './preview_service.mjs';
 import { resolveSafeReadPath } from './security.mjs';
+import { UpdateService } from './update_service.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SIDECAR_ROOT = path.resolve(__dirname, '..');
@@ -65,12 +66,14 @@ export function createRouterHandlers({
   stateStore,
   backlinkIndex,
   previewService,
+  updateService,
   getCdpStatus,
   pushNativeSync,
   ResponseCtor,
   isStandalone = false,
 }) {
   const effectivePreviewService = previewService || new PreviewService(stateStore.dataDir);
+  const effectiveUpdateService = updateService || new UpdateService({ dataDir: stateStore.dataDir, pluginRoot: PLUGIN_ROOT });
   const makeResp = (body, contentType = 'text/plain; charset=utf-8', status = 200, headers = {}) => {
     if (ResponseCtor) {
       return new ResponseCtor(body, { contentType, status, headers });
@@ -117,15 +120,30 @@ export function createRouterHandlers({
   }
 
   routes.set('GET /api/status', () => {
+    const meta = effectiveUpdateService.getPluginMeta();
     return {
       ok: true,
-      version: '0.4.0',
+      version: meta.version,
       standalone: isStandalone,
       cdp: typeof getCdpStatus === 'function' ? getCdpStatus() : { connected: false, reason: 'disabled' },
       index: backlinkIndex.getStats(),
       settings: stateStore.getSettings(),
+      compatibility: { ...meta.compatibility, localAntigravity: meta.localAntigravity },
+      repoUrl: meta.repoUrl,
+      releasesUrl: meta.releasesUrl,
+      update: effectiveUpdateService.getCachedResult(),
     };
   });
+
+  routes.set('GET /api/update/check', (data) =>
+    effectiveUpdateService.checkForUpdates({
+      force: data?.force === '1' || data?.force === 'true' || Boolean(data?.force),
+    })
+  );
+
+  routes.set('POST /api/update/check', (data) =>
+    effectiveUpdateService.checkForUpdates({ force: Boolean(data?.force) })
+  );
 
   routes.set('GET /api/settings', () => ({ ok: true, settings: stateStore.getSettings() }));
 

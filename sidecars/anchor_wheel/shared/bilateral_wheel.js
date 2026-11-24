@@ -60,16 +60,22 @@
       getAnimated: options.getAnimated,
       isEnabled: options.isPreviewEnabled,
       standaloneRawUrl: options.standaloneRawUrl,
+      isOwnerOpen: () => Boolean(backdropEl && backdropEl.isConnected && activeState),
     });
 
     let backdropEl = null;
     let activeState = null;
     let closeHoverTimer = null;
 
+    function onWindowBlur() {
+      close();
+    }
+
     function close() {
       previewCtrl.hide();
       clearTimeout(closeHoverTimer);
       closeHoverTimer = null;
+      try { doc.defaultView?.removeEventListener?.('blur', onWindowBlur); } catch {}
       if (!backdropEl) return;
       doc.removeEventListener('pointermove', onPointerMove, true);
       doc.removeEventListener('pointerup', onPointerUp, true);
@@ -86,7 +92,10 @@
       const st = activeState;
       const shouldClose = st.holdMode || st.closeOnSelect !== false;
       previewCtrl.hide();
+      clearTimeout(closeHoverTimer);
+      closeHoverTimer = null;
       if (shouldClose) {
+        try { doc.defaultView?.removeEventListener?.('blur', onWindowBlur); } catch {}
         backdropEl && doc.removeEventListener('pointermove', onPointerMove, true);
         backdropEl && doc.removeEventListener('pointerup', onPointerUp, true);
         backdropEl && doc.removeEventListener('keydown', onKeyDown, true);
@@ -113,6 +122,7 @@
       if (!cat || !cat.items || cat.items.length <= 3) return;
       if (st.railCatIdx === catIdx && backdropEl.querySelector('.aw-bi-rail')) return;
 
+      previewCtrl.hide();
       backdropEl.querySelector('.aw-bi-rail')?.remove();
       st.railCatIdx = catIdx;
       st.railOffsetPx = 0;
@@ -327,6 +337,10 @@
     function onPointerMove(ev) {
       if (!activeState || !backdropEl) return;
       const st = activeState;
+      if (st.holdMode && st.holdButton === 1 && ev.isTrusted && typeof ev.buttons === 'number' && (ev.buttons & 4) === 0) {
+        close();
+        return;
+      }
       const targetEl = doc.elementFromPoint(ev.clientX, ev.clientY);
 
       // Update magnetic aim ring on hub rim toward pointer angle
@@ -400,6 +414,7 @@
       const morePill = targetEl?.closest?.('.aw-bi-more-pill');
       if (morePill && backdropEl.contains(morePill)) {
         clearTimeout(closeHoverTimer);
+        previewCtrl.hide();
         st.hoverCommitItem = null;
         openRailForCategory(st.activeCatIdx, morePill);
         updateSectorHighlight('sub', st.activeCatIdx);
@@ -417,10 +432,12 @@
       const dist = Math.hypot(dx, dy) / (st.scale || 1);
 
       if (dist <= R_INNER) {
+        previewCtrl.hide();
         updateSectorHighlight('center');
         return;
       }
       if (dist > R_OUTSIDE) {
+        previewCtrl.hide();
         updateSectorHighlight('cancel');
         if (st.activeCatIdx !== -1 && st.holdMode) {
           scheduleSubmenuCollapse();
@@ -432,18 +449,22 @@
       if (deg < 0) deg += 360;
 
       if (Math.abs(normAngleDiff(deg, st.parentCenterDeg)) <= 78) {
-        collapseSubFan();
+        if (st.activeCatIdx !== -1 || st.railCatIdx !== -1) {
+          collapseSubFan();
+        }
         if (st.parent?.path) {
           st.hoverCommitItem = { path: st.parent.path, title: st.parent.title, isParent: true };
           updateSectorHighlight('parent');
           const parentArc = backdropEl.querySelector('.aw-bi-parent-arc');
           if (parentArc) previewCtrl.scheduleShow(st.parent, parentArc.getBoundingClientRect());
         } else {
+          previewCtrl.hide();
           updateSectorHighlight('cancel');
         }
         return;
       }
 
+      previewCtrl.hide();
       const halfSpan = st.catStep / 2;
       let hitCat = -1;
       for (let i = 0; i < st.categories.length; i++) {
@@ -710,6 +731,7 @@
       doc.addEventListener('pointermove', onPointerMove, true);
       doc.addEventListener('pointerup', onPointerUp, true);
       doc.addEventListener('keydown', onKeyDown, true);
+      try { doc.defaultView?.addEventListener?.('blur', onWindowBlur); } catch {}
     }
 
     function updateContext(nextContext) {
