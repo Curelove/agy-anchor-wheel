@@ -53,7 +53,7 @@ test('current version release notes and GitHub Actions workflow are configured c
 
   const wfPath = path.join(ROOT, '.github', 'workflows', 'release.yml');
   assert.equal(fs.existsSync(wfPath), true);
-  const wf = fs.readFileSync(wfPath, 'utf8');
+  const wf = fs.readFileSync(wfPath, 'utf8').replace(/\r\n/g, '\n');
   assert.ok(wf.includes("tags:\n      - 'v*'"));
   assert.ok(wf.includes('workflow_dispatch:'));
   assert.ok(wf.includes('contents: write'));

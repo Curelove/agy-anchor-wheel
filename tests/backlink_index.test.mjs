@@ -22,7 +22,7 @@ test('indexes markdown links, wikilinks, inline paths, artifact brain MDs, and d
     fs.writeFileSync(guideMd, '# 操作指南\n见 `src/engine.py` 和 [[missing_note]]\n', 'utf8');
 
     const summaryArtifact = path.join(convDir, 'summary_report.md');
-    const fileUrl = `file:///${codeFile.replace(/\\/g, '/')}`;
+    const fileUrl = toFileUri(codeFile);
     fs.writeFileSync(
       summaryArtifact,
       `# AI 验收总览\n\n- 核心脚本：[engine.py](${fileUrl}#L1)\n- 说明书：[操作指南](${guideMd})\n- 失效文件：[ghost.md](${path.join(ws, 'ghost.md')})\n`,
@@ -118,8 +118,16 @@ test('decodes double-encoded Chinese file URIs and avoids duplicate dead entries
   const doubleEnc = 'file:///c%3A/Users/demo/notes/01_%25E5%2589%25A7%25E6%259C%25AC.md';
   assert.equal(
     normalizeFilePath(doubleEnc),
-    path.normalize('c:\\Users\\demo\\notes\\01_剧本.md')
+    process.platform === 'win32'
+      ? path.normalize('c:\\Users\\demo\\notes\\01_剧本.md')
+      : 'c:/Users/demo/notes/01_剧本.md'
   );
+  if (process.platform !== 'win32') {
+    assert.equal(
+      normalizeFilePath('file:///tmp/demo/notes/01_%25E5%2589%25A7%25E6%259C%25AC.md'),
+      '/tmp/demo/notes/01_剧本.md'
+    );
+  }
 
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'aw-backtick-'));
   try {

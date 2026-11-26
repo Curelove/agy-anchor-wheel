@@ -15,6 +15,7 @@ import {
 } from '../sidecars/anchor_wheel/backend/state_store.mjs';
 import { BacklinkIndex } from '../sidecars/anchor_wheel/backend/backlink_index.mjs';
 import { buildNavContext, classifyFile } from '../sidecars/anchor_wheel/backend/nav_context.mjs';
+import { canonicalKey } from '../sidecars/anchor_wheel/backend/security.mjs';
 
 test('evictOverflowChildren protects anchor and locked children and evicts oldest unlocked LRU', () => {
   const group = {
@@ -142,7 +143,7 @@ test('StateStore lineage resolves multi-level ancestors cleanly and rejects cycl
     store.recordLineage('c1', { parentPath: p, childPath: cur });
     // Attempt reverse cycle cur -> gp should be ignored!
     const afterCycleTry = store.recordLineage('c1', { parentPath: cur, childPath: gp });
-    assert.equal(wouldCreateCycle(afterCycleTry.lineage.parentByKey, gp.toLowerCase().replace(/\\/g, '/'), cur.toLowerCase().replace(/\\/g, '/')), true);
+    assert.equal(wouldCreateCycle(afterCycleTry.lineage.parentByKey, canonicalKey(gp), canonicalKey(cur)), true);
 
     const ancs = resolveAncestors(afterCycleTry, cur);
     assert.equal(ancs.length, 2);
