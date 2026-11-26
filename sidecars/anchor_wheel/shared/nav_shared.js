@@ -33,9 +33,89 @@
 
   const DEFAULT_CATEGORY_RULES = Object.freeze([
     { id: 'image', label: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'svg', 'bmp', 'avif', 'ico'] },
-    { id: 'video', label: '视频', extensions: ['mp4', 'mkv', 'mov', 'webm', 'avi', 'm4v'] },
+    {
+      id: 'video',
+      label: '视频',
+      extensions: [
+        'mp4', 'm4v', 'mov', 'qt', 'mkv', 'webm', 'avi', 'flv', 'f4v', 'wmv', 'asf',
+        'ts', 'mts', 'm2ts', 'mpg', 'mpeg', 'ogv', '3gp', 'rmvb', 'vob', 'mxf',
+      ],
+    },
     { id: 'doc', label: '文档', extensions: ['md', 'mdx', 'txt', 'pdf', 'docx', 'doc', 'xlsx', 'xlsm', 'xls', 'pptx', 'ppt', 'odt', 'ods', 'odp', 'rtf', 'epub', 'srt', 'ass', 'ssa', 'json', 'yaml', 'yml', 'csv', 'tsv'] },
   ]);
+
+  const WHEEL_TRIGGER_BUTTONS = Object.freeze({
+    middle: Object.freeze({ id: 'middle', button: 1, buttonsMask: 4, label: '鼠标中键', shortLabel: '中键', holdMs: 115, dragPx: 8 }),
+    right: Object.freeze({ id: 'right', button: 2, buttonsMask: 2, label: '鼠标右键', shortLabel: '右键', holdMs: 135, dragPx: 8 }),
+    side_back: Object.freeze({ id: 'side_back', button: 3, buttonsMask: 8, label: '鼠标侧键 1（后退键）', shortLabel: '后退侧键', holdMs: 65, dragPx: 5 }),
+    side_forward: Object.freeze({ id: 'side_forward', button: 4, buttonsMask: 16, label: '鼠标侧键 2（前进键）', shortLabel: '前进侧键', holdMs: 65, dragPx: 5 }),
+  });
+
+  function resolveWheelTriggerButton(settingsOrId) {
+    const raw =
+      typeof settingsOrId === 'string'
+        ? settingsOrId
+        : settingsOrId?.wheelTriggerButton || (settingsOrId?.wheelTrigger === 'right_drag' ? 'right' : 'middle');
+    return WHEEL_TRIGGER_BUTTONS[raw] || WHEEL_TRIGGER_BUTTONS.middle;
+  }
+
+  function buttonToButtonsMask(button) {
+    if (button === 0) return 1;
+    if (button === 1) return 4;
+    if (button === 2) return 2;
+    if (button === 3) return 8;
+    if (button === 4) return 16;
+    return 0;
+  }
+
+  function parseSemverClient(v) {
+    const clean = String(v || '').trim().replace(/^v/i, '');
+    const [coreRaw, preRaw = ''] = clean.split('-', 2);
+    const nums = coreRaw.split('.').map((n) => {
+      const x = parseInt(n, 10);
+      return Number.isFinite(x) ? x : 0;
+    });
+    return { major: nums[0] || 0, minor: nums[1] || 0, patch: nums[2] || 0, pre: preRaw.trim() };
+  }
+
+  function compareSemverClient(a, b) {
+    const pa = parseSemverClient(a);
+    const pb = parseSemverClient(b);
+    for (const k of ['major', 'minor', 'patch']) {
+      if (pa[k] > pb[k]) return 1;
+      if (pa[k] < pb[k]) return -1;
+    }
+    if (!pa.pre && pb.pre) return 1;
+    if (pa.pre && !pb.pre) return -1;
+    if (pa.pre === pb.pre) return 0;
+    return pa.pre > pb.pre ? 1 : -1;
+  }
+
+  function computeUpdateStateClient(updateInfo, ignoredVersion = '') {
+    const cleanIgnored = String(ignoredVersion !== undefined && ignoredVersion !== null ? ignoredVersion : updateInfo?.ignoredVersion || '')
+      .trim()
+      .replace(/^v/i, '');
+    if (!updateInfo || !updateInfo.ok || !updateInfo.latestVersion) {
+      return {
+        updateAvailable: false,
+        ignoredVersion: cleanIgnored,
+        isIgnored: false,
+        shouldNotify: false,
+      };
+    }
+    const updateAvailable = Boolean(updateInfo.updateAvailable);
+    const isIgnored = Boolean(
+      updateAvailable &&
+      cleanIgnored &&
+      compareSemverClient(updateInfo.latestVersion, cleanIgnored) <= 0
+    );
+    return {
+      updateAvailable,
+      ignoredVersion: cleanIgnored,
+      isIgnored,
+      shouldNotify: Boolean(updateAvailable && !isIgnored),
+    };
+  }
 
   function esc(str) {
     return String(str ?? '')
@@ -75,8 +155,8 @@
     if (isDir) return ICONS.folder;
     const t = String(p).toLowerCase();
     if (/\.(png|jpe?g|webp|gif|svg|bmp|ico|avif)$/.test(t)) return ICONS.image;
-    if (/\.(mp4|mkv|mov|webm|avi|m4v)$/.test(t)) return ICONS.video;
-    if (/\.(mp3|wav|ogg|m4a|flac|aac)$/.test(t)) return ICONS.audio;
+    if (/\.(mp4|m4v|mov|qt|mkv|webm|avi|flv|f4v|wmv|asf|ts|mts|m2ts|mpg|mpeg|m2v|ogv|3gp|3g2|rmvb|rm|vob|mxf|divx)$/.test(t)) return ICONS.video;
+    if (/\.(mp3|wav|ogg|m4a|flac|aac|opus|wma|aiff|aif)$/.test(t)) return ICONS.audio;
     if (/\.(js|mjs|cjs|ts|tsx|jsx|py|go|rs|java|cpp|c|h|css|html|json|yaml|yml|sh|ps1)$/.test(t)) return ICONS.code;
     return ICONS.file;
   }
@@ -575,6 +655,7 @@
     const onlyOpened = cfg.childSourceScope === 'opened_only';
     const closeOnSel = Boolean(cfg.tabCloseOnSelect);
     const hotkey = String(cfg.tabCustomHotkey || 'Tab');
+    const triggerBtnShort = resolveWheelTriggerButton(cfg).shortLabel;
     const sectors = [4, 6, 8].includes(Number(cfg.wheelSectors)) ? Number(cfg.wheelSectors) : 8;
 
     if (modeKey === 'bilateral_wheel') {
@@ -690,7 +771,7 @@
                  ${firstExtBadge ? `<rect x="${panelX + panelW - 46}" y="70" width="34" height="14" rx="4" fill="var(--aw-card)" stroke="var(--aw-border)"/><text x="${panelX + panelW - 29}" y="80" fill="var(--aw-accent)" font-size="8.5" font-weight="600" text-anchor="middle">${firstExtBadge}</text>` : ''}
                  <text x="${panelX + panelW / 2}" y="129" fill="var(--aw-fg)" font-size="10.5" font-weight="600" text-anchor="middle">${delayMs}ms 悬停快览</text>`
               : `<text x="${panelX + panelW / 2}" y="93" fill="var(--aw-fg-muted)" font-size="10.5" text-anchor="middle">快览已关闭</text>
-                 <text x="${panelX + panelW / 2}" y="129" fill="var(--aw-fg-muted)" font-size="10" text-anchor="middle">松手中键即打开</text>`
+                 <text x="${panelX + panelW / 2}" y="129" fill="var(--aw-fg-muted)" font-size="10" text-anchor="middle">松手${esc(triggerBtnShort)}即打开</text>`
           }
         </g>
         <!-- Animated cursor dot & release ripple -->
@@ -698,7 +779,7 @@
           <circle cx="${cx}" cy="${cy}" r="8" fill="none" stroke="var(--aw-accent)" stroke-width="1.4" class="aw-anim-bi-ripple"/>
           <circle cx="${cx}" cy="${cy}" r="4.5" fill="var(--aw-accent)"/>
         </g>
-        <text x="160" y="166" fill="var(--aw-fg-muted)" font-size="10.5" text-anchor="middle">${dirCaption} · 共 ${totalCats} 分类扇区 · 滑轨反向平滑</text>
+        <text x="160" y="166" fill="var(--aw-fg-muted)" font-size="10.5" text-anchor="middle">按住${esc(triggerBtnShort)} · ${dirCaption} · 共 ${totalCats} 分类扇区</text>
       </svg>`;
     }
 
@@ -814,6 +895,11 @@
   return {
     ICONS,
     DEFAULT_CATEGORY_RULES,
+    WHEEL_TRIGGER_BUTTONS,
+    resolveWheelTriggerButton,
+    buttonToButtonsMask,
+    compareSemverClient,
+    computeUpdateStateClient,
     esc,
     normKey,
     baseDisplayName,

@@ -12,7 +12,7 @@
     {
       key: 'bilateral_wheel',
       title: '双侧分类轮盘',
-      desc: '推荐中键呼出：圆心固定为当前页，一侧回母页，另一侧按分类展开子页；超过 3 条可按住滑轨反向挑选。',
+      desc: '推荐鼠标按键按住呼出（默认中键，可改右键或侧键）：圆心固定为当前页，一侧回母页，另一侧按分类展开子页；超过 3 条可按住滑轨反向挑选。',
     },
     {
       key: 'ae_tree',
@@ -22,7 +22,7 @@
     {
       key: 'classic_wheel',
       title: '经典母页轮盘',
-      desc: '圆心固定为优先母页，周围扇区展示组内子页；按住中键划选扇区或中心松手打开，移到圈外自动取消。',
+      desc: '圆心固定为优先母页，周围扇区展示组内子页；按住触发键划选扇区或中心松手打开，移到圈外自动取消。',
     },
   ]);
 
@@ -126,6 +126,7 @@
       if (!modalEl || !draft) return;
       const g = (sel) => modalEl.querySelector(sel);
       if (g('#aw-sm-middle')) draft.middleMode = g('#aw-sm-middle').value;
+      if (g('#aw-sm-trigger-btn')) draft.wheelTriggerButton = g('#aw-sm-trigger-btn').value;
       if (g('#aw-sm-pdir')) draft.parentDirection = g('#aw-sm-pdir').value;
       if (g('#aw-sm-tab-en')) draft.tabTriggerEnabled = Boolean(g('#aw-sm-tab-en').checked);
       if (g('#aw-sm-tab-mode')) draft.tabMode = g('#aw-sm-tab-mode').value;
@@ -174,15 +175,34 @@
     function updateLiveGuides(modalEl) {
       if (!modalEl || !draft) return;
       const activeKey = getActiveCardKey();
+      const trigMeta = S.resolveWheelTriggerButton ? S.resolveWheelTriggerButton(draft) : { id: 'middle', shortLabel: '中键', label: '鼠标中键' };
       const otherMode =
         focusChannel === 'middle'
           ? (draft.tabTriggerEnabled !== false ? draft.tabMode : '')
           : draft.middleMode;
-      const otherLabel = focusChannel === 'middle' ? '快捷键已用' : '中键已用';
+      const otherLabel = focusChannel === 'middle' ? '快捷键已用' : `${trigMeta.shortLabel}已用`;
 
       modalEl.querySelectorAll('[data-aw-focus-ch]').forEach((btn) => {
-        btn.setAttribute('data-active', btn.getAttribute('data-aw-focus-ch') === focusChannel ? '1' : '0');
+        const ch = btn.getAttribute('data-aw-focus-ch');
+        btn.setAttribute('data-active', ch === focusChannel ? '1' : '0');
+        if (ch === 'middle') {
+          btn.textContent = `聚焦：按住${trigMeta.shortLabel}模式`;
+        }
       });
+
+      const trigHint = modalEl.querySelector('#aw-sm-middle-label');
+      if (trigHint) {
+        trigHint.textContent = `按住${trigMeta.label}呼出模式（松手即确认）`;
+      }
+      const trigSub = modalEl.querySelector('#aw-sm-trigger-btn-sub');
+      if (trigSub) {
+        trigSub.textContent =
+          trigMeta.id === 'right'
+            ? '按住或拖移呼出轮盘并自动屏蔽右键菜单；快速短按右键仍保留原菜单'
+            : trigMeta.id === 'side_back' || trigMeta.id === 'side_forward'
+            ? '在右侧栏按住对应侧键即呼出轮盘（不再误触前进/后退），另一颗侧键保留翻页'
+            : '默认中键按住呼出；中键短按链接仍保留后台新标签打开';
+      }
 
       const focusHintEl = modalEl.querySelector('#aw-sm-focus-hint');
       if (focusHintEl) {
@@ -192,6 +212,10 @@
       }
 
       // Dim dependent form rows when their parent toggle/channel is disabled
+      const trigRow = modalEl.querySelector('#aw-sm-row-trigger-btn');
+      if (trigRow) {
+        trigRow.setAttribute('data-dim', draft.middleMode === 'off' ? '1' : '0');
+      }
       const pdirRow = modalEl.querySelector('#aw-sm-row-pdir');
       if (pdirRow) {
         const bilateralUsed =
@@ -220,7 +244,7 @@
         const chip = card.querySelector('.aw-guide-chip');
         if (chip) {
           if (isPrimary) {
-            chip.textContent = focusChannel === 'middle' ? '中键主用' : '快捷键主用';
+            chip.textContent = focusChannel === 'middle' ? `${trigMeta.shortLabel}主用` : '快捷键主用';
             chip.setAttribute('data-tone', 'active');
             chip.hidden = false;
           } else if (key === otherMode && otherMode !== 'off') {
@@ -325,7 +349,7 @@
       }
     }
 
-    function renderUpdateBoxHtml(upd, pluginVer, fallbackReleasesUrl) {
+    function renderUpdateBoxHtml(upd, pluginVer, fallbackReleasesUrl, ignoredVer = '') {
       const releasesUrl = upd?.releasesUrl || fallbackReleasesUrl || 'https://github.com/Curelove/agy-anchor-wheel/releases';
       if (!upd) {
         return `
@@ -345,14 +369,24 @@
       }
       const dateStr = upd.publishedAt ? String(upd.publishedAt).slice(0, 10) : '';
       const targetAgy = upd.targetAntigravity ? ` · 适配 ${S.esc(upd.targetAntigravity)}` : '';
-      if (upd.updateAvailable) {
+      const st = S.computeUpdateStateClient
+        ? S.computeUpdateStateClient(upd, ignoredVer)
+        : { updateAvailable: Boolean(upd.updateAvailable), isIgnored: Boolean(upd.isIgnored), ignoredVersion: ignoredVer };
+
+      if (st.updateAvailable) {
         return `
           <div class="aw-update-status-row">
             <span><strong>发现新版本 v${S.esc(upd.latestVersion)}</strong>（当前 v${S.esc(upd.currentVersion)}${dateStr ? ` · ${S.esc(dateStr)}` : ''}${targetAgy}）</span>
+            ${st.isIgnored ? `<span class="aw-update-ignored-tag">已忽略 v${S.esc(upd.latestVersion)} · 更高版本发布时恢复提醒</span>` : ''}
           </div>
           ${upd.bodySnippet ? `<div class="aw-update-notes">${S.esc(upd.bodySnippet)}</div>` : ''}
           <div class="aw-update-actions">
             <a class="aw-primary-btn aw-inline-link" href="${S.esc(upd.releaseUrl || releasesUrl)}" target="_blank" rel="noopener">下载 v${S.esc(upd.latestVersion)}</a>
+            ${
+              st.isIgnored
+                ? `<button type="button" class="aw-ghost-btn" id="aw-sm-unignore-update">取消忽略</button>`
+                : `<button type="button" class="aw-ghost-btn" id="aw-sm-ignore-update" data-aw-ignore-ver="${S.esc(upd.latestVersion)}">忽略此版本</button>`
+            }
             <button type="button" class="aw-ghost-btn" id="aw-sm-copy-update-cmd">复制更新命令</button>
           </div>
         `;
@@ -366,6 +400,48 @@
     }
 
     function bindUpdateBoxButtons(modalEl) {
+      const box = modalEl.querySelector('#aw-sm-update-box');
+      const pluginVer = currentCallbacks?.versionInfo?.version || '';
+      const fallbackRel = currentCallbacks?.versionInfo?.releasesUrl || 'https://github.com/Curelove/agy-anchor-wheel/releases';
+
+      const ignoreBtn = modalEl.querySelector('#aw-sm-ignore-update');
+      if (ignoreBtn) {
+        ignoreBtn.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          const ver = ignoreBtn.getAttribute('data-aw-ignore-ver') || currentCallbacks?.updateInfo?.latestVersion || '';
+          if (!ver) return;
+          if (draft) draft.ignoredUpdateVersion = ver;
+          if (currentCallbacks?.onIgnoreUpdate) {
+            const res = await currentCallbacks.onIgnoreUpdate(ver);
+            if (res?.updateInfo || res?.update) {
+              currentCallbacks.updateInfo = res.updateInfo || res.update;
+            }
+          }
+          if (box) {
+            box.innerHTML = renderUpdateBoxHtml(currentCallbacks?.updateInfo || null, pluginVer, fallbackRel, draft?.ignoredUpdateVersion || ver);
+            bindUpdateBoxButtons(modalEl);
+          }
+        });
+      }
+
+      const unignoreBtn = modalEl.querySelector('#aw-sm-unignore-update');
+      if (unignoreBtn) {
+        unignoreBtn.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          if (draft) draft.ignoredUpdateVersion = '';
+          if (currentCallbacks?.onIgnoreUpdate) {
+            const res = await currentCallbacks.onIgnoreUpdate('');
+            if (res?.updateInfo || res?.update) {
+              currentCallbacks.updateInfo = res.updateInfo || res.update;
+            }
+          }
+          if (box) {
+            box.innerHTML = renderUpdateBoxHtml(currentCallbacks?.updateInfo || null, pluginVer, fallbackRel, '');
+            bindUpdateBoxButtons(modalEl);
+          }
+        });
+      }
+
       const copyBtn = modalEl.querySelector('#aw-sm-copy-update-cmd');
       if (copyBtn) {
         copyBtn.addEventListener('click', (e) => {
@@ -444,13 +520,25 @@
             <div class="aw-settings-group-title">双通道呼出与实时布局联动</div>
             <div class="aw-form-row">
               <div class="aw-form-label">
-                <strong>按住鼠标中键（松手即确认）</strong>
+                <strong id="aw-sm-middle-label">按住鼠标中键呼出模式（松手即确认）</strong>
                 <span>仅呈现可划选目标，移到空白或圈外松手取消</span>
               </div>
               <select id="aw-sm-middle" class="aw-select aw-reactive-ctrl">
                 <option value="bilateral_wheel" ${s.middleMode === 'bilateral_wheel' ? 'selected' : ''}>双侧分类轮盘</option>
                 <option value="classic_wheel" ${s.middleMode === 'classic_wheel' ? 'selected' : ''}>经典母页轮盘</option>
-                <option value="off" ${s.middleMode === 'off' ? 'selected' : ''}>关闭中键呼出</option>
+                <option value="off" ${s.middleMode === 'off' ? 'selected' : ''}>关闭鼠标呼出</option>
+              </select>
+            </div>
+            <div class="aw-form-row" id="aw-sm-row-trigger-btn">
+              <div class="aw-form-label">
+                <strong>轮盘触发鼠标按键</strong>
+                <span id="aw-sm-trigger-btn-sub">默认中键按住呼出；中键短按链接仍保留后台新标签打开</span>
+              </div>
+              <select id="aw-sm-trigger-btn" class="aw-select aw-reactive-ctrl">
+                <option value="middle" ${(s.wheelTriggerButton || 'middle') === 'middle' ? 'selected' : ''}>鼠标中键（默认）</option>
+                <option value="right" ${s.wheelTriggerButton === 'right' ? 'selected' : ''}>鼠标右键（按住/拖动呼出）</option>
+                <option value="side_back" ${s.wheelTriggerButton === 'side_back' ? 'selected' : ''}>鼠标侧键 1（后退键）</option>
+                <option value="side_forward" ${s.wheelTriggerButton === 'side_forward' ? 'selected' : ''}>鼠标侧键 2（前进键）</option>
               </select>
             </div>
             <div class="aw-form-row" id="aw-sm-row-pdir">
@@ -557,8 +645,8 @@
             </div>
             <div class="aw-form-row">
               <div class="aw-form-label">
-                <strong>启用右侧栏多格式文件预览</strong>
-                <span>支持 Word、Excel、PPT 真实比例画布、Notebook、SQLite、三维模型、字体与压缩包</span>
+                <strong>启用右侧栏多格式文件与视频预览</strong>
+                <span>支持 MOV / MKV / AVI 等多格式视频、Word / Excel / PPT 真实画布、Notebook、SQLite、三维模型与压缩包</span>
               </div>
               <input type="checkbox" id="aw-sm-rich-doc" class="aw-reactive-ctrl" ${s.richDocPreviewEnabled !== false ? 'checked' : ''} />
             </div>
@@ -702,7 +790,7 @@
                       )}</div>`
                 }
                 <div class="aw-form-row">
-                  <div class="aw-form-label"><strong>启动时静默检查 GitHub 更新</strong><span>自动适配本机代理，发现新 Release 时在设置图标亮起提示点</span></div>
+                  <div class="aw-form-label"><strong>启动时与后台静默检查 GitHub 更新</strong><span>发现未忽略的新版本时温和推送提醒；可跳过某一版本，待下个新版发布再恢复提示</span></div>
                   <input type="checkbox" id="aw-sm-auto-update" ${s.autoCheckUpdates !== false ? 'checked' : ''} />
                 </div>
                 <div class="aw-form-row">
@@ -710,7 +798,7 @@
                   <button type="button" id="aw-sm-check-update" class="aw-ghost-btn">${currentCallbacks?.onCheckUpdate ? '立即检查更新' : '打开 Releases'}</button>
                 </div>
                 <div class="aw-update-box" id="aw-sm-update-box">
-                  ${renderUpdateBoxHtml(currentCallbacks?.updateInfo || null, pluginVer, fallbackRel)}
+                  ${renderUpdateBoxHtml(currentCallbacks?.updateInfo || null, pluginVer, fallbackRel, s.ignoredUpdateVersion || '')}
                 </div>
               `;
             })()}
@@ -799,7 +887,7 @@
         const evtName = ctrl.tagName === 'INPUT' && (ctrl.type === 'text' || ctrl.type === 'number') ? 'input' : 'change';
         ctrl.addEventListener(evtName, () => {
           syncDraftFromDom(modal);
-          if (ctrl.id === 'aw-sm-middle') focusChannel = 'middle';
+          if (ctrl.id === 'aw-sm-middle' || ctrl.id === 'aw-sm-trigger-btn') focusChannel = 'middle';
           else if (['aw-sm-tab-mode', 'aw-sm-tab-key', 'aw-sm-tab-en', 'aw-sm-tab-close'].includes(ctrl.id)) focusChannel = 'tab';
           updateLiveGuides(modal);
         });
@@ -853,12 +941,12 @@
           const res = await currentCallbacks.onCheckUpdate(true);
           if (currentCallbacks) currentCallbacks.updateInfo = res;
           if (box) {
-            box.innerHTML = renderUpdateBoxHtml(res, pluginVer, fallbackRel);
+            box.innerHTML = renderUpdateBoxHtml(res, pluginVer, fallbackRel, draft?.ignoredUpdateVersion || '');
             bindUpdateBoxButtons(modal);
           }
         } catch (err) {
           if (box) {
-            box.innerHTML = renderUpdateBoxHtml({ ok: false, error: String(err?.message || err) }, pluginVer, fallbackRel);
+            box.innerHTML = renderUpdateBoxHtml({ ok: false, error: String(err?.message || err) }, pluginVer, fallbackRel, draft?.ignoredUpdateVersion || '');
           }
         } finally {
           btn.disabled = false;
@@ -902,11 +990,13 @@
       updateInfo = null,
       initialTab = 'modes',
       initialFocusChannel = 'middle',
+      focusUpdateSection = false,
       resolveHostTheme = null,
       onSave,
       onRestoreEvicted,
       onGenerateLauncher,
       onCheckUpdate,
+      onIgnoreUpdate,
     }) {
       close();
       activeTab = initialTab || 'modes';
@@ -936,6 +1026,7 @@
         onRestoreEvicted,
         onGenerateLauncher,
         onCheckUpdate,
+        onIgnoreUpdate,
       };
 
       backdropEl = S.markNode(doc.createElement('div'));
@@ -952,6 +1043,11 @@
       backdropEl.appendChild(modal);
       mountRoot.appendChild(backdropEl);
       render();
+      if (focusUpdateSection) {
+        requestAnimationFrame(() => {
+          modal.querySelector('#aw-sm-update-box')?.scrollIntoView?.({ behavior: 'smooth', block: 'center' });
+        });
+      }
       doc.addEventListener('keydown', onKeyDown, true);
     }
 

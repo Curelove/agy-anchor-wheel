@@ -8,6 +8,7 @@ import { PreviewService } from './backend/preview_service.mjs';
 import { normalizeFilePath } from './backend/security.mjs';
 import { StateStore } from './backend/state_store.mjs';
 import { UpdateService } from './backend/update_service.mjs';
+import { VideoService } from './backend/video_service.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = path.resolve(__dirname, '..', '..');
@@ -67,22 +68,36 @@ function applySafeCorsHeaders(req, res) {
     res.setHeader('Access-Control-Allow-Origin', allowed);
     res.setHeader('Vary', 'Origin');
   }
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Sidecar-Token');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Sidecar-Token, Range');
+  res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Accept-Ranges, Content-Length');
   res.setHeader('Access-Control-Max-Age', '600');
 }
 
-function attachCorsAndPreflight(server) {
+function attachCorsAndMediaMiddleware(server, videoService) {
   if (!server || typeof server.listeners !== 'function') return;
   const existing = server.listeners('request');
   if (!existing.length) return;
   server.removeAllListeners('request');
   server.on('request', (req, res) => {
     applySafeCorsHeaders(req, res);
-    if (String(req.method || '').toUpperCase() === 'OPTIONS') {
+    const method = String(req.method || '').toUpperCase();
+    if (method === 'OPTIONS') {
       res.writeHead(204);
       res.end();
       return;
+    }
+    if (videoService && (method === 'GET' || method === 'HEAD')) {
+      try {
+        const url = new URL(req.url, 'http://127.0.0.1');
+        if (url.pathname === '/api/media/stream') {
+          videoService.handleMediaStreamHttp(req, res, url);
+          return;
+        }
+        if (url.pathname === '/api/file/raw') {
+          if (videoService.handleRawFileHttp(req, res, url)) return;
+        }
+      } catch {}
     }
     for (const listener of existing) listener.call(server, req, res);
   });
@@ -96,7 +111,12 @@ export async function startServer(options = {}) {
 
   const stateStore = new StateStore(dataDir);
   const previewService = new PreviewService(dataDir);
-  const updateService = new UpdateService({ dataDir, pluginRoot: PLUGIN_ROOT });
+  const videoService = new VideoService(dataDir);
+  const updateService = new UpdateService({
+    dataDir,
+    pluginRoot: PLUGIN_ROOT,
+    getIgnoredVersion: () => stateStore.getSettings().ignoredUpdateVersion,
+  });
   const settings = stateStore.getSettings();
   const backlinkIndex = new BacklinkIndex({
     workspaceRoots: options.workspaceRoots || [],
@@ -111,19 +131,21 @@ export async function startServer(options = {}) {
     try { backlinkIndex.rescan({ force: false }); } catch {}
   });
 
-  let bgUpdateTimer = null;
-  if (settings.autoCheckUpdates !== false && !options.noUpdateCheck) {
-    bgUpdateTimer = setTimeout(() => {
-      void updateService.checkForUpdates({ force: false });
-    }, 5000);
-    bgUpdateTimer.unref?.();
-  }
+  let activePort = 0;
+  const getMediaBaseUrl = () => (activePort ? `http://127.0.0.1:${activePort}` : '');
 
   let cdpBridge = null;
   if (!options.noCdp) {
     try {
       const mod = await import('./backend/cdp_bridge.mjs');
-      cdpBridge = new mod.CdpBridge({ stateStore, backlinkIndex, previewService, updateService });
+      cdpBridge = new mod.CdpBridge({
+        stateStore,
+        backlinkIndex,
+        previewService,
+        videoService,
+        updateService,
+        getMediaBaseUrl,
+      });
       cdpBridge.start();
     } catch (err) {
       console.error('[anchor-wheel] cdp_bridge start skipped:', err?.message || err);
@@ -133,6 +155,30 @@ export async function startServer(options = {}) {
   const getCdpStatus = () => (cdpBridge ? cdpBridge.getStatus() : { connected: false, reason: 'disabled' });
   const pushNativeSync = (payload) => cdpBridge?.pushSync?.(payload);
 
+  const runSilentUpdateCheck = async () => {
+    if (stateStore.getSettings().autoCheckUpdates === false) return;
+    try {
+      const res = await updateService.checkForUpdates({ force: false });
+      if (res && (res.ok || res.error)) {
+        pushNativeSync({ updateInfo: res });
+      }
+    } catch {}
+  };
+
+  let bgUpdateTimer = null;
+  let bgUpdateInterval = null;
+  if (!options.noUpdateCheck) {
+    bgUpdateTimer = setTimeout(() => {
+      void runSilentUpdateCheck();
+    }, 5000);
+    bgUpdateTimer.unref?.();
+    // Periodic 6-hour check so long-running Antigravity sessions receive new version pushes automatically
+    bgUpdateInterval = setInterval(() => {
+      void runSilentUpdateCheck();
+    }, 6 * 60 * 60 * 1000);
+    bgUpdateInterval.unref?.();
+  }
+
   const isSidecarMode = !options.standalone && Boolean(process.env.ANTIGRAVITY_SIDECAR_WEB_PORT);
   if (isSidecarMode) {
     const { SidecarApp, Response } = await loadSidecarSdk();
@@ -141,6 +187,7 @@ export async function startServer(options = {}) {
       stateStore,
       backlinkIndex,
       previewService,
+      videoService,
       updateService,
       getCdpStatus,
       pushNativeSync,
@@ -160,18 +207,22 @@ export async function startServer(options = {}) {
     }
 
     const server = await app.run();
-    attachCorsAndPreflight(server);
+    activePort = server.address().port;
+    attachCorsAndMediaMiddleware(server, videoService);
     return {
       server,
-      port: server.address().port,
+      port: activePort,
       stateStore,
       backlinkIndex,
+      videoService,
       updateService,
       cdpBridge,
       async stop() {
         clearTimeout(bgUpdateTimer);
+        clearInterval(bgUpdateInterval);
         await cdpBridge?.stop?.();
         previewService.dispose();
+        videoService.dispose();
         backlinkIndex.dispose();
         stateStore.flush();
         await app.close();
@@ -184,6 +235,7 @@ export async function startServer(options = {}) {
     stateStore,
     backlinkIndex,
     previewService,
+    videoService,
     updateService,
     getCdpStatus,
     pushNativeSync,
@@ -193,14 +245,25 @@ export async function startServer(options = {}) {
 
   const server = http.createServer((req, res) => {
     applySafeCorsHeaders(req, res);
-    if (String(req.method || '').toUpperCase() === 'OPTIONS') {
+    const method = String(req.method || '').toUpperCase();
+    if (method === 'OPTIONS') {
       res.writeHead(204);
       res.end();
       return;
     }
 
     const url = new URL(req.url, 'http://127.0.0.1');
-    const routeKey = `${req.method.toUpperCase()} ${url.pathname}`;
+    if (method === 'GET' || method === 'HEAD') {
+      if (url.pathname === '/api/media/stream') {
+        videoService.handleMediaStreamHttp(req, res, url);
+        return;
+      }
+      if (url.pathname === '/api/file/raw') {
+        if (videoService.handleRawFileHttp(req, res, url)) return;
+      }
+    }
+
+    const routeKey = `${method} ${url.pathname}`;
     if (!routes.has(routeKey)) {
       res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
       res.end('Not found');
@@ -260,20 +323,23 @@ export async function startServer(options = {}) {
   });
 
   await new Promise((resolve) => server.listen(options.port || 0, '127.0.0.1', resolve));
-  const actualPort = server.address().port;
-  console.log(`[anchor-wheel] standalone listening on http://127.0.0.1:${actualPort}`);
+  activePort = server.address().port;
+  console.log(`[anchor-wheel] standalone listening on http://127.0.0.1:${activePort}`);
 
   return {
     server,
-    port: actualPort,
+    port: activePort,
     stateStore,
     backlinkIndex,
+    videoService,
     updateService,
     cdpBridge,
     async stop() {
       clearTimeout(bgUpdateTimer);
+      clearInterval(bgUpdateInterval);
       await cdpBridge?.stop?.();
       previewService.dispose();
+      videoService.dispose();
       backlinkIndex.dispose();
       stateStore.flush();
       await new Promise((resolve) => server.close(() => resolve()));

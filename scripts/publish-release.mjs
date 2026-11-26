@@ -218,6 +218,7 @@ function runReleaseCli() {
       'tests/backlink_index.test.mjs',
       'tests/group_lru.test.mjs',
       'tests/preview_service.test.mjs',
+      'tests/video_service.test.mjs',
       'tests/update_service.test.mjs',
       'tests/directory_nav.test.mjs',
       'tests/document_renderer.test.mjs',

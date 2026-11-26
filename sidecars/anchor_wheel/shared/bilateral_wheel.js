@@ -362,7 +362,10 @@
     function onPointerMove(ev) {
       if (!activeState || !backdropEl) return;
       const st = activeState;
-      if (st.holdMode && st.holdButton === 1 && ev.isTrusted && typeof ev.buttons === 'number' && (ev.buttons & 4) === 0) {
+      const holdMask = S?.buttonToButtonsMask
+        ? S.buttonToButtonsMask(st.holdButton)
+        : (st.holdButton === 1 ? 4 : st.holdButton === 2 ? 2 : st.holdButton === 3 ? 8 : st.holdButton === 4 ? 16 : 0);
+      if (st.holdMode && holdMask && ev.isTrusted && typeof ev.buttons === 'number' && (ev.buttons & holdMask) === 0) {
         close();
         return;
       }
@@ -515,6 +518,7 @@
     function onPointerUp(ev) {
       if (!activeState || !activeState.holdMode) return;
       if (activeState.holdButton !== undefined && ev.button !== activeState.holdButton) return;
+      ev.preventDefault();
       if (activeState.hoverCommitItem && activeState.hoverCommitItem.path) {
         commitTarget(activeState.hoverCommitItem);
       } else {

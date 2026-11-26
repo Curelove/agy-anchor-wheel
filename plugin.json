@@ -1,8 +1,8 @@
 {
   "name": "agy-anchor-wheel",
   "displayName": "锚点轮盘 · AnchorWheel",
-  "description": "Upgrade Antigravity's side pane with native-styled 2D visual PPTX/Office/PDF/Notebook/SQLite/3D/Archive preview (with Native-First Auto-Yield), non-overwriting Markdown & folder navigation, Bilateral Category Wheel, Tab vertical-ancestor tree, 0.25s hover previews, Obsidian backlinks, and auto-encoding repair.",
-  "version": "0.9.0",
+  "description": "Upgrade Antigravity's side pane with multi-format MOV/MKV/AVI/ProRes video streaming, native-styled 2D visual PPTX/Office/PDF/Notebook/SQLite/3D/Archive preview (with Native-First Auto-Yield), configurable Middle/Right/Side-button Bilateral Wheel, Tab vertical-ancestor tree, non-blocking per-version update notifications, Obsidian backlinks, and auto-encoding repair.",
+  "version": "0.10.0",
   "logo": "assets/logo.svg",
   "author": {
     "name": "Curelove",

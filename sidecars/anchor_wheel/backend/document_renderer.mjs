@@ -2873,8 +2873,10 @@ const SAFE_EXTERNAL_OPEN_EXTS = new Set([
   '.sqlite', '.sqlite3', '.db', '.srt', '.ass', '.ssa', '.vtt', '.lrc',
   '.txt', '.md', '.mdx', '.zip', '.tar', '.tgz', '.gz', '.xz', '.bz2', '.zst', '.7z', '.rar',
   '.glb', '.stl', '.obj', '.ttf', '.otf', '.woff', '.woff2',
-  '.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp', '.svg',
-  '.mp4', '.mov', '.mkv', '.webm', '.mp3', '.wav', '.flac', '.m4a',
+  '.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp', '.svg', '.ico', '.avif',
+  '.mp4', '.m4v', '.mov', '.qt', '.mkv', '.webm', '.avi', '.flv', '.f4v', '.wmv', '.asf',
+  '.ts', '.mts', '.m2ts', '.mpg', '.mpeg', '.m2v', '.ogv', '.3gp', '.3g2', '.rmvb', '.rm', '.vob', '.mxf', '.divx',
+  '.mp3', '.wav', '.ogg', '.flac', '.m4a', '.aac', '.opus', '.wma', '.aiff', '.aif',
 ]);
 
 /**

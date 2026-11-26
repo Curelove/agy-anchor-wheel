@@ -2229,3 +2229,358 @@ test('Mode 1 native_enhancer: Native-First Auto-Yield yields when host renders r
     } catch {}
   }
 });
+
+test('Mode 1 native_enhancer: MOV/video player auto-takeover, right/side mouse wheel triggers, and update push + per-version ignore lifecycle', async (t) => {
+  const exe = findBrowserExe();
+  if (!exe) {
+    t.skip('No headless Chromium binary available');
+    return;
+  }
+
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'aw-v010-test-'));
+  const profileDir = path.join(tmpRoot, 'profile');
+  fs.mkdirSync(profileDir, { recursive: true });
+
+  const wheelCss = fs.readFileSync(path.join(ROOT, 'sidecars', 'anchor_wheel', 'shared', 'wheel_styles.css'), 'utf8');
+  const navSharedJs = fs.readFileSync(path.join(ROOT, 'sidecars', 'anchor_wheel', 'shared', 'nav_shared.js'), 'utf8');
+  const wheelJs = fs.readFileSync(path.join(ROOT, 'sidecars', 'anchor_wheel', 'shared', 'radial_wheel.js'), 'utf8');
+  const bilateralJs = fs.readFileSync(path.join(ROOT, 'sidecars', 'anchor_wheel', 'shared', 'bilateral_wheel.js'), 'utf8');
+  const aeTreeJs = fs.readFileSync(path.join(ROOT, 'sidecars', 'anchor_wheel', 'shared', 'ae_tree.js'), 'utf8');
+  const settingsModalJs = fs.readFileSync(path.join(ROOT, 'sidecars', 'anchor_wheel', 'shared', 'settings_modal.js'), 'utf8');
+  const mdJs = fs.readFileSync(path.join(ROOT, 'sidecars', 'anchor_wheel', 'shared', 'markdown_render.js'), 'utf8');
+  const docViewerJs = fs.readFileSync(path.join(ROOT, 'sidecars', 'anchor_wheel', 'shared', 'doc_viewer.js'), 'utf8');
+  const nativeJs = fs.readFileSync(path.join(ROOT, 'sidecars', 'anchor_wheel', 'native', 'native_enhancer.js'), 'utf8');
+
+  let browserProc = null;
+  let ws = null;
+
+  try {
+    browserProc = spawn(
+      exe,
+      [
+        '--headless=new',
+        '--disable-gpu',
+        '--no-first-run',
+        '--no-default-browser-check',
+        '--no-sandbox',
+        '--disable-dev-shm-usage',
+        '--remote-debugging-port=0',
+        `--user-data-dir=${profileDir}`,
+        'about:blank',
+      ],
+      { stdio: 'ignore', windowsHide: true }
+    );
+
+    const port = await waitForPortFile(profileDir);
+    const pages = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
+    const page = pages.find((p) => p.type === 'page') || pages[0];
+    ws = new WebSocket(page.webSocketDebuggerUrl);
+    await new Promise((r) => ws.addEventListener('open', r));
+    const cdp = new MiniCdp(ws);
+    await cdp.send('Runtime.enable');
+
+    const res = await cdp.evalAsync(`(async () => {
+      const root = document.createElement('div');
+      root.id = 'root';
+      document.body.appendChild(root);
+
+      const cid = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+      const movUri = 'file:///c%3A/Users/demo/render_preview.mov';
+      const mdUri = 'file:///c%3A/Users/demo/notes.md';
+
+      const storeState = {
+        sidePanelV2: {
+          conversationPanes: {
+            [cid]: {
+              activeTabId: 'file__' + movUri,
+              tabs: [
+                { id: 'file__' + movUri, content: { type: 'fileView', fileView: { fileUri: movUri, cascadeId: cid } } },
+                { id: 'file__' + mdUri, content: { type: 'fileView', fileView: { fileUri: mdUri, cascadeId: cid } } },
+              ],
+            },
+          },
+          overviewPanelOpen: {},
+        },
+      };
+      const listeners = new Set();
+      const reduxStore = {
+        getState: () => storeState,
+        subscribe: (fn) => { listeners.add(fn); return () => listeners.delete(fn); },
+        dispatch: (act) => {
+          if (act.type === 'sidePanelV2/setActiveTab') {
+            storeState.sidePanelV2.conversationPanes[cid].activeTabId = act.payload.tabId;
+          }
+          for (const fn of listeners) fn();
+        },
+      };
+      const browserCtx = {
+        openUrlInBrowserPane: () => {},
+        getTargetTreeId: () => ({ kind: 'cascadeId', cascadeId: cid }),
+      };
+      root.__reactContainer$test = { memoizedProps: { store: reduxStore, value: browserCtx }, child: null, sibling: null };
+
+      const aux = document.createElement('div');
+      aux.setAttribute('data-testid', 'aux-pane-split');
+      const left = document.createElement('div');
+      const right = document.createElement('div');
+      right.style.cssText = 'width:560px;height:760px;';
+      const col = document.createElement('div');
+      col.className = 'flex flex-col browser-hole-ancestor';
+      col.style.cssText = 'width:560px;height:760px;display:flex;flex-direction:column;';
+
+      const tabBar = document.createElement('div');
+      tabBar.className = 'agy-layout-vars';
+      const contentWrap = document.createElement('div');
+      contentWrap.className = 'flex-grow basis-0 overflow-hidden';
+      contentWrap.style.cssText = 'flex:1;height:680px;overflow:hidden;display:flex;flex-direction:column;';
+
+      const nativeHeader = document.createElement('div');
+      nativeHeader.style.cssText = 'height:32px;display:flex;align-items:center;justify-content:space-between;';
+      nativeHeader.innerHTML = '<div data-uri="' + movUri + '" id="bc-mov">render_preview.mov</div><button type="button" data-testid="more-actions-overflow">⋮</button>';
+
+      const nativeBody = document.createElement('div');
+      nativeBody.id = 'agy-native-body';
+      nativeBody.style.cssText = 'flex:1;min-height:400px;';
+      nativeBody.innerHTML = '<div data-testid="binary-file-no-preview">Preview is not available for this file type.</div>';
+
+      contentWrap.append(nativeHeader, nativeBody);
+      col.append(tabBar, contentWrap);
+      right.appendChild(col);
+      aux.append(left, right);
+      root.appendChild(aux);
+
+      let prepareCalls = 0;
+      let allowVideoReady = false;
+      let ignoredCalls = [];
+      let historyBackCalls = 0;
+      let mockSettings = {
+        middleMode: 'bilateral_wheel',
+        wheelTriggerButton: 'middle',
+        richDocPreviewEnabled: true,
+        richDocAutoStrategy: 'auto_yield',
+        autoCheckUpdates: false,
+        ignoredUpdateVersion: '',
+      };
+      const mockSession = {
+        groups: [],
+        activeGroupId: null,
+        history: { entries: [{ path: 'C:\\\\Users\\\\demo\\\\notes.md', title: 'notes.md' }, { path: 'C:\\\\Users\\\\demo\\\\render_preview.mov', title: 'render_preview.mov' }], index: 1 },
+        recentlyEvicted: [],
+        lineage: { parentByKey: {} },
+      };
+      let mockUpdate = {
+        ok: true,
+        currentVersion: '0.9.0',
+        latestVersion: '9.1.0',
+        tagName: 'v9.1.0',
+        updateAvailable: true,
+        ignoredVersion: '',
+        isIgnored: false,
+        shouldNotify: true,
+        releaseUrl: 'https://github.com/Curelove/agy-anchor-wheel/releases/tag/v9.1.0',
+        publishedAt: '2026-11-27T00:00:00Z',
+        bodySnippet: '支持 MOV 多格式视频预览与右键/侧键轮盘触发',
+      };
+
+      window.__agAnchorWheelCall = (raw) => {
+        const req = JSON.parse(raw);
+        let res = { ok: true, session: mockSession };
+        if (req.action === 'getBoot') {
+          res = { ok: true, version: '0.9.0', settings: mockSettings, session: mockSession, updateInfo: mockUpdate };
+        } else if (req.action === 'getBacklinks') {
+          res = { ok: true, path: req.path, title: 'file', backlinks: [], outlinks: [] };
+        } else if (req.action === 'getNavContext') {
+          res = {
+            ok: true,
+            activePath: req.path,
+            current: { path: req.path, key: req.path, title: 'file', children: [{ path: 'C:\\\\Users\\\\demo\\\\notes.md', title: 'notes.md', categoryId: 'doc', categoryLabel: '文档' }] },
+            parent: { path: 'C:\\\\Users\\\\demo\\\\notes.md', title: 'notes.md' },
+            ancestors: [{ path: 'C:\\\\Users\\\\demo\\\\notes.md', title: 'notes.md', siblings: [] }],
+            categories: [{ id: 'doc', label: '文档', items: [{ path: 'C:\\\\Users\\\\demo\\\\notes.md', title: 'notes.md' }] }],
+            totalCurrentChildren: 1,
+          };
+        } else if (req.action === 'prepareVideo') {
+          prepareCalls++;
+          const isReady = allowVideoReady;
+          res = {
+            ok: true,
+            format: 'video',
+            formatLabel: 'MOV 视频',
+            badge: 'MOV',
+            path: req.path,
+            title: 'render_preview.mov',
+            ext: 'mov',
+            autoRender: true,
+            ffmpegAvailable: true,
+            strategy: 'remux',
+            strategyReason: '无损极速封装 MOV → MP4',
+            ready: isReady,
+            preparing: !isReady,
+            streamUrl: '',
+            canInlineBlob: false,
+            posterDataUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a8b8AAAAASUVORK5CYII=',
+            videoMeta: { width: 1920, height: 1080, duration: 12, durationText: '0:12', fps: 30, videoCodec: 'h264', audioCodec: 'aac' },
+            meta: { statsLabel: '1920×1080 · 0:12 · H264' },
+            warnings: [],
+          };
+        } else if (req.action === 'ignoreUpdateVersion') {
+          ignoredCalls.push(req.version);
+          mockSettings = { ...mockSettings, ignoredUpdateVersion: req.version };
+          mockUpdate = {
+            ...mockUpdate,
+            ignoredVersion: req.version,
+            isIgnored: Boolean(req.version && req.version === mockUpdate.latestVersion),
+            shouldNotify: !Boolean(req.version && req.version === mockUpdate.latestVersion),
+          };
+          res = { ok: true, settings: mockSettings, updateInfo: mockUpdate };
+        } else if (req.action === 'sessionOp' && req.op === 'history' && req.historyAction === 'back') {
+          historyBackCalls++;
+          res = { ok: true, session: mockSession, targetEntry: null };
+        }
+        setTimeout(() => window.__agAnchorWheelResolve?.(req.id, res), 0);
+      };
+
+      window.__agAnchorWheelBoot = { version: '0.9.0', settings: mockSettings, wheelCss: ${JSON.stringify(wheelCss)} };
+      eval(${JSON.stringify(navSharedJs)});
+      eval(${JSON.stringify(wheelJs)});
+      eval(${JSON.stringify(bilateralJs)});
+      eval(${JSON.stringify(aeTreeJs)});
+      eval(${JSON.stringify(settingsModalJs)});
+      eval(${JSON.stringify(mdJs)});
+      eval(${JSON.stringify(docViewerJs)});
+      eval(${JSON.stringify(nativeJs)});
+
+      const waitForSelector = async (sel, timeoutMs = 2000) => {
+        const start = Date.now();
+        while (Date.now() - start < timeoutMs) {
+          const hit = document.querySelector(sel);
+          if (hit) return hit;
+          await new Promise((r) => setTimeout(r, 30));
+        }
+        return null;
+      };
+
+      // 1. Verify MOV preparing view -> polls -> video element + speed/loop controls mounted!
+      const initiallyPreparing = Boolean(await waitForSelector('.aw-video-preparing', 2000));
+      allowVideoReady = true;
+      const videoElMounted = Boolean(await waitForSelector('video.aw-video-el', 2200));
+      const speedBtn = document.querySelector('[data-aw-doc-act="vspeed"]');
+      speedBtn?.click();
+      const speedAfterClick = document.querySelector('.aw-vspeed-txt')?.textContent || '';
+
+      // 2. Verify update push card + strip update pill appear on boot for v9.1.0
+      const pushVisibleInitial = Boolean(document.getElementById('aw-native-update-push'));
+      const stripPillInitial = Boolean(document.querySelector('#aw-companion-strip [data-aw-role="update-pill"]'));
+      const gearDotInitial = document.querySelector('#aw-companion-strip [data-aw-role="settings-btn"]')?.getAttribute('data-has-update') === '1';
+
+      // Click 忽略此版本 on floating push card
+      document.querySelector('#aw-native-update-push [data-aw-upd-act="ignore"]')?.click();
+      await new Promise((r) => setTimeout(r, 80));
+      const pushHiddenAfterIgnore = !document.getElementById('aw-native-update-push');
+      const stripPillHiddenAfterIgnore = !document.querySelector('#aw-companion-strip [data-aw-role="update-pill"]');
+      const gearDotClearedAfterIgnore = !document.querySelector('#aw-companion-strip [data-aw-role="settings-btn"]')?.hasAttribute('data-has-update');
+
+      // Simulate next newer release v9.2.0 pushed by backend -> notification automatically re-appears!
+      window.__agAnchorWheel.onBackendSync({
+        updateInfo: {
+          ...mockUpdate,
+          latestVersion: '9.2.0',
+          tagName: 'v9.2.0',
+          isIgnored: false,
+          shouldNotify: true,
+        },
+      });
+      await new Promise((r) => setTimeout(r, 50));
+      const pushReappearedForNextVer = document.getElementById('aw-native-update-push')?.getAttribute('data-aw-ver') === '9.2.0';
+      const stripPillReappeared = (document.querySelector('#aw-companion-strip [data-aw-role="update-pill"]')?.textContent || '').includes('9.2.0');
+
+      // Dismiss push card so it doesn't obscure pointer tests
+      document.querySelector('#aw-native-update-push [data-aw-upd-act="later"]')?.click();
+
+      // 3. Switch to Markdown tab and test configurable Right-Click hold wheel + contextmenu suppression
+      nativeBody.innerHTML = '<div id="md-body" style="width:100%;height:300px;">Document body text</div>';
+      reduxStore.dispatch({ type: 'sidePanelV2/setActiveTab', payload: { tabId: 'file__' + mdUri } });
+      await new Promise((r) => setTimeout(r, 200));
+
+      window.__agAnchorWheel.onBackendSync({ settings: { ...mockSettings, wheelTriggerButton: 'right' } });
+      await new Promise((r) => setTimeout(r, 40));
+
+      const mdEl = document.getElementById('md-body');
+      mdEl.dispatchEvent(new PointerEvent('pointerdown', { button: 2, buttons: 2, clientX: 280, clientY: 320, bubbles: true, cancelable: true }));
+      await new Promise((r) => setTimeout(r, 175));
+      const rightHoldOpenedWheel = window.__agAnchorWheel.getDebugState().bilateralOpen;
+      document.dispatchEvent(new PointerEvent('pointerup', { button: 2, buttons: 0, clientX: 280, clientY: 320, bubbles: true, cancelable: true }));
+      const ctxEv = new MouseEvent('contextmenu', { button: 2, clientX: 280, clientY: 320, bubbles: true, cancelable: true });
+      mdEl.dispatchEvent(ctxEv);
+      const ctxSuppressedAfterRightHold = ctxEv.defaultPrevented;
+
+      // 4. Switch to Side Button 1 ('side_back', button 3) -> hold opens wheel & release NEVER triggers history back!
+      window.__agAnchorWheel.onBackendSync({ settings: { ...mockSettings, wheelTriggerButton: 'side_back' } });
+      await new Promise((r) => setTimeout(r, 40));
+      mdEl.dispatchEvent(new PointerEvent('pointerdown', { button: 3, buttons: 8, clientX: 280, clientY: 320, bubbles: true, cancelable: true }));
+      await new Promise((r) => setTimeout(r, 95));
+      const sideHoldOpenedWheel = window.__agAnchorWheel.getDebugState().bilateralOpen;
+      document.dispatchEvent(new PointerEvent('pointerup', { button: 3, buttons: 0, clientX: 280, clientY: 320, bubbles: true, cancelable: true }));
+      await new Promise((r) => setTimeout(r, 40));
+
+      // 5. Open Settings modal and check trigger button dropdown & live focus label
+      document.querySelector('#aw-companion-strip [data-aw-role="settings-btn"]')?.click();
+      await new Promise((r) => setTimeout(r, 60));
+      const trigSelectVal = document.querySelector('#aw-sm-trigger-btn')?.value || '';
+      const focusBtnTxt = document.querySelector('[data-aw-focus-ch="middle"]')?.textContent || '';
+
+      return {
+        initiallyPreparing,
+        videoElMounted,
+        speedAfterClick,
+        pushVisibleInitial,
+        stripPillInitial,
+        gearDotInitial,
+        ignoredCalls,
+        pushHiddenAfterIgnore,
+        stripPillHiddenAfterIgnore,
+        gearDotClearedAfterIgnore,
+        pushReappearedForNextVer,
+        stripPillReappeared,
+        rightHoldOpenedWheel,
+        ctxSuppressedAfterRightHold,
+        sideHoldOpenedWheel,
+        historyBackCalls,
+        trigSelectVal,
+        focusBtnTxt,
+      };
+    })()`);
+
+    assert.deepEqual(cdp.errors, []);
+    assert.equal(res.initiallyPreparing, true);
+    assert.equal(res.videoElMounted, true);
+    assert.equal(res.speedAfterClick, '1.25×');
+    assert.equal(res.pushVisibleInitial, true);
+    assert.equal(res.stripPillInitial, true);
+    assert.equal(res.gearDotInitial, true);
+    assert.deepEqual(res.ignoredCalls, ['9.1.0']);
+    assert.equal(res.pushHiddenAfterIgnore, true);
+    assert.equal(res.stripPillHiddenAfterIgnore, true);
+    assert.equal(res.gearDotClearedAfterIgnore, true);
+    assert.equal(res.pushReappearedForNextVer, true);
+    assert.equal(res.stripPillReappeared, true);
+    assert.equal(res.rightHoldOpenedWheel, true);
+    assert.equal(res.ctxSuppressedAfterRightHold, true);
+    assert.equal(res.sideHoldOpenedWheel, true);
+    assert.equal(res.historyBackCalls, 0);
+    assert.equal(res.trigSelectVal, 'side_back');
+    assert.ok(res.focusBtnTxt.includes('后退侧键'));
+  } finally {
+    try { ws?.close(); } catch {}
+    if (browserProc) {
+      await new Promise((resolve) => {
+        const timer = setTimeout(resolve, 1500);
+        browserProc.once('exit', () => { clearTimeout(timer); resolve(); });
+        try { browserProc.kill(); } catch { resolve(); }
+      });
+    }
+    try {
+      fs.rmSync(tmpRoot, { recursive: true, force: true, maxRetries: 6, retryDelay: 150 });
+    } catch {}
+  }
+});

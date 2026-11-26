@@ -10,6 +10,7 @@ import { buildNavContext, classifyFile, listDirectoryDirectFiles } from './nav_c
 import { PreviewService } from './preview_service.mjs';
 import { revealInSystemExplorer } from './system_explorer.mjs';
 import { UpdateService } from './update_service.mjs';
+import { VideoService } from './video_service.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SIDECAR_ROOT = path.resolve(__dirname, '..');
@@ -192,11 +193,20 @@ function safeJson(val) {
 }
 
 export class CdpBridge {
-  constructor({ stateStore, backlinkIndex, previewService, updateService, portFilePath } = {}) {
+  constructor({ stateStore, backlinkIndex, previewService, videoService, updateService, getMediaBaseUrl, portFilePath } = {}) {
     this.stateStore = stateStore;
     this.backlinkIndex = backlinkIndex;
     this.previewService = previewService || (stateStore ? new PreviewService(stateStore.dataDir) : null);
-    this.updateService = updateService || (stateStore ? new UpdateService({ dataDir: stateStore.dataDir }) : null);
+    this.videoService = videoService || (stateStore ? new VideoService(stateStore.dataDir) : null);
+    this.updateService =
+      updateService ||
+      (stateStore
+        ? new UpdateService({
+            dataDir: stateStore.dataDir,
+            getIgnoredVersion: () => stateStore.getSettings().ignoredUpdateVersion,
+          })
+        : null);
+    this.getMediaBaseUrl = typeof getMediaBaseUrl === 'function' ? getMediaBaseUrl : () => '';
     this.portFilePath = portFilePath || getDefaultPortFilePath();
     this.sessions = new Map(); // target.id -> entry
     this.timer = null;
@@ -344,6 +354,13 @@ export class CdpBridge {
       case 'checkUpdate':
         if (!this.updateService) return { ok: false, error: 'Update service unavailable' };
         return this.updateService.checkForUpdates({ force: Boolean(req.force) });
+      case 'ignoreUpdateVersion': {
+        const version = String(req.version || '').trim();
+        const next = this.stateStore.updateSettings({ ignoredUpdateVersion: version });
+        const updateInfo = this.updateService?.getCachedResult?.() || null;
+        this.pushSync({ settings: next, updateInfo });
+        return { ok: true, settings: next, updateInfo };
+      }
       case 'getCompatStatus':
         if (!this.updateService) return { ok: false, error: 'Update service unavailable' };
         return { ok: true, ...this.updateService.getPluginMeta(), cdp: this.getStatus() };
@@ -442,8 +459,9 @@ export class CdpBridge {
         if (cfgChanged) {
           this.backlinkIndex.scheduleBackgroundRescan({ force: false });
         }
-        this.pushSync({ settings: next });
-        return { ok: true, settings: next };
+        const updateInfo = this.updateService?.getCachedResult?.() || null;
+        this.pushSync({ settings: next, updateInfo });
+        return { ok: true, settings: next, updateInfo };
       }
       case 'getBacklinks': {
         let changed = false;
@@ -477,6 +495,26 @@ export class CdpBridge {
           dataDir: this.stateStore?.dataDir,
           dryRun: Boolean(req.dryRun),
         });
+      case 'prepareVideo': {
+        if (!this.videoService) return { ok: false, error: 'Video service unavailable' };
+        const targetPath = req.path || '';
+        let posterDataUrl = '';
+        if (this.previewService) {
+          try {
+            posterDataUrl = await Promise.race([
+              this.previewService.getVideoPosterDataUrl(targetPath),
+              new Promise((r) => setTimeout(() => r(''), 1600)),
+            ]);
+          } catch {}
+        }
+        return this.videoService.prepareVideo(targetPath, {
+          mediaBaseUrl: this.getMediaBaseUrl?.() || '',
+          posterDataUrl: String(posterDataUrl || ''),
+        });
+      }
+      case 'readMediaBlob':
+        if (!this.videoService) return { ok: false, error: 'Video service unavailable' };
+        return this.videoService.readMediaBlob(req.path || '', { mode: req.mode || '' });
       case 'openExternal':
         return openExternalDocument(req.path || '', { dryRun: Boolean(req.dryRun) });
       case 'revealInExplorer':

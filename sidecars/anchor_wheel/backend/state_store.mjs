@@ -12,7 +12,10 @@ export const DEFAULT_CATEGORY_RULES = Object.freeze([
   Object.freeze({
     id: 'video',
     label: '视频',
-    extensions: Object.freeze(['mp4', 'mkv', 'mov', 'webm', 'avi', 'm4v']),
+    extensions: Object.freeze([
+      'mp4', 'm4v', 'mov', 'qt', 'mkv', 'webm', 'avi', 'flv', 'f4v', 'wmv', 'asf',
+      'ts', 'mts', 'm2ts', 'mpg', 'mpeg', 'ogv', '3gp', 'rmvb', 'vob', 'mxf',
+    ]),
   }),
   Object.freeze({
     id: 'doc',
@@ -32,6 +35,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
   wheelHotkey: 'Alt+Q',
   wheelSectors: 8,
   middleMode: 'bilateral_wheel', // 'bilateral_wheel' | 'classic_wheel' | 'off'
+  wheelTriggerButton: 'middle', // 'middle' | 'right' | 'side_back' | 'side_forward'
   tabTriggerEnabled: true,
   tabMode: 'ae_tree', // 'ae_tree' | 'bilateral_wheel' | 'classic_wheel' | 'off'
   tabCustomHotkey: 'Tab', // 'Tab' | 'Alt+Q' | 'Alt+W' | 'F2'
@@ -51,10 +55,12 @@ export const DEFAULT_SETTINGS = Object.freeze({
   encodingAutoDetect: true,
   foldChildTabsInNativeBar: true,
   autoCheckUpdates: true,
+  ignoredUpdateVersion: '',
   theme: 'auto', // 'auto' | 'obsidian' | 'warm' | 'crystal' | 'alabaster'
 });
 
 const VALID_TRIGGERS = new Set(['middle_or_badge', 'right_drag', 'hotkey_only', 'badge_only']);
+const VALID_TRIGGER_BUTTONS = new Set(['middle', 'right', 'side_back', 'side_forward']);
 const VALID_MIDDLE_MODES = new Set(['bilateral_wheel', 'classic_wheel', 'off']);
 const VALID_TAB_MODES = new Set(['ae_tree', 'bilateral_wheel', 'classic_wheel', 'off']);
 const VALID_TAB_HOTKEYS = new Set(['Tab', 'Alt+Q', 'Alt+W', 'F2']);
@@ -124,6 +130,11 @@ export function sanitizeSettings(raw, base = DEFAULT_SETTINGS) {
       next.wheelTrigger = 'middle_or_badge';
     }
   }
+  if (VALID_TRIGGER_BUTTONS.has(src.wheelTriggerButton)) {
+    next.wheelTriggerButton = src.wheelTriggerButton;
+  } else if (src.wheelTrigger === 'right_drag' && src.wheelTriggerButton === undefined && base.wheelTriggerButton === 'middle') {
+    next.wheelTriggerButton = 'right';
+  }
   if (typeof src.tabTriggerEnabled === 'boolean') next.tabTriggerEnabled = src.tabTriggerEnabled;
   if (VALID_TAB_MODES.has(src.tabMode)) next.tabMode = src.tabMode;
   if (VALID_TAB_HOTKEYS.has(src.tabCustomHotkey)) next.tabCustomHotkey = src.tabCustomHotkey;
@@ -156,6 +167,10 @@ export function sanitizeSettings(raw, base = DEFAULT_SETTINGS) {
   if (typeof src.encodingAutoDetect === 'boolean') next.encodingAutoDetect = src.encodingAutoDetect;
   if (typeof src.foldChildTabsInNativeBar === 'boolean') next.foldChildTabsInNativeBar = src.foldChildTabsInNativeBar;
   if (typeof src.autoCheckUpdates === 'boolean') next.autoCheckUpdates = src.autoCheckUpdates;
+  if (typeof src.ignoredUpdateVersion === 'string') {
+    const cleanVer = src.ignoredUpdateVersion.trim().replace(/^v/i, '').slice(0, 32);
+    next.ignoredUpdateVersion = /^[0-9A-Za-z._-]{1,32}$/.test(cleanVer) ? cleanVer : '';
+  }
   if (VALID_THEMES.has(src.theme)) next.theme = src.theme;
   return next;
 }

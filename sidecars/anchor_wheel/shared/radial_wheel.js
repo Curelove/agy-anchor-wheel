@@ -163,6 +163,13 @@
 
     function onPointerMove(ev) {
       if (!activeState || activeState.listMode) return;
+      const holdMask = Shared?.buttonToButtonsMask
+        ? Shared.buttonToButtonsMask(activeState.holdButton)
+        : (activeState.holdButton === 1 ? 4 : activeState.holdButton === 2 ? 2 : activeState.holdButton === 3 ? 8 : activeState.holdButton === 4 ? 16 : 0);
+      if (activeState.holdMode && holdMask && ev.isTrusted && typeof ev.buttons === 'number' && (ev.buttons & holdMask) === 0) {
+        close();
+        return;
+      }
       const aimEl = backdropEl?.querySelector('.aw-wheel-aim');
       if (aimEl) {
         const dx = ev.clientX - activeState.cx;
@@ -178,6 +185,7 @@
     function onPointerUp(ev) {
       if (!activeState || !activeState.holdMode || activeState.listMode) return;
       if (activeState.holdButton !== undefined && ev.button !== activeState.holdButton) return;
+      ev.preventDefault();
       const hit = hitTestPointer(ev.clientX, ev.clientY);
       if (hit === 'cancel' || hit === null) {
         close();

@@ -1,10 +1,11 @@
-import { execFile, execFileSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { getSupportedDocumentMeta, renderDocument } from './document_renderer.mjs';
 import { decodeBuffer } from './encoding.mjs';
 import { isSensitiveFilePath, resolveSafeDirPath, resolveSafeReadPath } from './security.mjs';
+import { AUDIO_EXTENSIONS, VIDEO_EXTENSIONS, detectMediaBinaries } from './video_service.mjs';
 
 const IMAGE_MIME = Object.freeze({
   '.png': 'image/png',
@@ -18,8 +19,8 @@ const IMAGE_MIME = Object.freeze({
   '.avif': 'image/avif',
 });
 
-const VIDEO_EXTS = new Set(['.mp4', '.mkv', '.mov', '.webm', '.avi', '.m4v']);
-const AUDIO_EXTS = new Set(['.mp3', '.wav', '.ogg', '.m4a', '.flac', '.aac']);
+const VIDEO_EXTS = VIDEO_EXTENSIONS;
+const AUDIO_EXTS = AUDIO_EXTENSIONS;
 const MAX_INLINE_IMAGE_BYTES = 380 * 1024;
 const MAX_TEXT_READ_BYTES = 8192;
 const MAX_DISK_CACHE_FILES = 150;
@@ -30,29 +31,7 @@ const MAX_PENDING_CLIPS = 6;
 const FAILED_MEDIA_TTL_MS = 60 * 1000;
 
 export function detectFfmpegBinary() {
-  const cmd = process.platform === 'win32' ? 'where' : 'which';
-  try {
-    const out = execFileSync(cmd, ['ffmpeg'], { encoding: 'utf8', timeout: 2000, windowsHide: true });
-    const first = String(out || '')
-      .split(/\r?\n/)
-      .map((s) => s.trim())
-      .find((s) => s && fs.existsSync(s));
-    if (first) return first;
-  } catch {}
-  if (process.platform === 'win32') {
-    const candidates = ['C:\\ffmpeg\\bin\\ffmpeg.exe'];
-    try {
-      if (fs.existsSync('C:\\ffmpeg')) {
-        for (const sub of fs.readdirSync('C:\\ffmpeg', { withFileTypes: true })) {
-          if (sub.isDirectory()) candidates.push(path.join('C:\\ffmpeg', sub.name, 'bin', 'ffmpeg.exe'));
-        }
-      }
-    } catch {}
-    for (const c of candidates) {
-      if (fs.existsSync(c)) return c;
-    }
-  }
-  return '';
+  return detectMediaBinaries().ffmpegBin || '';
 }
 
 function runFfmpeg(ffmpegBin, args, timeoutMs = 5500, activeProcs = null) {
@@ -273,8 +252,14 @@ export class PreviewService {
 
     const job = this.#enqueueFfmpegJob(
       async () => {
-        // Fast input-seek past common black intro frames, then pick representative bright frame via thumbnail=8
-        for (const ss of ['1.2', '0']) {
+        // Fast input-seek past common black intro frames, then pick representative bright frame;
+        // explicitly map 0:v:0 and convert to yuv420p/yuvj420p so 10-bit HEVC, ProRes 4444 alpha & QuickTime timecode tracks never fail.
+        const attempts = [
+          { ss: '1.2', vf: 'thumbnail=8,scale=320:-2,format=yuv420p' },
+          { ss: '0', vf: 'thumbnail=8,scale=320:-2,format=yuv420p' },
+          { ss: '0', vf: 'scale=320:-2,format=yuv420p' },
+        ];
+        for (const { ss, vf } of attempts) {
           try {
             await runFfmpeg(
               this.ffmpegBin,
@@ -286,8 +271,12 @@ export class PreviewService {
                 ss,
                 '-i',
                 filePath,
+                '-map',
+                '0:v:0',
                 '-vf',
-                'thumbnail=8,scale=320:-2',
+                vf,
+                '-pix_fmt',
+                'yuvj420p',
                 '-frames:v',
                 '1',
                 '-q:v',
@@ -295,7 +284,7 @@ export class PreviewService {
                 '-y',
                 outPath,
               ],
-              3200,
+              3600,
               this.activeProcs
             );
             if (fs.existsSync(outPath) && fs.statSync(outPath).size > 200) {
@@ -313,6 +302,16 @@ export class PreviewService {
     });
     this.inflightHigh.set(inflightKey, job);
     return job;
+  }
+
+  async getVideoPosterDataUrl(rawPath) {
+    if (!this.ffmpegBin || !rawPath) return '';
+    const safeFile = resolveSafeReadPath(rawPath);
+    if (!safeFile.ok) return '';
+    const ext = path.extname(safeFile.filePath).toLowerCase();
+    if (!VIDEO_EXTS.has(ext)) return '';
+    const hash = this.#makeCacheHash(safeFile.key, safeFile.stat);
+    return this.#ensurePosterFrame(safeFile.filePath, hash);
   }
 
   #triggerClipGeneration(filePath, hash) {
@@ -340,8 +339,10 @@ export class PreviewService {
               '3.0',
               '-i',
               filePath,
+              '-map',
+              '0:v:0',
               '-vf',
-              'fps=6,scale=300:-2:flags=lanczos',
+              'fps=6,scale=300:-2:flags=lanczos,format=yuv420p',
               '-c:v',
               'libwebp_anim',
               '-loop',
@@ -356,7 +357,7 @@ export class PreviewService {
               '-y',
               clipPath,
             ],
-            6500,
+            7500,
             this.activeProcs
           );
           if (!fs.existsSync(clipPath) || fs.statSync(clipPath).size <= 300) {
@@ -371,8 +372,10 @@ export class PreviewService {
                 '3.0',
                 '-i',
                 filePath,
+                '-map',
+                '0:v:0',
                 '-vf',
-                'fps=6,scale=300:-2:flags=lanczos',
+                'fps=6,scale=300:-2:flags=lanczos,format=yuv420p',
                 '-c:v',
                 'libwebp_anim',
                 '-loop',
@@ -387,7 +390,7 @@ export class PreviewService {
                 '-y',
                 clipPath,
               ],
-              6500,
+              7500,
               this.activeProcs
             );
           }

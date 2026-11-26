@@ -1,9 +1,10 @@
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import { startServer } from '../sidecars/anchor_wheel/main.mjs';
+import { detectMediaBinaries } from '../sidecars/anchor_wheel/backend/video_service.mjs';
 
 const AUDIT_CRC_TABLE = (() => {
   const tbl = new Uint32Array(256);
@@ -357,6 +358,25 @@ async function runAudit() {
     'utf8'
   );
 
+  // Real .mov clip for v0.10.0 video player visual audit (generated via local ffmpeg when present)
+  let sampleMov = null;
+  const mediaBins = detectMediaBinaries();
+  if (mediaBins.ffmpegBin) {
+    sampleMov = path.join(wsDir, '分镜预览样片_prores.mov');
+    execFileSync(
+      mediaBins.ffmpegBin,
+      [
+        '-y',
+        '-f', 'lavfi', '-i', 'testsrc2=size=640x360:rate=24:duration=2',
+        '-f', 'lavfi', '-i', 'sine=frequency=440:duration=2',
+        '-c:v', 'prores_ks', '-profile:v', '4444', '-pix_fmt', 'yuva444p10le',
+        '-c:a', 'pcm_s16le',
+        sampleMov,
+      ],
+      { stdio: 'ignore', windowsHide: true, timeout: 15000 }
+    );
+  }
+
   const grandparentMd = path.join(convBrain, '00_总纲入口.md');
   const summaryMd = path.join(convBrain, 'V2_验收汇总报告.md');
   fs.writeFileSync(
@@ -646,6 +666,64 @@ async function runAudit() {
     const overflowIpynb = await cdp.evalAsync(`document.documentElement.scrollWidth - document.documentElement.clientWidth`);
     await cdp.screenshot(path.join(outDir, '19_1100_alabaster_ipynb.png'));
 
+    // 11. v0.10.0 MOV ProRes Video Preview (1100px Obsidian + 390px Crystal) & Floating Update Push Card
+    let overflowMovWide = 0;
+    let overflowMovNarrow = 0;
+    let movVideoWidth = 0;
+    if (sampleMov) {
+      await cdp.setViewport(1100, 860);
+      await cdp.evalAsync(`document.documentElement.setAttribute('data-aw-theme', 'obsidian')`);
+      await cdp.evalAsync(`window.__awWorkbench.openFile(${JSON.stringify(sampleMov)}, { inNewTab: true })`);
+      movVideoWidth = await cdp.evalAsync(`(async () => {
+        const deadline = Date.now() + 9000;
+        while (Date.now() < deadline) {
+          const v = document.querySelector('video.aw-video-el');
+          if (v && v.videoWidth > 0) return v.videoWidth;
+          await new Promise((r) => setTimeout(r, 150));
+        }
+        return document.querySelector('video.aw-video-el')?.videoWidth || 0;
+      })()`);
+      await new Promise((r) => setTimeout(r, 200));
+      overflowMovWide = await cdp.evalAsync(`document.documentElement.scrollWidth - document.documentElement.clientWidth`);
+      await cdp.screenshot(path.join(outDir, '20_1100_obsidian_mov_player.png'));
+
+      await cdp.setViewport(390, 844);
+      await cdp.evalAsync(`document.documentElement.setAttribute('data-aw-theme', 'crystal')`);
+      await new Promise((r) => setTimeout(r, 220));
+      overflowMovNarrow = await cdp.evalAsync(`document.documentElement.scrollWidth - document.documentElement.clientWidth`);
+      await cdp.screenshot(path.join(outDir, '21_390_crystal_mov_player.png'));
+    }
+
+    // 12. Preview real non-blocking update push card + topbar pill + Settings update ignore box at 1100px Obsidian
+    await cdp.setViewport(1100, 860);
+    await cdp.evalAsync(`document.documentElement.setAttribute('data-aw-theme', 'obsidian')`);
+    await cdp.evalAsync(`(() => {
+      const st = window.__awWorkbench.getState();
+      st.updateInfo = {
+        ok: true,
+        currentVersion: '0.9.0',
+        latestVersion: '0.10.0',
+        latestTag: 'v0.10.0',
+        updateAvailable: true,
+        isIgnored: false,
+        shouldNotify: true,
+        publishedAt: '2026-11-27T00:00:00Z',
+        targetAntigravity: '2.34.x',
+        htmlUrl: 'https://github.com/Curelove/agy-anchor-wheel/releases/tag/v0.10.0',
+        bodySnippet: '全格式视频侧边栏直览（支持 MOV / MKV / AVI / ProRes 等自动流式转码）、轮盘触发按键自定义（中键/右键/侧键），以及温和版更新推送与按版本忽略能力。',
+      };
+      window.__awWorkbench.syncUpdateBadge();
+    })()`);
+    await new Promise((r) => setTimeout(r, 180));
+    await cdp.screenshot(path.join(outDir, '22_1100_obsidian_update_push.png'));
+
+    await cdp.evalAsync(`(() => {
+      const btn = document.querySelector('#aw-wb-update-push [data-aw-upd-act="view"]');
+      btn?.click();
+    })()`);
+    await new Promise((r) => setTimeout(r, 320));
+    await cdp.screenshot(path.join(outDir, '23_1100_obsidian_settings_update_ignore.png'));
+
     console.log(JSON.stringify({
       ok: true,
       outDir,
@@ -661,6 +739,9 @@ async function runAudit() {
       overflowPptxNarrow,
       overflow3d,
       overflowIpynb,
+      overflowMovWide,
+      overflowMovNarrow,
+      movVideoWidth,
       consoleErrors: cdp.errors,
     }, null, 2));
   } finally {

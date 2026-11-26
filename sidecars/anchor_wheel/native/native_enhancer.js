@@ -20,6 +20,7 @@
   const PORTAL_ID = 'aw-native-portal';
   const OVERLAY_ID = 'aw-native-encoding-overlay';
   const DOC_OVERLAY_ID = 'aw-native-doc-overlay';
+  const UPDATE_PUSH_ID = 'aw-native-update-push';
   const GUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 
   let destroyed = false;
@@ -72,6 +73,7 @@
   };
   let latestUpdateInfo = null;
   let bgUpdateAttempted = false;
+  let sessionDismissedUpdateVer = '';
 
   function applyThemeAttr(el) {
     if (!el || !el.setAttribute) return;
@@ -85,6 +87,7 @@
     applyThemeAttr(D.getElementById(PORTAL_ID));
     applyThemeAttr(D.getElementById(OVERLAY_ID));
     applyThemeAttr(D.getElementById(DOC_OVERLAY_ID));
+    applyThemeAttr(D.getElementById(UPDATE_PUSH_ID));
   }
 
   function markOwned(el) {
@@ -813,6 +816,7 @@
 
   function closeAllNavigators() {
     activeTabTriggerMode = false;
+    holdWheelActiveButton = -1;
     wheelInstance?.close?.();
     bilateralInstance?.close?.();
     aeTreeInstance?.close?.();
@@ -1897,6 +1901,8 @@
     let hostBodyText = '';
     let hasRichVisual = false;
     let hasRawCode = false;
+    let hasBrokenVideo = false;
+    let hasPendingVideo = false;
 
     const inspectNode = (el) => {
       if (!el || el.nodeType !== 1) return;
@@ -1906,11 +1912,29 @@
       if (isNativeFileHeaderBar(el)) return;
 
       const tag = String(el.tagName || '').toUpperCase();
-      if (
+      if (tag === 'VIDEO') {
+        const failed =
+          Boolean(el.error) ||
+          el.networkState === 3 ||
+          (el.readyState >= 1 && el.videoWidth === 0 && el.videoHeight === 0);
+        if (failed) {
+          hasBrokenVideo = true;
+        } else if (el.readyState >= 1 && el.videoWidth > 0) {
+          hasRichVisual = true;
+        } else {
+          hasPendingVideo = true;
+          if (!el.dataset?.awVidWatch) {
+            try {
+              el.dataset.awVidWatch = '1';
+              el.addEventListener('error', () => scheduleSync(), { once: true });
+              el.addEventListener('loadedmetadata', () => scheduleSync(), { once: true });
+            } catch {}
+          }
+        }
+      } else if (
         tag === 'IFRAME' ||
         tag === 'EMBED' ||
         tag === 'OBJECT' ||
-        tag === 'VIDEO' ||
         tag === 'AUDIO' ||
         tag === 'CANVAS' ||
         tag === 'TABLE'
@@ -1950,8 +1974,14 @@
       inspectNode(ch);
     }
 
+    if (hasBrokenVideo && !hasRichVisual) {
+      return 'unsupported';
+    }
     if (UNSUPPORTED_HOST_TEXT_RE.test(hostBodyText)) {
       return 'unsupported';
+    }
+    if (hasPendingVideo && !hasRichVisual) {
+      return 'empty_loading';
     }
     if (!hostBodyText.trim() && !hasRichVisual && !hasRawCode) {
       return 'empty_loading';
@@ -2057,9 +2087,11 @@
 
     const hadPriorSameKey = lastRenderedDocKey === targetKey && Boolean(lastRenderedDocData);
     if (!hadPriorSameKey) {
-      host.innerHTML = `<div class="aw-doc-loading-card">正在解析 ${S?.esc ? S.esc(baseName(targetPath)) : baseName(targetPath)} ...</div>`;
+      host.innerHTML = `<div class="aw-doc-loading-card">${meta.isVideo ? '正在检测并准备视频流' : '正在解析'} ${S?.esc ? S.esc(baseName(targetPath)) : baseName(targetPath)} ...</div>`;
     }
-    const res = await callRpc('renderDocument', { path: targetPath }, 15000);
+    const res = meta.isVideo
+      ? await callRpc('prepareVideo', { path: targetPath }, 15000)
+      : await callRpc('renderDocument', { path: targetPath }, 15000);
     if (destroyed || mySeq !== docRenderSeq || normKey(activeFilePath) !== targetKey) {
       return false;
     }
@@ -2100,6 +2132,8 @@
         void callRpc('updateSettings', { settings: { richDocPaperMode: Boolean(nextPaper) } });
       },
       onRequestHiRes: (p) => callRpc('renderSlidesHiRes', { path: p || targetPath }, 32000),
+      onPollVideoReady: meta.isVideo ? (p) => callRpc('prepareVideo', { path: p || targetPath }, 12000) : null,
+      onReadMediaBlob: meta.isVideo ? (p, mode) => callRpc('readMediaBlob', { path: p || targetPath, mode: mode || '' }, 15000) : null,
       onNotify: (msg) => showToast(msg),
       onOpenExternal: async (p) => {
         const extRes = await callRpc('openExternal', { path: p || targetPath });
@@ -2127,9 +2161,117 @@
     };
   }
 
-  function openSettingsModal() {
+  function getEffectiveUpdateState() {
+    const ignored = settings?.ignoredUpdateVersion || '';
+    if (S?.computeUpdateStateClient) {
+      return S.computeUpdateStateClient(latestUpdateInfo, ignored);
+    }
+    const avail = Boolean(latestUpdateInfo?.ok && latestUpdateInfo?.updateAvailable);
+    const isIgnored = Boolean(avail && latestUpdateInfo?.isIgnored);
+    return { updateAvailable: avail, ignoredVersion: ignored, isIgnored, shouldNotify: Boolean(avail && !isIgnored) };
+  }
+
+  function closeUpdatePushCard() {
+    const existing = D.getElementById(UPDATE_PUSH_ID);
+    if (existing) {
+      try { existing.remove(); } catch {}
+    }
+  }
+
+  async function ignoreUpdateVersionUi(version) {
+    const cleanVer = String(version || '').trim().replace(/^v/i, '');
+    settings = { ...settings, ignoredUpdateVersion: cleanVer };
+    const res = await callRpc('ignoreUpdateVersion', { version: cleanVer }, 6000);
+    if (res?.ok) {
+      if (res.settings) settings = res.settings;
+      if (res.updateInfo) latestUpdateInfo = res.updateInfo;
+    } else if (latestUpdateInfo && latestUpdateInfo.ok) {
+      latestUpdateInfo = {
+        ...latestUpdateInfo,
+        ...getEffectiveUpdateState(),
+      };
+    }
+    if (cleanVer) {
+      closeUpdatePushCard();
+      showToast(`已忽略 v${cleanVer}，下个新版本发布时将再次提醒`);
+    } else {
+      showToast('已恢复新版本更新提醒');
+    }
+    renderStrip();
+    syncUpdatePushCard();
+    return { ok: true, settings, updateInfo: latestUpdateInfo };
+  }
+
+  function syncUpdatePushCard() {
+    if (destroyed) return;
+    const updState = getEffectiveUpdateState();
+    const latestVer = String(latestUpdateInfo?.latestVersion || '');
+    if (!updState.shouldNotify || !latestVer || latestVer === sessionDismissedUpdateVer || settingsModalInstance?.isOpen?.()) {
+      closeUpdatePushCard();
+      return;
+    }
+    const existing = D.getElementById(UPDATE_PUSH_ID);
+    if (existing && existing.getAttribute('data-aw-ver') === latestVer) {
+      applyThemeAttr(existing);
+      return;
+    }
+    closeUpdatePushCard();
+
+    const esc = (s) => (S?.esc ? S.esc(s) : String(s || ''));
+    const curVer = latestUpdateInfo.currentVersion || bootMeta.version || '';
+    const rawNotes = String(latestUpdateInfo.bodySnippet || '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 120);
+    const summaryText = rawNotes || `当前 v${curVer} → 最新 v${latestVer}，可按需升级或跳过此版本。`;
+
+    const card = markOwned(D.createElement('div'));
+    card.id = UPDATE_PUSH_ID;
+    card.className = 'aw-update-push-card';
+    card.setAttribute('data-aw-ver', latestVer);
+    applyThemeAttr(card);
+    card.innerHTML = `
+      <div class="aw-update-push-head">
+        <div class="aw-update-push-title">
+          <span class="aw-update-pill-dot"></span>
+          <span>锚点轮盘发现新版本</span>
+          <span class="aw-update-push-ver">v${esc(latestVer)}</span>
+        </div>
+        <button type="button" class="aw-tray-btn" data-aw-upd-act="later" title="稍后提醒">${S.ICONS.close}</button>
+      </div>
+      <div class="aw-update-push-body">${esc(summaryText)}</div>
+      <div class="aw-update-push-actions">
+        <button type="button" class="aw-ghost-btn" data-aw-upd-act="ignore">忽略此版本</button>
+        <button type="button" class="aw-ghost-btn" data-aw-upd-act="later">稍后</button>
+        <button type="button" class="aw-primary-btn" data-aw-upd-act="view">查看更新</button>
+      </div>
+    `;
+    card.addEventListener('click', (e) => e.stopPropagation());
+    card.addEventListener('mousedown', (e) => e.stopPropagation());
+    card.querySelectorAll('[data-aw-upd-act="later"]').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        sessionDismissedUpdateVer = latestVer;
+        closeUpdatePushCard();
+      });
+    });
+    card.querySelector('[data-aw-upd-act="ignore"]')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      void ignoreUpdateVersionUi(latestVer);
+    });
+    card.querySelector('[data-aw-upd-act="view"]')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      sessionDismissedUpdateVer = latestVer;
+      closeUpdatePushCard();
+      openSettingsModal({ initialTab: 'storage', focusUpdateSection: true });
+    });
+    D.body.appendChild(card);
+  }
+
+  function openSettingsModal(opts = {}) {
     closePopover();
     closeAllNavigators();
+    closeUpdatePushCard();
     ensureSharedInstances();
     if (!settingsModalInstance) return;
     settingsModalInstance.open({
@@ -2143,14 +2285,18 @@
       compatInfo: bootMeta.compatibility,
       hostDiag: getHostCompatibilityDiag(),
       updateInfo: latestUpdateInfo,
+      initialTab: opts.initialTab || 'modes',
+      focusUpdateSection: Boolean(opts.focusUpdateSection),
       onCheckUpdate: async (force = true) => {
         const res = await callRpc('checkUpdate', { force: Boolean(force) }, 10000);
         if (res && (res.ok || res.error)) {
           latestUpdateInfo = res;
           renderStrip();
+          syncUpdatePushCard();
         }
         return res;
       },
+      onIgnoreUpdate: (ver) => ignoreUpdateVersionUi(ver),
       onSave: async (next) => {
         const res = await callRpc('updateSettings', { settings: next });
         if (res.ok && res.settings) {
@@ -2412,10 +2558,26 @@
       strip.appendChild(revealBtn);
     }
 
+    const updState = getEffectiveUpdateState();
+    if (updState.shouldNotify && latestUpdateInfo?.latestVersion) {
+      const updPill = markOwned(D.createElement('button'));
+      updPill.className = 'aw-update-pill';
+      updPill.setAttribute('data-aw-role', 'update-pill');
+      updPill.title = `发现新版本 v${latestUpdateInfo.latestVersion}（点击查看更新或忽略此版本）`;
+      updPill.innerHTML = `<span class="aw-update-pill-dot"></span><span>新版 v${S?.esc ? S.esc(latestUpdateInfo.latestVersion) : latestUpdateInfo.latestVersion}</span>`;
+      updPill.addEventListener('click', (e) => {
+        e.stopPropagation();
+        sessionDismissedUpdateVer = latestUpdateInfo.latestVersion;
+        closeUpdatePushCard();
+        openSettingsModal({ initialTab: 'storage', focusUpdateSection: true });
+      });
+      strip.appendChild(updPill);
+    }
+
     const setBtn = markOwned(D.createElement('button'));
     setBtn.className = 'aw-tray-btn';
     setBtn.setAttribute('data-aw-role', 'settings-btn');
-    if (latestUpdateInfo?.ok && latestUpdateInfo?.updateAvailable) {
+    if (updState.shouldNotify && latestUpdateInfo?.latestVersion) {
       setBtn.setAttribute('data-has-update', '1');
       setBtn.title = `锚点轮盘设置（发现新版 v${latestUpdateInfo.latestVersion}）`;
     } else {
@@ -2470,7 +2632,10 @@
           compatibility: bootRes.compatibility || bootMeta.compatibility,
         };
         applyThemeToNativeNodes();
-        if (bootRes.updateInfo) latestUpdateInfo = bootRes.updateInfo;
+        if (bootRes.updateInfo) {
+          latestUpdateInfo = bootRes.updateInfo;
+          syncUpdatePushCard();
+        }
         if (settings.autoCheckUpdates !== false && !bgUpdateAttempted) {
           bgUpdateAttempted = true;
           clearTimeout(bgUpdateTimer);
@@ -2481,6 +2646,7 @@
             if (!destroyed && u && (u.ok || u.error)) {
               latestUpdateInfo = u;
               renderStrip();
+              syncUpdatePushCard();
             }
           }, 2200);
         }
@@ -2753,24 +2919,71 @@
     void handleLinkActivation(meta, { background: false });
   }
 
+  function getWheelTriggerMeta() {
+    if (S?.resolveWheelTriggerButton) return S.resolveWheelTriggerButton(settings);
+    const id = settings?.wheelTriggerButton || (settings?.wheelTrigger === 'right_drag' ? 'right' : 'middle');
+    if (id === 'right') return { id: 'right', button: 2, buttonsMask: 2, shortLabel: '右键', holdMs: 135, dragPx: 8 };
+    if (id === 'side_back') return { id: 'side_back', button: 3, buttonsMask: 8, shortLabel: '后退侧键', holdMs: 65, dragPx: 5 };
+    if (id === 'side_forward') return { id: 'side_forward', button: 4, buttonsMask: 16, shortLabel: '前进侧键', holdMs: 65, dragPx: 5 };
+    return { id: 'middle', button: 1, buttonsMask: 4, shortLabel: '中键', holdMs: 115, dragPx: 8 };
+  }
+
+  function armSuppressAuxClick(ms = 220) {
+    suppressNextAuxClick = true;
+    clearTimeout(suppressAuxTimer);
+    suppressAuxTimer = setTimeout(() => {
+      suppressNextAuxClick = false;
+      suppressAuxTimer = null;
+    }, ms);
+  }
+
+  function armSuppressContextMenu(ms = 280) {
+    suppressNextContextMenu = true;
+    clearTimeout(suppressCtxTimer);
+    suppressCtxTimer = setTimeout(() => {
+      suppressNextContextMenu = false;
+      suppressCtxTimer = null;
+    }, ms);
+  }
+
   function onCaptureMouseDown(ev) {
-    if (destroyed || ev.button !== 1) return;
+    if (destroyed) return;
     if (!isInsideRightContent(ev.target)) return;
     const midMode = settings.middleMode || 'bilateral_wheel';
-    if (extractLinkMetaFromTarget(ev.target) || (activeIsDirectory && extractDirectoryRowMetaFromTarget(ev.target)) || midMode !== 'off') {
+    const trig = getWheelTriggerMeta();
+    if (ev.button === 1) {
+      if (
+        extractLinkMetaFromTarget(ev.target) ||
+        (activeIsDirectory && extractDirectoryRowMetaFromTarget(ev.target)) ||
+        (midMode !== 'off' && trig.button === 1)
+      ) {
+        ev.preventDefault();
+      }
+      return;
+    }
+    if ((ev.button === 3 || ev.button === 4) && midMode !== 'off' && trig.button === ev.button) {
       ev.preventDefault();
     }
   }
 
   function onCaptureAuxClick(ev) {
-    if (destroyed || ev.button !== 1) return;
-    if (suppressNextAuxClick) {
+    if (destroyed) return;
+    if (suppressNextAuxClick && (ev.button === 1 || ev.button === 3 || ev.button === 4)) {
       suppressNextAuxClick = false;
       ev.preventDefault();
       ev.stopPropagation();
       ev.stopImmediatePropagation();
       return;
     }
+    const midMode = settings.middleMode || 'bilateral_wheel';
+    const trig = getWheelTriggerMeta();
+    if ((ev.button === 3 || ev.button === 4) && midMode !== 'off' && trig.button === ev.button && isInsideRightContent(ev.target)) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      ev.stopImmediatePropagation();
+      return;
+    }
+    if (ev.button !== 1) return;
     if (!isInsideRightContent(ev.target)) return;
     let meta = extractLinkMetaFromTarget(ev.target);
     if (!meta && activeIsDirectory) {
@@ -2786,7 +2999,7 @@
 
   function onCaptureContextMenu(ev) {
     if (destroyed) return;
-    if (suppressNextContextMenu) {
+    if (suppressNextContextMenu || holdWheelActiveButton === 2) {
       suppressNextContextMenu = false;
       ev.preventDefault();
       ev.stopPropagation();
@@ -2851,31 +3064,35 @@
 
   let holdTimer = null;
   let holdOrigin = null;
+  let holdWheelActiveButton = -1;
 
   function openHoldWheelAtOrigin(origin) {
     const midMode = settings.middleMode || 'bilateral_wheel';
     if (midMode === 'off') return false;
-    if (origin.button === 1) {
-      suppressNextAuxClick = true;
-      clearTimeout(suppressAuxTimer);
-      suppressAuxTimer = setTimeout(() => { suppressNextAuxClick = false; suppressAuxTimer = null; }, 160);
-    } else if (origin.button === 2) {
-      suppressNextContextMenu = true;
-      clearTimeout(suppressCtxTimer);
-      suppressCtxTimer = setTimeout(() => { suppressNextContextMenu = false; suppressCtxTimer = null; }, 160);
-    }
+    let opened = false;
     if (midMode === 'classic_wheel') {
       const target = getWheelTargetGroup();
-      return target ? openClassicWheelForTarget(target, origin.x, origin.y, { holdMode: true, holdButton: origin.button }) : false;
+      opened = target ? openClassicWheelForTarget(target, origin.x, origin.y, { holdMode: true, holdButton: origin.button }) : false;
+    } else {
+      const syncCtx = getSyncNavContext(navScopeOverride);
+      if (!syncCtx?.current) return false;
+      const usedCache = syncCtx === cachedNavContext;
+      opened = openBilateralForContext(syncCtx, origin.x, origin.y, { holdMode: true, holdButton: origin.button });
+      if (opened && !usedCache) {
+        void fetchNavContext(navScopeOverride).then((fresh) => {
+          if (fresh && bilateralInstance?.isOpen?.()) bilateralInstance.updateContext(fresh);
+        });
+      }
     }
-    const syncCtx = getSyncNavContext(navScopeOverride);
-    if (!syncCtx?.current) return false;
-    const usedCache = syncCtx === cachedNavContext;
-    const opened = openBilateralForContext(syncCtx, origin.x, origin.y, { holdMode: true, holdButton: origin.button });
-    if (opened && !usedCache) {
-      void fetchNavContext(navScopeOverride).then((fresh) => {
-        if (fresh && bilateralInstance?.isOpen?.()) bilateralInstance.updateContext(fresh);
-      });
+    if (opened) {
+      holdWheelActiveButton = origin.button;
+      if (origin.button === 1 || origin.button === 3 || origin.button === 4) {
+        armSuppressAuxClick(260);
+      } else if (origin.button === 2) {
+        suppressNextContextMenu = true;
+        clearTimeout(suppressCtxTimer);
+        suppressCtxTimer = null;
+      }
     }
     return opened;
   }
@@ -2889,24 +3106,35 @@
       );
       if (!allowPassthrough) return;
     }
-    if (extractLinkMetaFromTarget(ev.target)) return;
     const midMode = settings.middleMode || 'bilateral_wheel';
-    if (midMode === 'off' || ev.button !== 1) return;
-    ev.preventDefault();
+    const trig = getWheelTriggerMeta();
+    if (midMode === 'off' || ev.button !== trig.button) return;
+    // Middle-click on links preserves background tab opening; right-click or side-button hold can still trigger wheel
+    if (ev.button === 1 && extractLinkMetaFromTarget(ev.target)) return;
+    if (ev.button !== 2) ev.preventDefault();
 
-    const origin = { x: ev.clientX, y: ev.clientY, button: 1, opened: false, downAt: Date.now() };
+    const origin = {
+      x: ev.clientX,
+      y: ev.clientY,
+      button: trig.button,
+      dragPx: trig.dragPx,
+      opened: false,
+      inRightContent: true,
+      downAt: Date.now(),
+    };
     holdOrigin = origin;
     holdTimer = setTimeout(() => {
       if (holdOrigin === origin && !origin.opened) {
         origin.opened = true;
         openHoldWheelAtOrigin(origin);
       }
-    }, 115);
+    }, trig.holdMs);
   }
 
   function onPointerMove(ev) {
     if (!holdOrigin || holdOrigin.opened) return;
-    if (Math.hypot(ev.clientX - holdOrigin.x, ev.clientY - holdOrigin.y) >= 8) {
+    const threshold = Number(holdOrigin.dragPx || 8);
+    if (Math.hypot(ev.clientX - holdOrigin.x, ev.clientY - holdOrigin.y) >= threshold) {
       clearTimeout(holdTimer);
       holdOrigin.opened = true;
       openHoldWheelAtOrigin(holdOrigin);
@@ -2914,15 +3142,32 @@
   }
 
   function onPointerUp(ev) {
+    const prevOrigin = holdOrigin;
+    const wasHoldWheel = holdWheelActiveButton === ev.button || Boolean(prevOrigin && prevOrigin.opened && prevOrigin.button === ev.button);
     clearTimeout(holdTimer);
     holdOrigin = null;
     if (destroyed) return;
-    if (ev.button === 3) {
+
+    if (wasHoldWheel) {
+      holdWheelActiveButton = -1;
+      if (ev.button === 2) {
+        armSuppressContextMenu(280);
+      } else if (ev.button === 1 || ev.button === 3 || ev.button === 4) {
+        armSuppressAuxClick(220);
+      }
       ev.preventDefault();
-      void stepHistory('back');
-    } else if (ev.button === 4) {
+      return;
+    }
+
+    if (ev.button === 3 || ev.button === 4) {
+      const midMode = settings.middleMode || 'bilateral_wheel';
+      const trig = getWheelTriggerMeta();
+      if (midMode !== 'off' && trig.button === ev.button && (prevOrigin?.inRightContent || isInsideRightContent(ev.target))) {
+        ev.preventDefault();
+        return;
+      }
       ev.preventDefault();
-      void stepHistory('forward');
+      void stepHistory(ev.button === 3 ? 'back' : 'forward');
     }
   }
 
@@ -3112,6 +3357,7 @@
     getDebugState() {
       const col = getRightPaneColumn();
       const contentWrap = getContentContainer(col);
+      const updState = getEffectiveUpdateState();
       return {
         version: bootMeta.version || BOOT.version || '',
         conversationId: lastConversationId || resolveConversationId(),
@@ -3123,6 +3369,11 @@
         docOutlineCount: lastRenderedDocData?.outline?.length || 0,
         hostPreviewState: contentWrap ? inspectHostFileViewState(contentWrap) : 'missing',
         richDocAutoStrategy: settings.richDocAutoStrategy || 'auto_yield',
+        wheelTriggerButton: settings.wheelTriggerButton || 'middle',
+        updateShouldNotify: updState.shouldNotify,
+        updateIgnored: updState.isIgnored,
+        ignoredUpdateVersion: settings.ignoredUpdateVersion || '',
+        updatePushVisible: Boolean(D.getElementById(UPDATE_PUSH_ID)),
         activePopoverName,
         outlinkCount: activeFileLinks.outlinks?.length || 0,
         backlinkCount: activeFileLinks.backlinks?.length || 0,
@@ -3145,11 +3396,15 @@
           docViewerInstance.setPaperMode(Boolean(settings.richDocPaperMode));
         }
       }
+      if (payload.updateInfo !== undefined) {
+        latestUpdateInfo = payload.updateInfo;
+      }
       if (payload.session && (!payload.conversationId || payload.conversationId === resolveConversationId())) {
         session = payload.session;
       }
       applyNonDestructiveTabFolding();
       renderStrip();
+      syncUpdatePushCard();
       void refreshPersistentNavigatorIfOpen();
     },
     destroy() {
@@ -3186,6 +3441,7 @@
       domObserver?.disconnect?.();
       closeDocOverlay({ dismiss: false });
       closeAllNavigators();
+      closeUpdatePushCard();
       settingsModalInstance?.close?.();
       closePopover();
       D.removeEventListener('click', onCaptureClick, true);

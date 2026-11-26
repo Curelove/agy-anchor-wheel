@@ -340,11 +340,29 @@ function decodeXmlEntities(str) {
   return decodeHtmlEntities(str);
 }
 
-export function parseReleasesAtom(xml, fallbackRepoUrl = 'https://github.com/Curelove/agy-anchor-wheel') {
-  const entryMatch = /<entry\b[^>]*>([\s\S]*?)<\/entry>/i.exec(String(xml || ''));
-  if (!entryMatch) return null;
-  const entryXml = entryMatch[1];
+export function computeUpdateNotificationState(result, ignoredVersion = '') {
+  const cleanIgnored = String(ignoredVersion || '').trim().replace(/^v/i, '');
+  if (!result || !result.ok || !result.latestVersion) {
+    return {
+      ignoredVersion: cleanIgnored,
+      isIgnored: false,
+      shouldNotify: false,
+    };
+  }
+  const updateAvailable = Boolean(result.updateAvailable);
+  const isIgnored = Boolean(
+    updateAvailable &&
+    cleanIgnored &&
+    compareSemver(result.latestVersion, cleanIgnored) <= 0
+  );
+  return {
+    ignoredVersion: cleanIgnored,
+    isIgnored,
+    shouldNotify: Boolean(updateAvailable && !isIgnored),
+  };
+}
 
+function parseSingleAtomEntry(entryXml, fallbackRepoUrl) {
   const linkMatch = /<link\b[^>]*href=["']([^"']+)["'][^>]*>/i.exec(entryXml);
   const titleMatch = /<title\b[^>]*>([\s\S]*?)<\/title>/i.exec(entryXml);
   const updatedMatch = /<updated\b[^>]*>([\s\S]*?)<\/updated>/i.exec(entryXml);
@@ -402,6 +420,28 @@ export function parseReleasesAtom(xml, fallbackRepoUrl = 'https://github.com/Cur
     assets: [],
     _source: 'github_atom',
   };
+}
+
+export function parseReleasesAtom(xml, fallbackRepoUrl = 'https://github.com/Curelove/agy-anchor-wheel') {
+  const src = String(xml || '');
+  const entryRe = /<entry\b[^>]*>([\s\S]*?)<\/entry>/gi;
+  const parsed = [];
+  let m;
+  while ((m = entryRe.exec(src)) !== null && parsed.length < 20) {
+    const item = parseSingleAtomEntry(m[1], fallbackRepoUrl);
+    if (item && item.tag_name) parsed.push(item);
+  }
+  if (!parsed.length) return null;
+  if (parsed.length === 1) return parsed[0];
+
+  const isSemverTag = (tag) => /^v?\d+\.\d+\.\d+/i.test(String(tag || '').trim());
+  const semverItems = parsed.filter((item) => isSemverTag(item.tag_name));
+  if (!semverItems.length) return parsed[0];
+
+  const stableItems = semverItems.filter((item) => !parseSemverParts(item.tag_name).pre);
+  const pool = stableItems.length ? stableItems : semverItems;
+  pool.sort((a, b) => compareSemver(b.tag_name, a.tag_name));
+  return pool[0];
 }
 
 function parseUninstallBlocks(regOutput) {
@@ -515,6 +555,7 @@ export class UpdateService {
     fetchTextImpl = null,
     detectAgyImpl = null,
     detectProxyImpl = null,
+    getIgnoredVersion = null,
   } = {}) {
     this.dataDir = dataDir;
     this.pluginRoot = pluginRoot;
@@ -523,9 +564,22 @@ export class UpdateService {
     this.fetchTextImpl = fetchTextImpl;
     this.detectAgyImpl = detectAgyImpl;
     this.detectProxyImpl = detectProxyImpl;
+    this.getIgnoredVersion = typeof getIgnoredVersion === 'function' ? getIgnoredVersion : () => '';
     this._localAgyCache = null;
     this._localAgyAt = 0;
     this._inflightCheck = null;
+  }
+
+  _withNotificationState(res) {
+    if (!res || typeof res !== 'object') return res;
+    let ignored = '';
+    try {
+      ignored = String(this.getIgnoredVersion?.() || '');
+    } catch {}
+    return {
+      ...res,
+      ...computeUpdateNotificationState(res, ignored),
+    };
   }
 
   readManifest() {
@@ -626,7 +680,7 @@ export class UpdateService {
     const updateAvailable = compareSemver(cached.latestVersion, meta.version) > 0;
     const cleanTargetAgy = cached.targetAntigravity ? decodeHtmlEntities(cached.targetAntigravity) : '';
     const cleanSnippet = cached.bodySnippet ? decodeHtmlEntities(cached.bodySnippet) : '';
-    return {
+    return this._withNotificationState({
       ...cached,
       targetAntigravity: cleanTargetAgy,
       bodySnippet: cleanSnippet,
@@ -637,7 +691,7 @@ export class UpdateService {
       compatibility: meta.compatibility,
       localAntigravity: meta.localAntigravity,
       fromCache: true,
-    };
+    });
   }
 
   async _fetchGithubJson(url) {
@@ -722,7 +776,7 @@ export class UpdateService {
       if (apiErr) throw apiErr;
 
       if (!release || !release.tag_name || atomEmptyConfirmed) {
-        return {
+        return this._withNotificationState({
           ok: false,
           noReleases: true,
           error: 'GitHub 仓库暂未发布正式 Release',
@@ -732,7 +786,7 @@ export class UpdateService {
           compatibility: meta.compatibility,
           localAntigravity: meta.localAntigravity,
           checkedAt,
-        };
+        });
       }
 
       const tagName = String(release.tag_name || '').trim();
@@ -772,10 +826,10 @@ export class UpdateService {
       };
 
       this._writeCacheFile(result);
-      return result;
+      return this._withNotificationState(result);
     } catch (err) {
       const msg = String(err?.message || err || '网络请求失败');
-      return {
+      return this._withNotificationState({
         ok: false,
         error: msg.includes('403') ? 'GitHub API 请求频率受限，可稍后再试或直接打开 Releases 页面查看' : `无法连接 GitHub（${msg}）`,
         currentVersion: meta.version,
@@ -784,7 +838,7 @@ export class UpdateService {
         compatibility: meta.compatibility,
         localAntigravity: meta.localAntigravity,
         checkedAt,
-      };
+      });
     }
   }
 }

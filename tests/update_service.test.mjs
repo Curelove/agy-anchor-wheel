@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import {
   UpdateService,
   compareSemver,
+  computeUpdateNotificationState,
   evaluateCompatibility,
   extractTargetAgyFromNotes,
   parseGithubRepo,
@@ -212,4 +213,100 @@ test('plugin.json stays strictly within Antigravity 10-field allowlist and reads
   assert.ok(Array.isArray(meta.compatibility?.testedAntigravityVersions));
   assert.ok(meta.compatibility.testedAntigravityVersions.includes('2.34.0'));
   assert.equal(meta.localAntigravity.compatLevel, 'verified');
+});
+
+test('parseReleasesAtom selects highest stable semver across multiple entries and UpdateService supports per-version ignore + next-version re-notify', async () => {
+  const multiAtom = `<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <id>tag:github.com,2008:Repository/12345/v0.8.1</id>
+    <updated>2026-11-27T01:00:00Z</updated>
+    <link rel="alternate" type="text/html" href="https://github.com/Curelove/agy-anchor-wheel/releases/tag/v0.8.1"/>
+    <title>v0.8.1 edited older release</title>
+    <content type="html">&lt;p&gt;Old release edited later&lt;/p&gt;</content>
+  </entry>
+  <entry>
+    <id>tag:github.com,2008:Repository/12345/v0.11.0-rc.1</id>
+    <updated>2026-11-26T20:00:00Z</updated>
+    <link rel="alternate" type="text/html" href="https://github.com/Curelove/agy-anchor-wheel/releases/tag/v0.11.0-rc.1"/>
+    <title>v0.11.0-rc.1</title>
+    <content type="html">&lt;p&gt;Pre-release&lt;/p&gt;</content>
+  </entry>
+  <entry>
+    <id>tag:github.com,2008:Repository/12345/v0.10.0</id>
+    <updated>2026-11-26T18:00:00Z</updated>
+    <link rel="alternate" type="text/html" href="https://github.com/Curelove/agy-anchor-wheel/releases/tag/v0.10.0"/>
+    <title>v0.10.0</title>
+    <content type="html">&lt;!-- aw-compat: agy=2.34.x --&gt;&lt;p&gt;Latest stable&lt;/p&gt;</content>
+  </entry>
+</feed>`;
+  const picked = parseReleasesAtom(multiAtom, 'https://github.com/Curelove/agy-anchor-wheel');
+  assert.equal(picked?.tag_name, 'v0.10.0');
+
+  // Direct pure helper checks
+  assert.deepEqual(
+    computeUpdateNotificationState({ ok: true, latestVersion: '0.10.0', updateAvailable: true }, ''),
+    { ignoredVersion: '', isIgnored: false, shouldNotify: true }
+  );
+  assert.deepEqual(
+    computeUpdateNotificationState({ ok: true, latestVersion: '0.10.0', updateAvailable: true }, '0.10.0'),
+    { ignoredVersion: '0.10.0', isIgnored: true, shouldNotify: false }
+  );
+  assert.deepEqual(
+    computeUpdateNotificationState({ ok: true, latestVersion: '0.10.1', updateAvailable: true }, '0.10.0'),
+    { ignoredVersion: '0.10.0', isIgnored: false, shouldNotify: true }
+  );
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aw-upd-ign-'));
+  const fakeRoot = path.join(tmpDir, 'plugin');
+  const dataDir = path.join(tmpDir, 'data');
+  fs.mkdirSync(fakeRoot, { recursive: true });
+  fs.mkdirSync(dataDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(fakeRoot, 'plugin.json'),
+    JSON.stringify({ name: 'agy-anchor-wheel', version: '0.9.0', repository: { url: 'https://github.com/Curelove/agy-anchor-wheel' } }),
+    'utf8'
+  );
+
+  let ignoredVer = '';
+  let remoteTag = 'v0.10.0';
+  try {
+    const svc = new UpdateService({
+      dataDir,
+      pluginRoot: fakeRoot,
+      detectAgyImpl: () => '2.34.0',
+      detectProxyImpl: () => '',
+      getIgnoredVersion: () => ignoredVer,
+      fetchJsonImpl: async () => ({
+        tag_name: remoteTag,
+        name: `AnchorWheel ${remoteTag}`,
+        html_url: `https://github.com/Curelove/agy-anchor-wheel/releases/tag/${remoteTag}`,
+        published_at: '2026-11-27T00:00:00Z',
+        body: '<!-- aw-compat: agy=2.34.x -->\n- Release update',
+        assets: [],
+      }),
+    });
+
+    const r1 = await svc.checkForUpdates({ force: true });
+    assert.equal(r1.updateAvailable, true);
+    assert.equal(r1.isIgnored, false);
+    assert.equal(r1.shouldNotify, true);
+
+    // User ignores v0.10.0 -> cached and fresh checks both silence notification
+    ignoredVer = '0.10.0';
+    const r2 = svc.getCachedResult();
+    assert.equal(r2.updateAvailable, true);
+    assert.equal(r2.isIgnored, true);
+    assert.equal(r2.shouldNotify, false);
+
+    // Next release v0.11.0 ships -> automatically re-notifies despite 0.10.0 being ignored!
+    remoteTag = 'v0.11.0';
+    const r3 = await svc.checkForUpdates({ force: true });
+    assert.equal(r3.latestVersion, '0.11.0');
+    assert.equal(r3.updateAvailable, true);
+    assert.equal(r3.isIgnored, false);
+    assert.equal(r3.shouldNotify, true);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
 });

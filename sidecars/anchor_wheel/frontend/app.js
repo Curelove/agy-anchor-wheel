@@ -28,6 +28,8 @@
     tabScroll: document.getElementById('aw-tab-scroll'),
     btnBack: document.getElementById('aw-btn-back'),
     btnForward: document.getElementById('aw-btn-forward'),
+    btnUpdatePill: document.getElementById('aw-btn-update-pill'),
+    updatePillLabel: document.getElementById('aw-update-pill-label'),
     btnFiles: document.getElementById('aw-btn-files'),
     btnSettings: document.getElementById('aw-btn-settings'),
     crumbText: document.getElementById('aw-crumb-text'),
@@ -729,11 +731,12 @@
     const wantDir = Boolean(opts.isDirectory || /[\\/]$/.test(String(rawPath || '')));
     const ext = wantDir ? '' : (rawPath.split('.').pop()?.toLowerCase() || '');
     const isImage = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'svg', 'bmp', 'ico', 'avif'].includes(ext);
-    const isAudio = ['mp3', 'wav', 'ogg', 'm4a', 'flac'].includes(ext);
-    const isVideo = ['mp4', 'webm', 'mov'].includes(ext);
+    const isAudio = ['mp3', 'wav', 'ogg', 'm4a', 'flac', 'aac', 'opus', 'wma', 'aiff', 'aif'].includes(ext);
     const richDocMeta = !wantDir ? window.AnchorWheelDocViewer?.classifyDocPathClient?.(rawPath) : null;
+    const isVideo = Boolean(richDocMeta?.isVideo);
     const wantRichDoc = Boolean(
       richDocMeta &&
+      !isVideo &&
       !opts.forceRawText &&
       (richDocMeta.autoRender || richDocMeta.mode2Only || (richDocMeta.optionalTable && !opts.overrideEncoding))
     );
@@ -741,8 +744,15 @@
     let doc;
     if (wantDir) {
       doc = await apiPost('/api/dir/list', { path: rawPath });
-    } else if (isImage || isAudio || isVideo) {
-      doc = { ok: true, path: rawPath, isMedia: true, mediaKind: isImage ? 'image' : isAudio ? 'audio' : 'video', isBinary: true };
+    } else if (isVideo) {
+      const prepared = await apiPost('/api/media/prepare', { path: rawPath });
+      if (prepared?.ok) {
+        doc = { ...prepared, isRichDoc: true, isBinary: true };
+      } else {
+        doc = prepared;
+      }
+    } else if (isImage || isAudio) {
+      doc = { ok: true, path: rawPath, isMedia: true, mediaKind: isImage ? 'image' : 'audio', isBinary: true };
     } else if (wantRichDoc) {
       const rendered = await apiPost('/api/doc/render', { path: rawPath });
       if (rendered?.ok) {
@@ -883,6 +893,8 @@
           void apiPost('/api/settings', { settings: { richDocPaperMode: Boolean(nextPaper) } });
         },
         onRequestHiRes: (p) => apiPost('/api/doc/render-hires', { path: p || doc.path }),
+        onPollVideoReady: doc.format === 'video' ? (p) => apiPost('/api/media/prepare', { path: p || doc.path }) : null,
+        onReadMediaBlob: doc.format === 'video' ? (p, mode) => apiPost('/api/media/blob', { path: p || doc.path, mode: mode || '' }) : null,
         onNotify: (msg) => showToast(msg),
         onOpenExternal: async (p) => {
           const r = await apiPost('/api/file/open-external', { path: p || doc.path });
@@ -1161,7 +1173,7 @@
             <img src="/logo.svg" alt="AnchorWheel Logo" />
             <div>
               <h1 class="aw-hero-title">锚点轮盘 · AnchorWheel</h1>
-              <p class="aw-hero-sub">点击 MD 链接默认不覆盖原页，按住中键或按 Tab 随时呼出导览（${cdpOk ? '原生侧栏增强已在线' : '独立工作台运行中'}）</p>
+              <p class="aw-hero-sub">点击 MD 链接默认不覆盖原页，按住${S.resolveWheelTriggerButton(state.settings).shortLabel}或按 ${window.AnchorWheelMarkdown.esc(state.settings?.tabCustomHotkey || 'Tab')} 随时呼出导览（${cdpOk ? '原生侧栏增强已在线' : '独立工作台运行中'}）</p>
             </div>
           </div>
           <div class="aw-open-bar">
@@ -1489,25 +1501,132 @@
     });
   }
 
-  function syncUpdateBadge() {
-    if (!els.btnSettings) return;
-    if (state.updateInfo?.ok && state.updateInfo?.updateAvailable) {
-      els.btnSettings.setAttribute('data-has-update', '1');
-      els.btnSettings.title = `锚点轮盘设置（发现新版 v${state.updateInfo.latestVersion}）`;
-    } else {
-      els.btnSettings.removeAttribute('data-has-update');
-      els.btnSettings.title = '锚点轮盘设置';
+  const UPDATE_PUSH_ID = 'aw-wb-update-push';
+  let sessionDismissedUpdateVer = '';
+
+  function getEffectiveUpdateState() {
+    const ignored = state.settings?.ignoredUpdateVersion || '';
+    if (S?.computeUpdateStateClient) {
+      return S.computeUpdateStateClient(state.updateInfo, ignored);
     }
+    const avail = Boolean(state.updateInfo?.ok && state.updateInfo?.updateAvailable);
+    const isIgnored = Boolean(avail && state.updateInfo?.isIgnored);
+    return { updateAvailable: avail, ignoredVersion: ignored, isIgnored, shouldNotify: Boolean(avail && !isIgnored) };
   }
 
-  async function openSettingsModalView(initialTab = 'modes') {
+  function closeUpdatePushCard() {
+    document.getElementById(UPDATE_PUSH_ID)?.remove();
+  }
+
+  async function ignoreUpdateVersionUi(version) {
+    const cleanVer = String(version || '').trim().replace(/^v/i, '');
+    const res = await apiPost('/api/update/ignore', { version: cleanVer });
+    if (res?.ok) {
+      if (res.settings) state.settings = res.settings;
+      if (res.update) state.updateInfo = res.update;
+    } else {
+      state.settings = { ...(state.settings || {}), ignoredUpdateVersion: cleanVer };
+    }
+    if (cleanVer) {
+      closeUpdatePushCard();
+      showToast(`已忽略 v${cleanVer}，下个新版本发布时将再次提醒`);
+    } else {
+      showToast('已恢复新版本更新提醒');
+    }
+    syncUpdateBadge();
+    return { ok: true, settings: state.settings, update: state.updateInfo };
+  }
+
+  function syncUpdatePushCard() {
+    const updState = getEffectiveUpdateState();
+    const latestVer = String(state.updateInfo?.latestVersion || '');
+    if (!updState.shouldNotify || !latestVer || latestVer === sessionDismissedUpdateVer || settingsModal.isOpen()) {
+      closeUpdatePushCard();
+      return;
+    }
+    const existing = document.getElementById(UPDATE_PUSH_ID);
+    if (existing && existing.getAttribute('data-aw-ver') === latestVer) return;
+    closeUpdatePushCard();
+
+    const curVer = state.updateInfo.currentVersion || state.status?.version || '';
+    const rawNotes = String(state.updateInfo.bodySnippet || '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, 120);
+    const summaryText = rawNotes || `当前 v${curVer} → 最新 v${latestVer}，可按需升级或跳过此版本。`;
+
+    const card = document.createElement('div');
+    card.id = UPDATE_PUSH_ID;
+    card.className = 'aw-update-push-card';
+    card.setAttribute('data-aw-ver', latestVer);
+    card.innerHTML = `
+      <div class="aw-update-push-head">
+        <div class="aw-update-push-title">
+          <span class="aw-update-pill-dot"></span>
+          <span>锚点轮盘发现新版本</span>
+          <span class="aw-update-push-ver">v${S.esc(latestVer)}</span>
+        </div>
+        <button type="button" class="aw-tray-btn" data-aw-upd-act="later" title="稍后提醒">${S.ICONS.close}</button>
+      </div>
+      <div class="aw-update-push-body">${S.esc(summaryText)}</div>
+      <div class="aw-update-push-actions">
+        <button type="button" class="aw-ghost-btn" data-aw-upd-act="ignore">忽略此版本</button>
+        <button type="button" class="aw-ghost-btn" data-aw-upd-act="later">稍后</button>
+        <button type="button" class="aw-primary-btn" data-aw-upd-act="view">查看更新</button>
+      </div>
+    `;
+    card.addEventListener('click', (e) => e.stopPropagation());
+    card.addEventListener('mousedown', (e) => e.stopPropagation());
+    card.querySelectorAll('[data-aw-upd-act="later"]').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        sessionDismissedUpdateVer = latestVer;
+        closeUpdatePushCard();
+      });
+    });
+    card.querySelector('[data-aw-upd-act="ignore"]')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      void ignoreUpdateVersionUi(latestVer);
+    });
+    card.querySelector('[data-aw-upd-act="view"]')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      sessionDismissedUpdateVer = latestVer;
+      closeUpdatePushCard();
+      void openSettingsModalView('storage', { focusUpdateSection: true });
+    });
+    document.body.appendChild(card);
+  }
+
+  function syncUpdateBadge({ skipPushCard = false } = {}) {
+    const updState = getEffectiveUpdateState();
+    const show = Boolean(updState.shouldNotify && state.updateInfo?.latestVersion);
+    if (els.btnSettings) {
+      if (show) {
+        els.btnSettings.setAttribute('data-has-update', '1');
+        els.btnSettings.title = `锚点轮盘设置（发现新版 v${state.updateInfo.latestVersion}）`;
+      } else {
+        els.btnSettings.removeAttribute('data-has-update');
+        els.btnSettings.title = '锚点轮盘设置';
+      }
+    }
+    if (els.btnUpdatePill) {
+      els.btnUpdatePill.hidden = !show;
+      if (show && els.updatePillLabel) {
+        els.updatePillLabel.textContent = `新版 v${state.updateInfo.latestVersion}`;
+      }
+    }
+    if (!skipPushCard) syncUpdatePushCard();
+  }
+
+  async function openSettingsModalView(initialTab = 'modes', opts = {}) {
     closeOverlays();
+    closeUpdatePushCard();
     const statusRes = await apiGet('/api/status');
     if (statusRes.ok) {
       state.status = statusRes;
       state.settings = statusRes.settings;
       if (statusRes.update) state.updateInfo = statusRes.update;
-      syncUpdateBadge();
+      syncUpdateBadge({ skipPushCard: true });
     }
     settingsModal.open({
       settings: state.settings,
@@ -1521,6 +1640,7 @@
       compatInfo: state.status?.compatibility || null,
       updateInfo: state.updateInfo,
       initialTab,
+      focusUpdateSection: Boolean(opts.focusUpdateSection),
       onCheckUpdate: async (force = true) => {
         const res = await apiGet(`/api/update/check${force ? '?force=1' : ''}`);
         if (res && (res.ok || res.error)) {
@@ -1529,6 +1649,7 @@
         }
         return res;
       },
+      onIgnoreUpdate: (ver) => ignoreUpdateVersionUi(ver),
       onGenerateLauncher: async () => {
         const res = await apiPost('/api/launcher/generate', {});
         if (res.ok) showToast(`已生成调试启动器：${res.launcherPath}`);
@@ -1602,6 +1723,11 @@
   function bindGlobalInteractions() {
     els.btnBack.addEventListener('click', () => void stepHistoryNav('back'));
     els.btnForward.addEventListener('click', () => void stepHistoryNav('forward'));
+    els.btnUpdatePill?.addEventListener('click', () => {
+      if (state.updateInfo?.latestVersion) sessionDismissedUpdateVer = state.updateInfo.latestVersion;
+      closeUpdatePushCard();
+      void openSettingsModalView('storage', { focusUpdateSection: true });
+    });
     els.btnFiles.addEventListener('click', (e) => void openFilesPopover(e.currentTarget));
     els.btnSettings.addEventListener('click', () => void openSettingsModalView('modes'));
     els.btnTree?.addEventListener('click', () => triggerTabNavigator());
@@ -1686,41 +1812,63 @@
       true
     );
 
-    // Mouse side buttons 3 (Back) and 4 (Forward)
-    document.addEventListener('mouseup', (ev) => {
-      if (ev.button === 3) {
-        ev.preventDefault();
-        void stepHistoryNav('back');
-      } else if (ev.button === 4) {
-        ev.preventDefault();
-        void stepHistoryNav('forward');
-      }
-    });
-
-    // Hold-Middle Channel (pure hold-release, zero unclickable buttons)
+    // Hold-Trigger Mouse Channel (supports Middle / Right / Side Back / Side Forward)
     let holdTimer = null;
     let downInfo = null;
+    let holdWheelActiveButton = -1;
     let suppressNextAuxClick = false;
+    let suppressNextContextMenu = false;
+    let suppressAuxTimer = null;
+    let suppressCtxTimer = null;
 
-    const openMiddleHoldWheel = (info) => {
-      const midMode = state.settings?.middleMode || 'bilateral_wheel';
-      if (midMode === 'off') return;
+    const getTriggerMeta = () => S.resolveWheelTriggerButton(state.settings);
+    const armSuppressAux = (ms = 220) => {
       suppressNextAuxClick = true;
-      setTimeout(() => { suppressNextAuxClick = false; }, 160);
+      clearTimeout(suppressAuxTimer);
+      suppressAuxTimer = setTimeout(() => { suppressNextAuxClick = false; suppressAuxTimer = null; }, ms);
+    };
+    const armSuppressCtx = (ms = 280) => {
+      suppressNextContextMenu = true;
+      clearTimeout(suppressCtxTimer);
+      suppressCtxTimer = setTimeout(() => { suppressNextContextMenu = false; suppressCtxTimer = null; }, ms);
+    };
+
+    const openMouseHoldWheel = (info) => {
+      const midMode = state.settings?.middleMode || 'bilateral_wheel';
+      if (midMode === 'off') return false;
+      let opened = false;
       if (midMode === 'classic_wheel') {
         const target = getWheelTargetGroup();
-        if (target) openWheelForTarget(target, info.x, info.y, true, 1);
+        if (target) {
+          openWheelForTarget(target, info.x, info.y, true, info.button);
+          opened = true;
+        }
       } else {
-        openBilateralWheel(info.x, info.y, { holdMode: true, holdButton: 1 });
+        opened = openBilateralWheel(info.x, info.y, { holdMode: true, holdButton: info.button });
       }
+      if (opened) {
+        holdWheelActiveButton = info.button;
+        if (info.button === 1 || info.button === 3 || info.button === 4) {
+          armSuppressAux(260);
+        } else if (info.button === 2) {
+          suppressNextContextMenu = true;
+          clearTimeout(suppressCtxTimer);
+          suppressCtxTimer = null;
+        }
+      }
+      return opened;
     };
 
     els.reader.addEventListener(
       'mousedown',
       (ev) => {
-        if (ev.button !== 1) return;
         const midMode = state.settings?.middleMode || 'bilateral_wheel';
-        if (ev.target.closest('[data-aw-link]') || midMode !== 'off') ev.preventDefault();
+        const trig = getTriggerMeta();
+        if (ev.button === 1) {
+          if (ev.target.closest('[data-aw-link]') || (midMode !== 'off' && trig.button === 1)) ev.preventDefault();
+        } else if ((ev.button === 3 || ev.button === 4) && midMode !== 'off' && trig.button === ev.button) {
+          ev.preventDefault();
+        }
       },
       true
     );
@@ -1728,8 +1876,27 @@
     document.addEventListener(
       'auxclick',
       (ev) => {
-        if (ev.button === 1 && suppressNextAuxClick) {
+        if (suppressNextAuxClick && (ev.button === 1 || ev.button === 3 || ev.button === 4)) {
           suppressNextAuxClick = false;
+          ev.preventDefault();
+          ev.stopPropagation();
+          return;
+        }
+        const midMode = state.settings?.middleMode || 'bilateral_wheel';
+        const trig = getTriggerMeta();
+        if ((ev.button === 3 || ev.button === 4) && midMode !== 'off' && trig.button === ev.button && els.reader.contains(ev.target)) {
+          ev.preventDefault();
+          ev.stopPropagation();
+        }
+      },
+      true
+    );
+
+    document.addEventListener(
+      'contextmenu',
+      (ev) => {
+        if (suppressNextContextMenu || holdWheelActiveButton === 2) {
+          suppressNextContextMenu = false;
           ev.preventDefault();
           ev.stopPropagation();
         }
@@ -1738,30 +1905,62 @@
     );
 
     els.reader.addEventListener('pointerdown', (ev) => {
-      if (ev.target.closest('[data-aw-link], a, input, select, textarea, summary, label, button:not([data-aw-dir-file]), .aw-doc-toolbar, .aw-doc-findbar, .aw-doc-sheetbar, .aw-doc-outline')) return;
       const midMode = state.settings?.middleMode || 'bilateral_wheel';
-      if (midMode === 'off' || ev.button !== 1) return;
-      ev.preventDefault();
-      const info = { x: ev.clientX, y: ev.clientY, button: 1, opened: false, downAt: Date.now() };
+      const trig = getTriggerMeta();
+      if (midMode === 'off' || ev.button !== trig.button) return;
+      const skipSel =
+        ev.button === 1
+          ? '[data-aw-link], a, input, select, textarea, summary, label, button:not([data-aw-dir-file]), .aw-doc-toolbar, .aw-doc-findbar, .aw-doc-sheetbar, .aw-doc-outline'
+          : 'input, select, textarea, summary, label, button:not([data-aw-dir-file]), .aw-doc-toolbar, .aw-doc-findbar, .aw-doc-sheetbar, .aw-doc-outline';
+      if (ev.target.closest(skipSel)) return;
+      if (ev.button !== 2) ev.preventDefault();
+      const info = {
+        x: ev.clientX,
+        y: ev.clientY,
+        button: trig.button,
+        dragPx: trig.dragPx,
+        opened: false,
+        inReader: true,
+        downAt: Date.now(),
+      };
       downInfo = info;
       holdTimer = setTimeout(() => {
         if (downInfo === info && !info.opened) {
           info.opened = true;
-          openMiddleHoldWheel(info);
+          openMouseHoldWheel(info);
         }
-      }, 115);
+      }, trig.holdMs);
     });
     document.addEventListener('pointermove', (ev) => {
       if (!downInfo || downInfo.opened) return;
-      if (Math.hypot(ev.clientX - downInfo.x, ev.clientY - downInfo.y) >= 8) {
+      if (Math.hypot(ev.clientX - downInfo.x, ev.clientY - downInfo.y) >= Number(downInfo.dragPx || 8)) {
         clearTimeout(holdTimer);
         downInfo.opened = true;
-        openMiddleHoldWheel(downInfo);
+        openMouseHoldWheel(downInfo);
       }
     });
-    document.addEventListener('pointerup', () => {
+    document.addEventListener('pointerup', (ev) => {
+      const prev = downInfo;
+      const wasHold = holdWheelActiveButton === ev.button || Boolean(prev && prev.opened && prev.button === ev.button);
       clearTimeout(holdTimer);
       downInfo = null;
+      if (wasHold) {
+        holdWheelActiveButton = -1;
+        if (ev.button === 2) armSuppressCtx(280);
+        else if (ev.button === 1 || ev.button === 3 || ev.button === 4) armSuppressAux(220);
+        ev.preventDefault();
+        return;
+      }
+      if (ev.button === 3 || ev.button === 4) {
+        const midMode = state.settings?.middleMode || 'bilateral_wheel';
+        const trig = getTriggerMeta();
+        if (midMode !== 'off' && trig.button === ev.button && (prev?.inReader || els.reader.contains(ev.target))) {
+          ev.preventDefault();
+          return;
+        }
+        ev.preventDefault();
+        void stepHistoryNav(ev.button === 3 ? 'back' : 'forward');
+      }
     });
 
     document.addEventListener('click', (ev) => {
@@ -1805,7 +2004,7 @@
       if (!state.workspaceRoots.length && Array.isArray(stRes.index?.workspaceRoots)) {
         state.workspaceRoots = stRes.index.workspaceRoots;
       }
-      if (state.settings?.autoCheckUpdates !== false && !state.updateInfo) {
+      if (state.settings?.autoCheckUpdates !== false) {
         setTimeout(() => {
           void apiGet('/api/update/check').then((res) => {
             if (res && (res.ok || res.error)) {
@@ -1813,7 +2012,7 @@
               syncUpdateBadge();
             }
           }).catch(() => {});
-        }, 2200);
+        }, 2000);
       }
     }
     if (sessRes.ok) {
@@ -1843,6 +2042,7 @@
       openSettingsPopover: () => openSettingsModalView('modes'),
       openSettingsModal: openSettingsModalView,
       triggerTabNavigator,
+      syncUpdateBadge,
       getState: () => state,
     };
   }

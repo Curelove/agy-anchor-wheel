@@ -248,6 +248,55 @@ test('standalone HTTP API serves UI assets, session ops, backlinks, and encoding
       const sr = await fetch(`${base}${staticPath}`);
       assert.equal(sr.status, 200);
     }
+
+    // Settings wheelTriggerButton & /api/update/ignore lifecycle
+    const setBtnRes = await (
+      await fetch(`${base}/api/settings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ settings: { wheelTriggerButton: 'side_back' } }),
+      })
+    ).json();
+    assert.equal(setBtnRes.ok, true);
+    assert.equal(setBtnRes.settings.wheelTriggerButton, 'side_back');
+
+    // Write newer release into update cache, verify ignore silences then clearing restores
+    fs.writeFileSync(
+      path.join(dataDir, 'update_cache.json'),
+      JSON.stringify({
+        ok: true,
+        currentVersion: PLUGIN_VERSION,
+        latestVersion: '9.9.9',
+        tagName: 'v9.9.9',
+        updateAvailable: true,
+        repoUrl: 'https://github.com/Curelove/agy-anchor-wheel',
+        releasesUrl: 'https://github.com/Curelove/agy-anchor-wheel/releases',
+        releaseUrl: 'https://github.com/Curelove/agy-anchor-wheel/releases/tag/v9.9.9',
+        checkedAt: Date.now(),
+      }),
+      'utf8'
+    );
+    const stBeforeIgn = await (await fetch(`${base}/api/status`)).json();
+    assert.equal(stBeforeIgn.update.shouldNotify, true);
+
+    const ignRes = await (
+      await fetch(`${base}/api/update/ignore`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ version: '9.9.9' }),
+      })
+    ).json();
+    assert.equal(ignRes.ok, true);
+    assert.equal(ignRes.settings.ignoredUpdateVersion, '9.9.9');
+    assert.equal(ignRes.update.isIgnored, true);
+    assert.equal(ignRes.update.shouldNotify, false);
+
+    // /api/file/raw supports RFC 7233 Range streaming
+    const rawRange = await fetch(`${base}/api/file/raw?path=${encodeURIComponent(mdFile)}`, {
+      headers: { Range: 'bytes=0-3' },
+    });
+    assert.equal(rawRange.status, 206);
+    assert.equal(await rawRange.text(), '# Ov');
   } finally {
     await inst.stop();
     fs.rmSync(tmpDir, { recursive: true, force: true });

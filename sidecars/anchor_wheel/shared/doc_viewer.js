@@ -31,6 +31,10 @@
       '<svg class="aw-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>',
     reset:
       '<svg class="aw-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>',
+    loop:
+      '<svg class="aw-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>',
+    speed:
+      '<svg class="aw-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/></svg>',
     up:
       '<svg class="aw-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="18 15 12 9 6 15"/></svg>',
     down:
@@ -40,6 +44,8 @@
   });
 
   const COMPOUND_ARCHIVE_RE = /\.(?:tar\.gz|tar\.xz|tar\.bz2|tar\.zst)$/i;
+  const VIDEO_MEDIA_EXT_RE =
+    /\.(?:mp4|m4v|mov|qt|mkv|webm|avi|flv|f4v|wmv|asf|ts|mts|m2ts|mpg|mpeg|m2v|ogv|3gp|3g2|rmvb|rm|vob|mxf|divx)$/i;
   const AUTO_BINARY_EXT_RE =
     /\.(?:docx|docm|dotx|doc|xlsx|xlsm|xltx|xls|pptx|ppsx|potx|ppt|odt|ods|odp|rtf|epub|sqlite|sqlite3|db|zip|tar|tgz|7z|rar|glb|ttf|otf|woff|woff2|pdf)$/i;
   const PREFER_WHEN_RAW_EXT_RE = /\.(?:ipynb|eml|stl|obj)$/i;
@@ -63,6 +69,17 @@
     const dot = p.lastIndexOf('.');
     if (dot === -1) return null;
     const ext = p.slice(dot + 1).toLowerCase();
+    if (VIDEO_MEDIA_EXT_RE.test(p)) {
+      return {
+        ext,
+        badge: ext.toUpperCase(),
+        isVideo: true,
+        autoRender: true,
+        preferWhenRawCode: false,
+        optionalTable: false,
+        isBinaryDoc: true,
+      };
+    }
     if (AUTO_BINARY_EXT_RE.test(p)) {
       return {
         ext,
@@ -459,6 +476,240 @@
     };
   }
 
+  // ── Universal Side-Pane Video Player (`format === 'video'`) ────────────────
+  function formatTimeClock(sec) {
+    const n = Number(sec || 0);
+    if (!Number.isFinite(n) || n < 0) return '0:00';
+    const total = Math.floor(n);
+    const h = Math.floor(total / 3600);
+    const m = Math.floor((total % 3600) / 60);
+    const s = total % 60;
+    const pad = (v) => String(v).padStart(2, '0');
+    return h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${m}:${pad(s)}`;
+  }
+
+  function mountVideoPlayerView(hostEl, initialData, doc, opts, ownedBlobUrls) {
+    let curData = initialData;
+    let pollTimer = null;
+    let disposed = false;
+    let triedBlobFallback = false;
+    let playbackRate = 1;
+    let loopOn = false;
+    let videoEl = null;
+
+    const clearPoll = () => {
+      if (pollTimer) {
+        clearTimeout(pollTimer);
+        pollTimer = null;
+      }
+    };
+
+    const renderMetaBar = (d) => {
+      const vm = d?.videoMeta || {};
+      const chips = [];
+      if (vm.width && vm.height) chips.push(`${vm.width} × ${vm.height}`);
+      if (vm.durationText) chips.push(vm.durationText);
+      if (vm.fps) chips.push(`${vm.fps} fps`);
+      if (vm.videoCodec) chips.push(`视频 ${vm.videoCodec.toUpperCase()}${vm.pixFmt ? ` (${vm.pixFmt})` : ''}`);
+      if (vm.audioCodec) chips.push(`音频 ${vm.audioCodec.toUpperCase()}`);
+      if (d?.strategyReason) chips.push(d.strategyReason);
+      return chips.length
+        ? `<div class="aw-video-meta-strip">${chips.map((c) => `<span>${esc(c)}</span>`).join('<span class="aw-video-meta-dot">·</span>')}</div>`
+        : '';
+    };
+
+    const renderFallbackCard = (reasonText) => {
+      const posterHtml = curData?.posterDataUrl
+        ? `<img class="aw-video-poster-img" src="${curData.posterDataUrl}" alt="${esc(curData.title || '')}" />`
+        : '';
+      hostEl.innerHTML = `
+        <div class="aw-video-stage">
+          <div class="aw-video-fallback">
+            ${posterHtml}
+            <div class="aw-video-fallback-title">无法在内置播放器中直接解码此视频</div>
+            <div class="aw-video-fallback-msg">${esc(reasonText || '该视频编码暂不受内置浏览器解码器支持。')}</div>
+            <div class="aw-video-fallback-actions">
+              ${opts.onOpenExternal ? '<button type="button" class="aw-primary-btn" data-aw-vid-ext="1">使用系统播放器打开</button>' : ''}
+              ${opts.onPollVideoReady ? '<button type="button" class="aw-ghost-btn" data-aw-vid-retry="1">重新检测</button>' : ''}
+            </div>
+          </div>
+          ${renderMetaBar(curData)}
+        </div>
+      `;
+      hostEl.querySelector('[data-aw-vid-ext]')?.addEventListener('click', () => opts.onOpenExternal?.(curData.path));
+      hostEl.querySelector('[data-aw-vid-retry]')?.addEventListener('click', () => {
+        triedBlobFallback = false;
+        void pollOnce();
+      });
+    };
+
+    const tryBlobFallbackOrError = async (errMsg) => {
+      if (disposed) return;
+      if (!triedBlobFallback && curData?.canInlineBlob && typeof opts.onReadMediaBlob === 'function') {
+        triedBlobFallback = true;
+        try {
+          const blobRes = await opts.onReadMediaBlob(curData.path, curData.strategy);
+          if (disposed) return;
+          if (blobRes?.ok && blobRes.base64) {
+            const url = base64ToBlobUrl(doc, blobRes.base64, blobRes.mime || 'video/mp4');
+            if (url && videoEl) {
+              ownedBlobUrls.push(url);
+              videoEl.src = url;
+              videoEl.load();
+              return;
+            }
+          }
+        } catch {}
+      }
+      renderFallbackCard(errMsg);
+    };
+
+    const renderReadyPlayer = (d, startOffsetSec = 0) => {
+      curData = d;
+      const isLive = d.strategy === 'transcode_live';
+      const baseSrc = d.streamUrl || d.relStreamUrl || '';
+      const src =
+        isLive && startOffsetSec > 0
+          ? `${baseSrc}${baseSrc.includes('?') ? '&' : '?'}start=${encodeURIComponent(String(Math.floor(startOffsetSec)))}`
+          : baseSrc;
+      const dur = Number(d.videoMeta?.duration || 0);
+
+      hostEl.innerHTML = `
+        <div class="aw-video-stage">
+          <div class="aw-video-frame" data-aw-wheel-passthrough="1">
+            <video class="aw-video-el" controls playsinline preload="metadata" ${d.posterDataUrl ? `poster="${d.posterDataUrl}"` : ''}></video>
+          </div>
+          ${
+            isLive && dur > 0
+              ? `<div class="aw-video-live-seek">
+                  <span class="aw-video-live-label">长视频流定位</span>
+                  <input type="range" class="aw-video-seek-range" min="0" max="${Math.floor(dur)}" value="${Math.floor(startOffsetSec)}" step="5" />
+                  <span class="aw-video-live-time">${formatTimeClock(startOffsetSec)} / ${formatTimeClock(dur)}</span>
+                </div>`
+              : ''
+          }
+          ${renderMetaBar(d)}
+        </div>
+      `;
+
+      videoEl = hostEl.querySelector('video.aw-video-el');
+      if (videoEl) {
+        videoEl.playbackRate = playbackRate;
+        videoEl.loop = loopOn;
+        if (src) videoEl.src = src;
+
+        videoEl.addEventListener('error', () => {
+          const code = videoEl?.error?.code;
+          const hint =
+            !d.ffmpegAvailable
+              ? '本机未检测到 ffmpeg，无法自动转码该编码格式；可安装 ffmpeg 或使用系统播放器打开。'
+              : code === 4
+              ? '当前视频编码或容器不受内置解码器支持，请使用系统播放器打开。'
+              : '视频流加载失败，请重试或使用系统播放器打开。';
+          void tryBlobFallbackOrError(hint);
+        });
+
+        videoEl.addEventListener('loadedmetadata', () => {
+          if (disposed || !videoEl) return;
+          // Audio-only black screen detection (e.g., HEVC/ProRes inside direct fallback when ffmpeg missing)
+          if (videoEl.videoWidth === 0 && videoEl.videoHeight === 0 && d.videoMeta?.width > 0) {
+            const hint = d.ffmpegAvailable
+              ? '内置解码器未能解出视频画面，请点击下方使用系统播放器打开。'
+              : '视频音轨可识别但画面编码不受浏览器原生支持（例如 HEVC / ProRes）；安装本机 ffmpeg 后可自动转码播放。';
+            void tryBlobFallbackOrError(hint);
+          }
+        });
+      }
+
+      const rangeEl = hostEl.querySelector('.aw-video-seek-range');
+      const timeEl = hostEl.querySelector('.aw-video-live-time');
+      if (rangeEl && timeEl) {
+        rangeEl.addEventListener('input', () => {
+          timeEl.textContent = `${formatTimeClock(Number(rangeEl.value))} / ${formatTimeClock(dur)}`;
+        });
+        rangeEl.addEventListener('change', () => {
+          const sec = Number(rangeEl.value || 0);
+          renderReadyPlayer(curData, sec);
+        });
+      }
+    };
+
+    const renderPreparingView = (d) => {
+      curData = d;
+      const posterHtml = d.posterDataUrl
+        ? `<img class="aw-video-poster-img" src="${d.posterDataUrl}" alt="${esc(d.title || '')}" />`
+        : '';
+      hostEl.innerHTML = `
+        <div class="aw-video-stage">
+          <div class="aw-video-preparing">
+            ${posterHtml}
+            <div class="aw-video-prep-pill">
+              <span class="aw-video-spinner" aria-hidden="true"></span>
+              <span>正在${esc(d.strategyReason || '准备侧边栏兼容视频流')}...</span>
+            </div>
+          </div>
+          ${renderMetaBar(d)}
+        </div>
+      `;
+    };
+
+    const pollOnce = async () => {
+      if (disposed || typeof opts.onPollVideoReady !== 'function') return;
+      try {
+        const next = await opts.onPollVideoReady(curData.path);
+        if (disposed) return;
+        if (!next || !next.ok) {
+          renderFallbackCard(next?.error || '视频准备失败');
+          return;
+        }
+        if (next.failedError) {
+          renderFallbackCard(`转码准备失败：${next.failedError}`);
+          return;
+        }
+        if (next.ready) {
+          renderReadyPlayer(next, 0);
+          return;
+        }
+        renderPreparingView(next);
+        pollTimer = setTimeout(() => void pollOnce(), 550);
+      } catch (err) {
+        if (!disposed) renderFallbackCard(String(err?.message || err));
+      }
+    };
+
+    if (curData?.failedError) {
+      renderFallbackCard(`转码准备失败：${curData.failedError}`);
+    } else if (curData?.preparing && !curData?.ready) {
+      renderPreparingView(curData);
+      pollTimer = setTimeout(() => void pollOnce(), 500);
+    } else {
+      renderReadyPlayer(curData, 0);
+    }
+
+    return {
+      setRate(nextRate) {
+        playbackRate = nextRate;
+        if (videoEl) videoEl.playbackRate = playbackRate;
+      },
+      setLoop(nextLoop) {
+        loopOn = Boolean(nextLoop);
+        if (videoEl) videoEl.loop = loopOn;
+      },
+      destroy() {
+        disposed = true;
+        clearPoll();
+        if (videoEl) {
+          try {
+            videoEl.pause();
+            videoEl.removeAttribute('src');
+            videoEl.load();
+          } catch {}
+          videoEl = null;
+        }
+      },
+    };
+  }
+
   /**
    * Mounts a complete native-aligned document viewer into `mountEl`.
    * Returns `{ destroy(), getScrollEl(), setPaperMode() }`.
@@ -475,6 +726,7 @@
     const isPdf = format === 'pdf';
     const isModel3d = format === 'model3d';
     const isFont = format === 'font';
+    const isVideo = format === 'video';
     const hasSections = Array.isArray(docData.sections) && docData.sections.length > 0;
     const outline = Array.isArray(docData.outline) ? docData.outline : [];
     const warnings = Array.isArray(docData.warnings) ? docData.warnings : [];
@@ -495,6 +747,10 @@
     const ownedBlobUrls = [];
     let meshController = null;
     let fontController = null;
+    let videoController = null;
+    const SPEED_STEPS = [1, 1.25, 1.5, 2, 0.5];
+    let speedStepIdx = 0;
+    let videoLoopEnabled = false;
 
     mountEl.innerHTML = '';
 
@@ -505,9 +761,9 @@
 
     const statsLabel = esc(docData.meta?.statsLabel || '');
     const titleStr = esc(docData.title || '');
-    const canOutline = outline.length > 0 && !isSpreadsheet && !isEpub;
-    const canCopy = Boolean(docData.plainText) && !isModel3d && !isFont && !isPdf;
-    const canFind = !isPdf && !isModel3d && !isFont;
+    const canOutline = outline.length > 0 && !isSpreadsheet && !isEpub && !isVideo;
+    const canCopy = Boolean(docData.plainText) && !isModel3d && !isFont && !isPdf && !isVideo;
+    const canFind = !isPdf && !isModel3d && !isFont && !isVideo;
 
     // Official Antigravity Chrome: flat hairline bar, zero colored pills, inline sheet tabs when applicable
     const leftMetaHtml = isSpreadsheet && hasSections
@@ -547,6 +803,7 @@
           ${supportsPaper ? `<button type="button" class="aw-doc-act-btn" data-aw-doc-act="paper" data-active="${paperMode ? '1' : '0'}" title="切换平铺底色或 A4 白纸外观">${VIEWER_ICONS.paper}<span class="aw-doc-btn-txt">纸面</span></button>` : ''}
           ${supportsHiRes ? `<button type="button" class="aw-doc-act-btn" data-aw-doc-act="hires" data-active="0" title="调用本机演示引擎在后台无窗生成 1:1 幻灯片画面">${VIEWER_ICONS.hires}<span class="aw-doc-btn-txt">本机精绘</span></button>` : ''}
           ${isModel3d ? `<button type="button" class="aw-doc-act-btn" data-aw-doc-act="wire" data-active="0" title="切换实体光影或网格线框">${VIEWER_ICONS.wire}<span class="aw-doc-btn-txt">线框</span></button><button type="button" class="aw-doc-act-btn" data-aw-doc-act="reset3d" title="重置相机视角">${VIEWER_ICONS.reset}<span class="aw-doc-btn-txt">归位</span></button>` : ''}
+          ${isVideo ? `<button type="button" class="aw-doc-act-btn" data-aw-doc-act="vspeed" title="循环切换倍速播放">${VIEWER_ICONS.speed}<span class="aw-doc-btn-txt aw-vspeed-txt">1.0×</span></button><button type="button" class="aw-doc-act-btn" data-aw-doc-act="vloop" data-active="0" title="开启或关闭循环播放">${VIEWER_ICONS.loop}<span class="aw-doc-btn-txt">循环</span></button>` : ''}
           ${canCopy ? `<button type="button" class="aw-doc-act-btn" data-aw-doc-act="copy" title="复制纯文本内容">${VIEWER_ICONS.copy}<span class="aw-doc-btn-txt">复制</span></button>` : ''}
           ${opts.onOpenExternal ? `<button type="button" class="aw-doc-act-btn" data-aw-doc-act="external" title="使用系统默认应用打开">${VIEWER_ICONS.external}<span class="aw-doc-btn-txt">打开</span></button>` : ''}
           ${opts.onSwitchToRaw ? `<button type="button" class="aw-doc-act-btn" data-aw-doc-act="raw" title="${esc(opts.rawLabel || '切换至原生视图')}">${VIEWER_ICONS.code}<span class="aw-doc-btn-txt">${esc(opts.rawLabel || '原生视图')}</span></button>` : ''}
@@ -621,6 +878,14 @@
       meshController = null;
       fontController?.destroy?.();
       fontController = null;
+      videoController?.destroy?.();
+      videoController = null;
+
+      if (isVideo) {
+        canvasEl.className = 'aw-doc-canvas aw-doc-canvas-video';
+        videoController = mountVideoPlayerView(canvasEl, docData, doc, opts, ownedBlobUrls);
+        return;
+      }
 
       if (isPdf) {
         const pdfUrl = resolvePdfFrameSrc();
@@ -849,6 +1114,21 @@
       e.stopPropagation();
       meshController?.resetView?.();
     });
+    shell.querySelector('[data-aw-doc-act="vspeed"]')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      speedStepIdx = (speedStepIdx + 1) % SPEED_STEPS.length;
+      const rate = SPEED_STEPS[speedStepIdx];
+      videoController?.setRate?.(rate);
+      const lbl = e.currentTarget.querySelector('.aw-vspeed-txt');
+      if (lbl) lbl.textContent = `${rate.toFixed(rate % 1 === 0 ? 1 : rate === 1.25 ? 2 : 1)}×`;
+      e.currentTarget.setAttribute('data-active', rate !== 1 ? '1' : '0');
+    });
+    shell.querySelector('[data-aw-doc-act="vloop"]')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      videoLoopEnabled = !videoLoopEnabled;
+      videoController?.setLoop?.(videoLoopEnabled);
+      e.currentTarget.setAttribute('data-active', videoLoopEnabled ? '1' : '0');
+    });
     shell.querySelector('[data-aw-doc-act="copy"]')?.addEventListener('click', (e) => {
       e.stopPropagation();
       const btn = e.currentTarget;
@@ -973,6 +1253,7 @@
         clearTimeout(findTimer);
         meshController?.destroy?.();
         fontController?.destroy?.();
+        videoController?.destroy?.();
         for (const u of ownedBlobUrls) {
           try { win?.URL?.revokeObjectURL?.(u); } catch {}
         }

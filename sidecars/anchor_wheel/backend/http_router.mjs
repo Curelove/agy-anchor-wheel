@@ -9,30 +9,11 @@ import { PreviewService } from './preview_service.mjs';
 import { resolveSafeReadPath } from './security.mjs';
 import { revealInSystemExplorer } from './system_explorer.mjs';
 import { UpdateService } from './update_service.mjs';
+import { VideoService, getMediaMimeForExt } from './video_service.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SIDECAR_ROOT = path.resolve(__dirname, '..');
 const PLUGIN_ROOT = path.resolve(SIDECAR_ROOT, '..', '..');
-
-const RAW_MIME = Object.freeze({
-  '.png': 'image/png',
-  '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg',
-  '.webp': 'image/webp',
-  '.gif': 'image/gif',
-  '.svg': 'image/svg+xml',
-  '.ico': 'image/x-icon',
-  '.bmp': 'image/bmp',
-  '.avif': 'image/avif',
-  '.mp4': 'video/mp4',
-  '.webm': 'video/webm',
-  '.mov': 'video/quicktime',
-  '.mp3': 'audio/mpeg',
-  '.wav': 'audio/wav',
-  '.ogg': 'audio/ogg',
-  '.m4a': 'audio/mp4',
-  '.pdf': 'application/pdf',
-});
 
 const MAX_RAW_SERVE_BYTES = 64 * 1024 * 1024;
 
@@ -69,6 +50,7 @@ export function createRouterHandlers({
   stateStore,
   backlinkIndex,
   previewService,
+  videoService,
   updateService,
   getCdpStatus,
   pushNativeSync,
@@ -76,7 +58,14 @@ export function createRouterHandlers({
   isStandalone = false,
 }) {
   const effectivePreviewService = previewService || new PreviewService(stateStore.dataDir);
-  const effectiveUpdateService = updateService || new UpdateService({ dataDir: stateStore.dataDir, pluginRoot: PLUGIN_ROOT });
+  const effectiveVideoService = videoService || new VideoService(stateStore.dataDir);
+  const effectiveUpdateService =
+    updateService ||
+    new UpdateService({
+      dataDir: stateStore.dataDir,
+      pluginRoot: PLUGIN_ROOT,
+      getIgnoredVersion: () => stateStore.getSettings().ignoredUpdateVersion,
+    });
   const makeResp = (body, contentType = 'text/plain; charset=utf-8', status = 200, headers = {}) => {
     if (ResponseCtor) {
       return new ResponseCtor(body, { contentType, status, headers });
@@ -149,6 +138,16 @@ export function createRouterHandlers({
     effectiveUpdateService.checkForUpdates({ force: Boolean(data?.force) })
   );
 
+  routes.set('POST /api/update/ignore', (data) => {
+    const version = String(data?.version || '').trim();
+    const next = stateStore.updateSettings({ ignoredUpdateVersion: version });
+    const update = effectiveUpdateService.getCachedResult();
+    if (typeof pushNativeSync === 'function') {
+      try { pushNativeSync({ settings: next, updateInfo: update }); } catch {}
+    }
+    return { ok: true, settings: next, update };
+  });
+
   routes.set('GET /api/settings', () => ({ ok: true, settings: stateStore.getSettings() }));
 
   routes.set('POST /api/settings', (data) => {
@@ -161,10 +160,11 @@ export function createRouterHandlers({
     if (cfgChanged) {
       backlinkIndex.scheduleBackgroundRescan({ force: false });
     }
+    const updateInfo = effectiveUpdateService.getCachedResult();
     if (typeof pushNativeSync === 'function') {
-      try { pushNativeSync({ settings: next }); } catch {}
+      try { pushNativeSync({ settings: next, updateInfo }); } catch {}
     }
-    return { ok: true, settings: next };
+    return { ok: true, settings: next, update: updateInfo };
   });
 
   routes.set('GET /api/session', (data) => {
@@ -350,6 +350,27 @@ export function createRouterHandlers({
     });
   });
 
+  routes.set('POST /api/media/prepare', async (data) => {
+    const targetPath = data?.path || '';
+    let posterDataUrl = '';
+    try {
+      posterDataUrl = await Promise.race([
+        effectivePreviewService.getVideoPosterDataUrl(targetPath),
+        new Promise((r) => setTimeout(() => r(''), 1600)),
+      ]);
+    } catch {}
+    return effectiveVideoService.prepareVideo(targetPath, {
+      mediaBaseUrl: '',
+      posterDataUrl: String(posterDataUrl || ''),
+    });
+  });
+
+  routes.set('POST /api/media/blob', async (data) => {
+    return effectiveVideoService.readMediaBlob(data?.path || '', {
+      mode: data?.mode || '',
+    });
+  });
+
   routes.set('POST /api/file/open-external', (data) => {
     return openExternalDocument(data?.path || '', { dryRun: Boolean(data?.dryRun) });
   });
@@ -410,7 +431,7 @@ export function createRouterHandlers({
       return makeResp('File too large for direct raw serve', 'text/plain; charset=utf-8', 413);
     }
     const ext = path.extname(safe.filePath).toLowerCase();
-    const contentType = RAW_MIME[ext] || 'application/octet-stream';
+    const contentType = getMediaMimeForExt(ext);
     try {
       const buf = fs.readFileSync(safe.filePath);
       return makeResp(buf, contentType, 200, { 'Cache-Control': 'private, max-age=60' });

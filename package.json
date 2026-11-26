@@ -1,11 +1,11 @@
 {
   "name": "agy-anchor-wheel",
-  "version": "0.9.0",
-  "description": "Dual-mode Antigravity side-pane enhancer & workbench: native-styled 2D visual PPTX/DOCX/XLSX/PDF/Notebook/SQLite/3D/Font/Archive preview with Native-First Auto-Yield, Priority Anchor tab groups, Bilateral Wheel, folder view navigation, Obsidian backlinks, and auto-encoding repair.",
+  "version": "0.10.0",
+  "description": "Dual-mode Antigravity side-pane enhancer & workbench: multi-format MOV/MKV/AVI/ProRes video streaming, native-styled 2D visual PPTX/DOCX/XLSX/PDF/Notebook/SQLite/3D/Font/Archive preview with Native-First Auto-Yield, configurable Middle/Right/Side-button Bilateral Wheel, non-blocking per-version update notifications, folder view navigation, Obsidian backlinks, and auto-encoding repair.",
   "type": "module",
   "main": "sidecars/anchor_wheel/main.mjs",
   "scripts": {
-    "test": "node --test tests/encoding.test.mjs tests/backlink_index.test.mjs tests/group_lru.test.mjs tests/preview_service.test.mjs tests/update_service.test.mjs tests/directory_nav.test.mjs tests/document_renderer.test.mjs tests/system_explorer.test.mjs tests/server_api.test.mjs tests/native_logic.test.mjs tests/release_pipeline.test.mjs",
+    "test": "node --test tests/encoding.test.mjs tests/backlink_index.test.mjs tests/group_lru.test.mjs tests/preview_service.test.mjs tests/video_service.test.mjs tests/update_service.test.mjs tests/directory_nav.test.mjs tests/document_renderer.test.mjs tests/system_explorer.test.mjs tests/server_api.test.mjs tests/native_logic.test.mjs tests/release_pipeline.test.mjs",
     "install:plugin": "node scripts/install-plugin.mjs",
     "remove:plugin": "node scripts/remove-plugin.mjs",
     "package:release": "node scripts/package-release.mjs",
