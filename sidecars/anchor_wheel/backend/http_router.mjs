@@ -6,6 +6,7 @@ import { convertFileToUtf8, inspectFileEncoding } from './encoding.mjs';
 import { buildNavContext, classifyFile, listDirectoryDirectFiles } from './nav_context.mjs';
 import { PreviewService } from './preview_service.mjs';
 import { resolveSafeReadPath } from './security.mjs';
+import { revealInSystemExplorer } from './system_explorer.mjs';
 import { UpdateService } from './update_service.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -343,6 +344,13 @@ export function createRouterHandlers({
 
   routes.set('POST /api/file/open-external', (data) => {
     return openExternalDocument(data?.path || '', { dryRun: Boolean(data?.dryRun) });
+  });
+
+  routes.set('POST /api/file/reveal', (data) => {
+    return revealInSystemExplorer(data?.path || '', {
+      preferDirectory: Boolean(data?.preferDirectory),
+      dryRun: Boolean(data?.dryRun),
+    });
   });
 
   routes.set('POST /api/launcher/generate', () => {

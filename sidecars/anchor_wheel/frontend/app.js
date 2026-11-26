@@ -36,6 +36,8 @@
     pinAnchorLabel: document.getElementById('aw-pin-anchor-label'),
     btnLinks: document.getElementById('aw-btn-links'),
     linksLabel: document.getElementById('aw-links-label'),
+    btnReveal: document.getElementById('aw-btn-reveal'),
+    revealLabel: document.getElementById('aw-reveal-label'),
     btnEncoding: document.getElementById('aw-btn-encoding'),
     encodingLabel: document.getElementById('aw-encoding-label'),
     encodingBanner: document.getElementById('aw-encoding-banner'),
@@ -609,6 +611,7 @@
       if (els.btnTree) els.btnTree.hidden = true;
       els.btnPinAnchor.hidden = true;
       els.btnLinks.hidden = true;
+      if (els.btnReveal) els.btnReveal.hidden = true;
       els.btnEncoding.hidden = true;
       return;
     }
@@ -639,6 +642,14 @@
     }
     if (backCount > 0) els.btnLinks.setAttribute('data-has-links', '1');
     else els.btnLinks.removeAttribute('data-has-links');
+
+    if (els.btnReveal) {
+      els.btnReveal.hidden = false;
+      if (els.revealLabel) els.revealLabel.textContent = isDir ? '打开目录' : '打开位置';
+      els.btnReveal.title = isDir
+        ? `在系统文件资源管理器中打开文件夹\n${state.activeTabPath}`
+        : `在系统文件资源管理器中定位当前文件\n${state.activeTabPath}`;
+    }
 
     const enc = state.currentDoc.encoding || 'utf-8';
     els.btnEncoding.hidden = Boolean(state.currentDoc.isBinary || isDir || state.currentDoc.isRichDoc);
@@ -981,7 +992,10 @@
         <div class="aw-dir-view">
           <div class="aw-dir-header">
             <div class="aw-dir-title-wrap">${S.ICONS.folder}<h2 title="${esc(doc.path)}">${esc(doc.title || baseName(doc.path))}</h2></div>
-            <div class="aw-dir-meta">${metaBadges.map((b) => `<span class="aw-link-row-badge">${esc(b)}</span>`).join('')}</div>
+            <div class="aw-dir-header-actions">
+              <div class="aw-dir-meta">${metaBadges.map((b) => `<span class="aw-link-row-badge">${esc(b)}</span>`).join('')}</div>
+              <button type="button" class="aw-status-pill" id="aw-dir-open-explorer" title="在系统文件资源管理器中打开此文件夹">${S.ICONS.folderOpen}<span>在资源管理器中打开</span></button>
+            </div>
           </div>
           ${
             filterDefs.length > 2
@@ -1006,6 +1020,9 @@
           renderDirList();
         });
       }
+      els.reader.querySelector('#aw-dir-open-explorer')?.addEventListener('click', () => {
+        void revealInSystemExplorerUi(doc.path);
+      });
       renderDirList();
       els.reader.scrollTop = opts.restoreScrollTop || 0;
       return;
@@ -1563,6 +1580,16 @@
     }
   }
 
+  async function revealInSystemExplorerUi(targetPath, { preferDirectory = false } = {}) {
+    if (!targetPath) return;
+    const res = await apiPost('/api/file/reveal', { path: targetPath, preferDirectory: Boolean(preferDirectory) });
+    if (res?.ok) {
+      showToast(`已在系统资源管理器中打开：${baseName(res.targetPath || targetPath)}`);
+    } else {
+      showToast(`打开系统文件夹失败：${res?.error || '未知错误'}`);
+    }
+  }
+
   function bindGlobalInteractions() {
     els.btnBack.addEventListener('click', () => void stepHistoryNav('back'));
     els.btnForward.addEventListener('click', () => void stepHistoryNav('forward'));
@@ -1572,6 +1599,9 @@
     els.btnLinks.addEventListener('click', (e) => {
       e.stopPropagation();
       openLinksPopover(e.currentTarget, '');
+    });
+    els.btnReveal?.addEventListener('click', () => {
+      if (state.activeTabPath) void revealInSystemExplorerUi(state.activeTabPath);
     });
     els.btnEncoding.addEventListener('click', (e) => openEncodingPopover(e.currentTarget));
 

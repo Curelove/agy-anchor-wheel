@@ -221,6 +221,7 @@ function runReleaseCli() {
       'tests/update_service.test.mjs',
       'tests/directory_nav.test.mjs',
       'tests/document_renderer.test.mjs',
+      'tests/system_explorer.test.mjs',
       'tests/server_api.test.mjs',
       'tests/native_logic.test.mjs',
       'tests/release_pipeline.test.mjs',

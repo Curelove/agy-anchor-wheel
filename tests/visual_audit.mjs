@@ -370,7 +370,7 @@ async function runAudit() {
     await cdp.evalAsync(`document.documentElement.setAttribute('data-aw-theme', 'obsidian')`);
     await new Promise((r) => setTimeout(r, 150));
     const hiddenCheckHome = await cdp.evalAsync(`(() => {
-      const ids = ['aw-encoding-banner', 'aw-btn-tree', 'aw-btn-pin-anchor', 'aw-btn-links', 'aw-btn-encoding'];
+      const ids = ['aw-encoding-banner', 'aw-btn-tree', 'aw-btn-pin-anchor', 'aw-btn-links', 'aw-btn-reveal', 'aw-btn-encoding'];
       return ids.filter((id) => {
         const el = document.getElementById(id);
         return el && el.getBoundingClientRect().height > 0;

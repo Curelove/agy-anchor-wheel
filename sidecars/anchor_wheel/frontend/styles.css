@@ -126,8 +126,16 @@ body {
 .aw-subbar-actions {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
   flex-shrink: 0;
+  max-width: 100%;
+}
+
+@media (max-width: 480px) {
+  #aw-reveal-label {
+    display: none;
+  }
 }
 
 .aw-stage {

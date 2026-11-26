@@ -51,6 +51,8 @@
   let bgUpdateTimer = null;
   let suppressAuxTimer = null;
   let suppressCtxTimer = null;
+  let menuEnhanceRaf = 0;
+  let menuEnhanceTimers = [];
   let lastObservedTabKey = '';
   let wheelInstance = null;
   let bilateralInstance = null;
@@ -1169,6 +1171,440 @@
     setTimeout(() => t.remove(), 2200);
   }
 
+  function getSystemExplorerLabels({ preferEnglish = false } = {}) {
+    const plat = String(W.navigator?.platform || W.navigator?.userAgent || '');
+    const isMac = /Mac|Darwin/i.test(plat);
+    const isWin = /Win/i.test(plat);
+    if (isMac) {
+      return preferEnglish
+        ? {
+            openDir: 'Open in Finder',
+            revealFile: 'Reveal in Finder',
+            openParent: 'Open Containing Folder',
+            copyPath: 'Copy Path',
+            openTab: 'Open in New Side-Pane Tab',
+            stripDir: 'Open Folder',
+            stripTipDir: 'Open current folder in Finder',
+            stripTipFile: 'Reveal current file in Finder',
+            appName: 'Finder',
+          }
+        : {
+            openDir: '在访达中打开',
+            revealFile: '在访达中显示',
+            openParent: '打开所在文件夹',
+            copyPath: '复制路径',
+            openTab: '在侧边栏新标签页打开',
+            stripDir: '打开目录',
+            stripTipDir: '在访达中打开当前文件夹',
+            stripTipFile: '在访达中定位当前文件',
+            appName: '访达',
+          };
+    }
+    if (isWin) {
+      return preferEnglish
+        ? {
+            openDir: 'Open in File Explorer',
+            revealFile: 'Show in File Explorer',
+            openParent: 'Open Containing Folder',
+            copyPath: 'Copy Path',
+            openTab: 'Open in New Side-Pane Tab',
+            stripDir: 'Open Folder',
+            stripTipDir: 'Open current folder in File Explorer',
+            stripTipFile: 'Show current file in File Explorer',
+            appName: 'File Explorer',
+          }
+        : {
+            openDir: '在文件资源管理器中打开',
+            revealFile: '在文件资源管理器中显示',
+            openParent: '打开所在文件夹',
+            copyPath: '复制路径',
+            openTab: '在侧边栏新标签页打开',
+            stripDir: '打开目录',
+            stripTipDir: '在文件资源管理器中打开当前文件夹',
+            stripTipFile: '在文件资源管理器中定位当前文件',
+            appName: '文件资源管理器',
+          };
+    }
+    return preferEnglish
+      ? {
+          openDir: 'Open in File Manager',
+          revealFile: 'Show in File Manager',
+          openParent: 'Open Containing Folder',
+          copyPath: 'Copy Path',
+          openTab: 'Open in New Side-Pane Tab',
+          stripDir: 'Open Folder',
+          stripTipDir: 'Open current folder in File Manager',
+          stripTipFile: 'Show current file in File Manager',
+          appName: 'File Manager',
+        }
+      : {
+          openDir: '在文件管理器中打开',
+          revealFile: '在文件管理器中显示',
+          openParent: '打开所在文件夹',
+          copyPath: '复制路径',
+          openTab: '在侧边栏新标签页打开',
+          stripDir: '打开目录',
+          stripTipDir: '在文件管理器中打开当前文件夹',
+          stripTipFile: '在文件管理器中定位当前文件',
+          appName: '文件管理器',
+        };
+  }
+
+  function isLocalAbsolutePath(p) {
+    const s = String(p || '').trim();
+    return Boolean(s && /^(?:[A-Za-z]:[\\/]|\/(?!\/))/.test(s));
+  }
+
+  async function revealPathInExplorer(targetPath, { isDirectory = false, preferDirectory = false } = {}) {
+    const clean = String(targetPath || '').trim();
+    if (!isLocalAbsolutePath(clean)) {
+      showToast('当前视图不是本地文件或文件夹');
+      return false;
+    }
+    const labels = getSystemExplorerLabels({ preferEnglish: false });
+    const res = await callRpc('revealInExplorer', { path: clean, preferDirectory: Boolean(preferDirectory) }, 6000);
+    if (res?.ok) {
+      const displayName = baseName(res.targetPath || clean);
+      showToast(`已在${labels.appName}中打开：${displayName}`);
+      return true;
+    }
+    if (res?.error && /Unknown action/i.test(String(res.error))) {
+      showToast('请在左侧「自定义扩展」将锚点轮盘关闭再重开一次以启用新版后端');
+      return false;
+    }
+    showToast(`打开系统文件夹失败：${res?.error || (isDirectory ? '无法访问目录' : '无法定位文件')}`);
+    return false;
+  }
+
+  async function copyPathToClipboard(text, label = '') {
+    const val = String(text || '');
+    if (!val) return false;
+    try {
+      if (W.navigator?.clipboard?.writeText) {
+        await W.navigator.clipboard.writeText(val);
+        showToast(label ? `已复制路径：${label}` : '已复制路径');
+        return true;
+      }
+    } catch {}
+    try {
+      const ta = markOwned(D.createElement('textarea'));
+      ta.value = val;
+      ta.style.cssText = 'position:fixed;left:-9999px;top:-9999px;opacity:0;';
+      D.body.appendChild(ta);
+      ta.select();
+      D.execCommand('copy');
+      ta.remove();
+      showToast(label ? `已复制路径：${label}` : '已复制路径');
+      return true;
+    } catch {
+      showToast('复制路径失败');
+      return false;
+    }
+  }
+
+  const NATIVE_EXPLORER_ITEM_RE =
+    /(?:文件资源管理器|资源管理器|file\s*explorer|show\s+in\s+explorer|open\s+in\s+explorer|reveal\s+in\s+finder|show\s+in\s+finder|open\s+in\s+finder|访达|file\s*manager|文件管理器)/i;
+
+  function resolveOverflowTargetPath(moreBtn) {
+    if (isLocalAbsolutePath(activeFilePath)) {
+      return { path: activeFilePath, isDirectory: Boolean(activeIsDirectory) };
+    }
+    const headerBar = moreBtn?.closest?.('.group\\/file-row') || moreBtn?.parentElement?.parentElement;
+    if (headerBar) {
+      const crumbs = Array.from(headerBar.querySelectorAll('[data-uri]'));
+      const last = crumbs[crumbs.length - 1];
+      const rawUri = last?.getAttribute?.('data-uri') || '';
+      const p = uriToPath(rawUri).replace(/[\\/]+$/, '');
+      if (isLocalAbsolutePath(p)) {
+        return { path: p, isDirectory: Boolean(activeIsDirectory || /[\\/]$/.test(rawUri)) };
+      }
+    }
+    return null;
+  }
+
+  function findOpenOverflowMenuForButton(moreBtn) {
+    if (!moreBtn || !moreBtn.isConnected) return null;
+    const ctrlId = moreBtn.getAttribute('aria-controls');
+    if (ctrlId) {
+      const ctrlEl = D.getElementById(ctrlId);
+      if (ctrlEl && ctrlEl.getAttribute('data-aw-owned') !== '1') {
+        const menu = ctrlEl.matches?.('[role="menu"]') ? ctrlEl : ctrlEl.querySelector?.('[role="menu"]');
+        if (menu && menu.getAttribute('data-aw-owned') !== '1') return menu;
+      }
+    }
+    const btnRect = moreBtn.getBoundingClientRect();
+    const expanded = moreBtn.getAttribute('aria-expanded') === 'true';
+    const candidates = Array.from(D.querySelectorAll('[role="menu"]')).filter(
+      (el) => el.getAttribute('data-aw-owned') !== '1' && !el.closest?.('[data-aw-owned="1"]')
+    );
+    let best = null;
+    let bestDist = Infinity;
+    for (const menu of candidates) {
+      const r = menu.getBoundingClientRect();
+      if (r.width === 0 && r.height === 0) continue;
+      const items = Array.from(menu.querySelectorAll('[role="menuitem"]')).filter(
+        (it) => it.getAttribute('data-aw-owned') !== '1'
+      );
+      const hasCopyPath = items.some((it) => /(?:复制路径|copy\s+path)/i.test(it.textContent || ''));
+      if (!expanded && !hasCopyPath) continue;
+      const dx = Math.abs((r.right || 0) - (btnRect.right || 0));
+      const dy = Math.abs((r.top || 0) - (btnRect.bottom || 0));
+      const dist = dx + dy;
+      if ((dx <= 320 && dy <= 180) || hasCopyPath) {
+        if (dist < bestDist) {
+          bestDist = dist;
+          best = menu;
+        }
+      }
+    }
+    return best;
+  }
+
+  function dismissNativeOverflowMenu(menuEl, moreBtn) {
+    try {
+      const escEv = new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true, cancelable: true });
+      (menuEl || D.activeElement || D).dispatchEvent(escEv);
+      D.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true, cancelable: true }));
+    } catch {}
+    if (moreBtn && moreBtn.isConnected) {
+      setTimeout(() => {
+        try {
+          if (moreBtn.isConnected && moreBtn.getAttribute('aria-expanded') === 'true') {
+            moreBtn.click();
+          }
+        } catch {}
+      }, 15);
+    }
+  }
+
+  function enhanceNativeOverflowMenus() {
+    if (destroyed) return false;
+    const col = getRightPaneColumn();
+    if (!col) return false;
+    const moreBtn = col.querySelector('[data-testid="more-actions-overflow"]');
+    if (!moreBtn) return false;
+    const menuEl = findOpenOverflowMenuForButton(moreBtn);
+    if (!menuEl) return false;
+
+    const target = resolveOverflowTargetPath(moreBtn);
+    if (!target) return false;
+
+    const nativeItems = Array.from(menuEl.querySelectorAll('[role="menuitem"]')).filter(
+      (el) => el.getAttribute('data-aw-owned') !== '1'
+    );
+    const nativeTexts = nativeItems.map((el) => String(el.textContent || el.getAttribute('aria-label') || '').trim());
+    if (nativeTexts.some((txt) => NATIVE_EXPLORER_ITEM_RE.test(txt))) {
+      // Host natively provides Show/Open in File Explorer (e.g., standard fileView) — never duplicate!
+      menuEl.querySelector('[data-aw-role="reveal-menu-item"]')?.remove();
+      return false;
+    }
+
+    const preferEnglish = nativeTexts.length > 0 && !/[\u4e00-\u9fff]/.test(nativeTexts.join(' '));
+    const labels = getSystemExplorerLabels({ preferEnglish });
+    const labelText = target.isDirectory ? labels.openDir : labels.revealFile;
+
+    let item = menuEl.querySelector('[data-aw-role="reveal-menu-item"]');
+    if (item) {
+      item.dataset.awPath = target.path;
+      item.dataset.awDir = target.isDirectory ? '1' : '0';
+      item.title = target.path;
+      const lbl = item.querySelector('.aw-host-menuitem-label');
+      if (lbl) lbl.textContent = labelText;
+      return true;
+    }
+
+    item = markOwned(D.createElement('button'));
+    item.type = 'button';
+    item.className = 'aw-host-menuitem';
+    item.setAttribute('data-aw-role', 'reveal-menu-item');
+    item.setAttribute('role', 'menuitem');
+    item.tabIndex = 0;
+    item.dataset.awPath = target.path;
+    item.dataset.awDir = target.isDirectory ? '1' : '0';
+    item.title = target.path;
+    item.innerHTML = `${S.ICONS.folderOpen}<span class="aw-host-menuitem-label">${S?.esc ? S.esc(labelText) : labelText}</span>`;
+
+    item.addEventListener('mousedown', (ev) => {
+      ev.stopPropagation();
+    });
+    item.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const p = item.dataset.awPath || '';
+      const isDir = item.dataset.awDir === '1';
+      dismissNativeOverflowMenu(menuEl, moreBtn);
+      void revealPathInExplorer(p, { isDirectory: isDir });
+    });
+
+    menuEl.appendChild(item);
+    return true;
+  }
+
+  function scheduleOverflowMenuEnhance({ retries = false } = {}) {
+    if (destroyed) return;
+    if (!menuEnhanceRaf) {
+      menuEnhanceRaf = requestAnimationFrame(() => {
+        menuEnhanceRaf = 0;
+        enhanceNativeOverflowMenus();
+      });
+    }
+    if (retries) {
+      for (const delay of [35, 110]) {
+        const tid = setTimeout(() => {
+          menuEnhanceTimers = menuEnhanceTimers.filter((x) => x !== tid);
+          enhanceNativeOverflowMenus();
+        }, delay);
+        menuEnhanceTimers.push(tid);
+      }
+    }
+  }
+
+  function extractTreeItemMetaFromTarget(rawEl) {
+    const el = rawEl && rawEl.nodeType === 1 ? rawEl : rawEl?.parentElement;
+    if (!el || el.closest?.('[data-aw-owned="1"]')) return null;
+    if (!el.closest?.('[data-testid="tab-file-tree-sidebar"]')) return null;
+    const row = el.closest('[role="treeitem"]');
+    if (!row) return null;
+    try {
+      const fk = Object.keys(row).find((k) => k.startsWith('__reactFiber'));
+      let cur = fk ? row[fk] : null;
+      for (let i = 0; i < 6 && cur; i++, cur = cur.return) {
+        const entry = cur.memoizedProps?.entry;
+        if (entry && typeof entry.uri === 'string' && entry.uri) {
+          const cleanPath = uriToPath(entry.uri).replace(/[\\/]+$/, '');
+          if (!isLocalAbsolutePath(cleanPath)) return null;
+          const isDirectory = entry.fileType === 2 || /[\\/]$/.test(entry.uri);
+          return {
+            path: cleanPath,
+            uri: entry.uri,
+            title: baseName(cleanPath),
+            isDirectory,
+            source: 'tree',
+          };
+        }
+      }
+    } catch {}
+    return null;
+  }
+
+  function extractBreadcrumbMetaFromTarget(rawEl) {
+    const el = rawEl && rawEl.nodeType === 1 ? rawEl : rawEl?.parentElement;
+    if (!el || !isInsideRightContent(el)) return null;
+    if (el.closest?.('[data-aw-owned="1"], [role="treeitem"], button.inline-pill, [data-testid="entity-pill"]')) {
+      return null;
+    }
+    const bc = el.closest?.('div[data-uri]');
+    if (!bc) return null;
+    const rawUri = bc.getAttribute('data-uri') || '';
+    const cleanPath = uriToPath(rawUri).replace(/[\\/]+$/, '');
+    if (!isLocalAbsolutePath(cleanPath)) return null;
+    const isActiveMatch = normKey(cleanPath) === normKey(activeFilePath);
+    const isDirectory = isActiveMatch ? Boolean(activeIsDirectory) : true;
+    return {
+      path: cleanPath,
+      uri: rawUri,
+      title: baseName(cleanPath),
+      isDirectory,
+      source: 'breadcrumb',
+    };
+  }
+
+  function extractContextTargetFromEvent(rawEl) {
+    return (
+      extractTreeItemMetaFromTarget(rawEl) ||
+      extractDirectoryRowMetaFromTarget(rawEl) ||
+      extractBreadcrumbMetaFromTarget(rawEl) ||
+      null
+    );
+  }
+
+  function openExplorerContextMenu(target, x, y) {
+    if (!target?.path) return false;
+    closeAllNavigators();
+    closePopover();
+    activePopoverName = 'ctx-menu';
+
+    const portal = getPortalRoot();
+    const labels = getSystemExplorerLabels({ preferEnglish: false });
+    const menu = markOwned(D.createElement('div'));
+    menu.className = 'aw-ctx-menu';
+    menu.setAttribute('data-aw-role', 'explorer-ctx-menu');
+    menu.setAttribute('role', 'menu');
+    menu.addEventListener('click', (ev) => ev.stopPropagation());
+    menu.addEventListener('mousedown', (ev) => ev.stopPropagation());
+    menu.addEventListener('contextmenu', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+    });
+
+    const esc = (s) => (S?.esc ? S.esc(s) : String(s || ''));
+    const header = markOwned(D.createElement('div'));
+    header.className = 'aw-ctx-header';
+    header.title = target.path;
+    header.innerHTML = `${S.pickIconForItem(target)}<span class="aw-ctx-header-name">${esc(target.title || baseName(target.path))}</span>`;
+    menu.appendChild(header);
+
+    const addItem = (role, iconHtml, text, onClick) => {
+      const btn = markOwned(D.createElement('button'));
+      btn.type = 'button';
+      btn.className = 'aw-host-menuitem';
+      btn.setAttribute('role', 'menuitem');
+      btn.setAttribute('data-aw-ctx-act', role);
+      btn.innerHTML = `${iconHtml}<span class="aw-host-menuitem-label">${esc(text)}</span>`;
+      btn.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        closePopover();
+        void onClick();
+      });
+      menu.appendChild(btn);
+    };
+
+    addItem(
+      'reveal',
+      S.ICONS.folderOpen,
+      target.isDirectory ? labels.openDir : labels.revealFile,
+      () => revealPathInExplorer(target.path, { isDirectory: target.isDirectory })
+    );
+
+    if (!target.isDirectory) {
+      addItem('open-parent', S.ICONS.folder, labels.openParent, () =>
+        revealPathInExplorer(target.path, { isDirectory: true, preferDirectory: true })
+      );
+    }
+
+    addItem('copy-path', S.ICONS.copy, labels.copyPath, () => copyPathToClipboard(target.path, target.title));
+
+    if (normKey(target.path) !== normKey(activeFilePath)) {
+      const sep = markOwned(D.createElement('div'));
+      sep.className = 'aw-ctx-sep';
+      menu.appendChild(sep);
+      addItem('open-tab', S.ICONS.externalTab, labels.openTab, async () => {
+        await handleLinkActivation(
+          {
+            path: target.path,
+            title: target.title || baseName(target.path),
+            isDirectory: Boolean(target.isDirectory),
+          },
+          { background: false }
+        );
+      });
+    }
+
+    menu.style.left = `${Math.max(8, x)}px`;
+    menu.style.top = `${Math.max(8, y)}px`;
+    portal.appendChild(menu);
+
+    const r = menu.getBoundingClientRect();
+    const vw = W.innerWidth || 1200;
+    const vh = W.innerHeight || 800;
+    const clampedLeft = Math.max(8, Math.min(vw - r.width - 8, x));
+    const clampedTop = Math.max(8, Math.min(vh - r.height - 8, y));
+    menu.style.left = `${clampedLeft}px`;
+    menu.style.top = `${clampedTop}px`;
+    return true;
+  }
+
   function positionPortalPopover(pop, anchorEl) {
     const rect = anchorEl.getBoundingClientRect();
     const vw = W.innerWidth || 1200;
@@ -1794,6 +2230,26 @@
       strip.appendChild(encBtn);
     }
 
+    if (isLocalAbsolutePath(activeFilePath)) {
+      const expLabels = getSystemExplorerLabels({ preferEnglish: false });
+      const revealBtn = markOwned(D.createElement('button'));
+      revealBtn.setAttribute('data-aw-role', 'reveal-btn');
+      if (activeIsDirectory) {
+        revealBtn.className = 'aw-status-pill';
+        revealBtn.title = `${expLabels.stripTipDir}\n${activeFilePath}`;
+        revealBtn.innerHTML = `${S.ICONS.folderOpen}<span class="aw-strip-reveal-label">${S?.esc ? S.esc(expLabels.stripDir) : expLabels.stripDir}</span>`;
+      } else {
+        revealBtn.className = 'aw-tray-btn';
+        revealBtn.title = `${expLabels.stripTipFile}\n${activeFilePath}`;
+        revealBtn.innerHTML = S.ICONS.folderOpen;
+      }
+      revealBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        void revealPathInExplorer(activeFilePath, { isDirectory: activeIsDirectory });
+      });
+      strip.appendChild(revealBtn);
+    }
+
     const setBtn = markOwned(D.createElement('button'));
     setBtn.className = 'aw-tray-btn';
     setBtn.setAttribute('data-aw-role', 'settings-btn');
@@ -2087,6 +2543,13 @@
 
   function onCaptureClick(ev) {
     if (destroyed || ev.button !== 0 || ev.altKey || ev.ctrlKey || ev.metaKey || ev.shiftKey) return;
+    if (ev.target?.closest?.('[data-testid="more-actions-overflow"]')) {
+      const col = getRightPaneColumn();
+      if (col && col.contains(ev.target)) {
+        scheduleOverflowMenuEnhance({ retries: true });
+      }
+      return;
+    }
     if (!isInsideRightContent(ev.target)) return;
     let meta = extractLinkMetaFromTarget(ev.target);
     if (!meta && activeIsDirectory) {
@@ -2134,11 +2597,20 @@
   }
 
   function onCaptureContextMenu(ev) {
-    if (destroyed || !suppressNextContextMenu) return;
-    suppressNextContextMenu = false;
+    if (destroyed) return;
+    if (suppressNextContextMenu) {
+      suppressNextContextMenu = false;
+      ev.preventDefault();
+      ev.stopPropagation();
+      ev.stopImmediatePropagation();
+      return;
+    }
+    const ctxTarget = extractContextTargetFromEvent(ev.target);
+    if (!ctxTarget) return;
     ev.preventDefault();
     ev.stopPropagation();
     ev.stopImmediatePropagation();
+    openExplorerContextMenu(ctxTarget, ev.clientX, ev.clientY);
   }
 
   function onCaptureDragStart(ev) {
@@ -2300,6 +2772,13 @@
 
   function onCaptureKeyDown(ev) {
     if (destroyed) return;
+    if (ev.key === 'Escape' && activePopoverName) {
+      closePopover();
+      return;
+    }
+    if ((ev.key === 'Enter' || ev.key === ' ') && ev.target?.closest?.('[data-testid="more-actions-overflow"]')) {
+      scheduleOverflowMenuEnhance({ retries: true });
+    }
     if (isEditableElement(ev.target)) return;
 
     if (matchesTabHotkey(ev)) {
@@ -2384,8 +2863,19 @@
 
     ensureStoreSubscription();
 
-    domObserver = new MutationObserver(() => {
-      if (destroyed || obsThrottle) return;
+    domObserver = new MutationObserver((mutations) => {
+      if (destroyed) return;
+      for (const m of mutations) {
+        if (!m.addedNodes || !m.addedNodes.length) continue;
+        for (const node of m.addedNodes) {
+          if (node.nodeType !== 1 || node.getAttribute?.('data-aw-owned') === '1') continue;
+          if (node.matches?.('[role="menu"]') || node.querySelector?.('[role="menu"]')) {
+            scheduleOverflowMenuEnhance({ retries: false });
+            break;
+          }
+        }
+      }
+      if (obsThrottle) return;
       obsThrottle = setTimeout(() => {
         obsThrottle = null;
         if (destroyed) return;
@@ -2394,6 +2884,9 @@
         const col = getRightPaneColumn();
         const contentEl = getContentContainer(col);
         const strip = D.getElementById(STRIP_ID);
+        if (col?.querySelector?.('[data-testid="more-actions-overflow"][aria-expanded="true"]')) {
+          enhanceNativeOverflowMenus();
+        }
         if (tabKey !== lastObservedTabKey) {
           lastObservedTabKey = tabKey;
           scheduleSync();
@@ -2471,6 +2964,12 @@
       clearTimeout(bgUpdateTimer);
       clearTimeout(suppressAuxTimer);
       clearTimeout(suppressCtxTimer);
+      if (menuEnhanceRaf) {
+        cancelAnimationFrame(menuEnhanceRaf);
+        menuEnhanceRaf = 0;
+      }
+      for (const tid of menuEnhanceTimers) clearTimeout(tid);
+      menuEnhanceTimers = [];
       syncTimer = null;
       holdTimer = null;
       obsThrottle = null;

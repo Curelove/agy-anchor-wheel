@@ -7,6 +7,7 @@ import { openExternalDocument, renderDocument } from './document_renderer.mjs';
 import { convertFileToUtf8, inspectFileEncoding } from './encoding.mjs';
 import { buildNavContext, classifyFile, listDirectoryDirectFiles } from './nav_context.mjs';
 import { PreviewService } from './preview_service.mjs';
+import { revealInSystemExplorer } from './system_explorer.mjs';
 import { UpdateService } from './update_service.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -472,6 +473,11 @@ export class CdpBridge {
         return renderDocument(req.path || '', { snippetOnly: Boolean(req.snippetOnly) });
       case 'openExternal':
         return openExternalDocument(req.path || '', { dryRun: Boolean(req.dryRun) });
+      case 'revealInExplorer':
+        return revealInSystemExplorer(req.path || '', {
+          preferDirectory: Boolean(req.preferDirectory),
+          dryRun: Boolean(req.dryRun),
+        });
       default:
         return { ok: false, error: `Unknown action: ${action}` };
     }

@@ -213,6 +213,37 @@ test('standalone HTTP API serves UI assets, session ops, backlinks, and encoding
     assert.equal(openExtRes.ok, true);
     assert.equal(openExtRes.dryRun, true);
 
+    const revealDirRes = await (
+      await fetch(`${base}/api/file/reveal`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: wsDir, dryRun: true }),
+      })
+    ).json();
+    assert.equal(revealDirRes.ok, true);
+    assert.equal(revealDirRes.mode, 'open-dir');
+    assert.equal(revealDirRes.isDirectory, true);
+
+    const revealFileRes = await (
+      await fetch(`${base}/api/file/reveal`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: childFile, dryRun: true }),
+      })
+    ).json();
+    assert.equal(revealFileRes.ok, true);
+    assert.equal(revealFileRes.mode, 'reveal-file');
+    assert.equal(revealFileRes.isDirectory, false);
+
+    const revealBlockedRes = await (
+      await fetch(`${base}/api/file/reveal`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: path.join(wsDir, '.env'), dryRun: true }),
+      })
+    ).json();
+    assert.equal(revealBlockedRes.ok, false);
+
     for (const staticPath of ['/nav_shared.js', '/bilateral_wheel.js', '/ae_tree.js', '/settings_modal.js', '/doc_viewer.js']) {
       const sr = await fetch(`${base}${staticPath}`);
       assert.equal(sr.status, 200);

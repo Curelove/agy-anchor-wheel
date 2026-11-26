@@ -1584,3 +1584,356 @@ test('Mode 1 native_enhancer: auto-renders DOCX overlay over dead native preview
     } catch {}
   }
 });
+
+test('Mode 1 native_enhancer: directoryView overflow menu injects explorer open item (ZH & EN, no dup), strip 1-click reveal, and tree/row/breadcrumb context menu', async (t) => {
+  const exe = findBrowserExe();
+  if (!exe) {
+    t.skip('No headless Chromium binary available');
+    return;
+  }
+
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'aw-native-explorer-test-'));
+  const profileDir = path.join(tmpRoot, 'profile');
+  fs.mkdirSync(profileDir, { recursive: true });
+
+  const wheelCss = fs.readFileSync(path.join(ROOT, 'sidecars', 'anchor_wheel', 'shared', 'wheel_styles.css'), 'utf8');
+  const navSharedJs = fs.readFileSync(path.join(ROOT, 'sidecars', 'anchor_wheel', 'shared', 'nav_shared.js'), 'utf8');
+  const wheelJs = fs.readFileSync(path.join(ROOT, 'sidecars', 'anchor_wheel', 'shared', 'radial_wheel.js'), 'utf8');
+  const bilateralJs = fs.readFileSync(path.join(ROOT, 'sidecars', 'anchor_wheel', 'shared', 'bilateral_wheel.js'), 'utf8');
+  const aeTreeJs = fs.readFileSync(path.join(ROOT, 'sidecars', 'anchor_wheel', 'shared', 'ae_tree.js'), 'utf8');
+  const settingsModalJs = fs.readFileSync(path.join(ROOT, 'sidecars', 'anchor_wheel', 'shared', 'settings_modal.js'), 'utf8');
+  const mdJs = fs.readFileSync(path.join(ROOT, 'sidecars', 'anchor_wheel', 'shared', 'markdown_render.js'), 'utf8');
+  const docViewerJs = fs.readFileSync(path.join(ROOT, 'sidecars', 'anchor_wheel', 'shared', 'doc_viewer.js'), 'utf8');
+  const nativeJs = fs.readFileSync(path.join(ROOT, 'sidecars', 'anchor_wheel', 'native', 'native_enhancer.js'), 'utf8');
+
+  let browserProc = null;
+  let ws = null;
+
+  try {
+    browserProc = spawn(
+      exe,
+      [
+        '--headless=new',
+        '--disable-gpu',
+        '--no-first-run',
+        '--no-default-browser-check',
+        '--remote-debugging-port=0',
+        `--user-data-dir=${profileDir}`,
+        'about:blank',
+      ],
+      { stdio: 'ignore', windowsHide: true }
+    );
+
+    const port = await waitForPortFile(profileDir);
+    const pages = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
+    const page = pages.find((p) => p.type === 'page') || pages[0];
+    ws = new WebSocket(page.webSocketDebuggerUrl);
+    await new Promise((r) => ws.addEventListener('open', r));
+    const cdp = new MiniCdp(ws);
+    await cdp.send('Runtime.enable');
+
+    const res = await cdp.evalAsync(`(async () => {
+      const root = document.createElement('div');
+      root.id = 'root';
+      document.body.appendChild(root);
+
+      const cid = '44444444-5555-6666-7777-888888888888';
+      const parentUri = 'file:///c%3A/Users/demo/agy-anchor-wheel';
+      const distUri = 'file:///c%3A/Users/demo/agy-anchor-wheel/dist';
+      const zipUri = 'file:///c%3A/Users/demo/agy-anchor-wheel/dist/agy-anchor-wheel-v0.8.0.zip';
+      const treeDirUri = 'file:///c%3A/Users/demo/agy-anchor-wheel/scripts';
+
+      const storeState = {
+        sidePanelV2: {
+          conversationPanes: {
+            [cid]: {
+              activeTabId: 'directory__' + distUri,
+              tabs: [
+                {
+                  id: 'directory__' + distUri,
+                  content: { type: 'directoryView', directoryView: { directoryUri: distUri, cascadeId: cid } },
+                  isPreview: false,
+                },
+              ],
+            },
+          },
+          overviewPanelOpen: {},
+        },
+      };
+      const listeners = new Set();
+      const reduxStore = {
+        getState: () => storeState,
+        subscribe: (fn) => { listeners.add(fn); return () => listeners.delete(fn); },
+        dispatch: (action) => {
+          const pane = storeState.sidePanelV2.conversationPanes[cid];
+          if (action.type === 'sidePanelV2/setContent') {
+            const c = action.payload.content;
+            const k = c.type === 'directoryView' ? 'directory__' + c.directoryView.directoryUri : 'file__' + c.fileView.fileUri;
+            if (!pane.tabs.some((t) => t.id === k)) pane.tabs.push({ id: k, content: c, isPreview: false });
+            if (!action.payload.background) pane.activeTabId = k;
+          } else if (action.type === 'sidePanelV2/setActiveTab') {
+            pane.activeTabId = action.payload.tabId;
+          }
+          for (const fn of listeners) fn();
+        },
+      };
+      const browserCtx = { openUrlInBrowserPane: () => {}, getTargetTreeId: () => ({ kind: 'cascadeId', cascadeId: cid }) };
+      const mockRouter = { navigate: () => Promise.resolve(), buildLocation: () => ({}) };
+      root.__reactContainer$test = { memoizedProps: { store: reduxStore, value: browserCtx, router: mockRouter }, child: null, sibling: null };
+
+      const aux = document.createElement('div');
+      aux.setAttribute('data-testid', 'aux-pane-split');
+      const left = document.createElement('div');
+      const right = document.createElement('div');
+      right.style.cssText = 'width:620px;height:740px;';
+      const col = document.createElement('div');
+      col.className = 'flex flex-col browser-hole-ancestor';
+      col.style.cssText = 'width:620px;height:740px;';
+      const tabBar = document.createElement('div');
+      tabBar.className = 'agy-layout-vars';
+      const tabEl = document.createElement('div');
+      tabEl.className = 'agy-aux-tab';
+      tabBar.appendChild(tabEl);
+
+      const contentWrap = document.createElement('div');
+      contentWrap.className = 'flex-grow basis-0 overflow-hidden';
+      contentWrap.style.cssText = 'width:620px;height:660px;position:relative;';
+
+      // Header bar with breadcrumbs + native more-actions-overflow button
+      const headerBar = document.createElement('div');
+      headerBar.className = 'flex items-center justify-between group/file-row';
+      const bcParent = document.createElement('div');
+      bcParent.id = 'bc-parent';
+      bcParent.setAttribute('data-uri', parentUri);
+      bcParent.textContent = 'agy-anchor-wheel';
+      const bcDist = document.createElement('div');
+      bcDist.id = 'bc-dist';
+      bcDist.setAttribute('data-uri', distUri);
+      bcDist.textContent = 'dist';
+      const moreBtn = document.createElement('button');
+      moreBtn.type = 'button';
+      moreBtn.setAttribute('data-testid', 'more-actions-overflow');
+      moreBtn.setAttribute('aria-haspopup', 'menu');
+      moreBtn.setAttribute('aria-expanded', 'false');
+      moreBtn.style.cssText = 'width:28px;height:28px;';
+      headerBar.append(bcParent, bcDist, moreBtn);
+
+      // Directory file row (YYc mock)
+      const yycAncFiber = { memoizedProps: { directoryUri: distUri, cascadeId: cid }, return: null };
+      const zipRow = document.createElement('div');
+      zipRow.id = 'zip-row';
+      zipRow.style.cssText = 'height:30px;width:400px;';
+      zipRow.textContent = 'agy-anchor-wheel-v0.8.0.zip';
+      zipRow.__reactFiber$test = {
+        key: zipUri,
+        memoizedProps: { onClick: () => {}, onDoubleClick: () => {} },
+        return: yycAncFiber,
+        child: { memoizedProps: { uri: zipUri, isDirectory: false }, child: null, sibling: null },
+      };
+
+      // Workspace sidebar file tree mock (tab-file-tree-sidebar)
+      const treeSidebar = document.createElement('div');
+      treeSidebar.setAttribute('data-testid', 'tab-file-tree-sidebar');
+      const treeItem = document.createElement('div');
+      treeItem.id = 'tree-scripts-dir';
+      treeItem.setAttribute('role', 'treeitem');
+      treeItem.textContent = 'scripts';
+      treeItem.__reactFiber$test = {
+        memoizedProps: {},
+        return: {
+          memoizedProps: {
+            entry: { uri: treeDirUri, fileType: 2 },
+          },
+          return: null,
+        },
+      };
+      treeSidebar.appendChild(treeItem);
+
+      contentWrap.append(headerBar, zipRow, treeSidebar);
+      col.append(tabBar, contentWrap);
+      right.appendChild(col);
+      aux.append(left, right);
+      root.appendChild(aux);
+
+      const revealCalls = [];
+      const mockSession = { groups: [], activeGroupId: null, history: { entries: [], index: -1 }, recentlyEvicted: [], lineage: { parentByKey: {} } };
+      const mockSettings = { middleMode: 'bilateral_wheel', tabTriggerEnabled: true, autoCheckUpdates: false };
+
+      window.__agAnchorWheelCall = (raw) => {
+        const req = JSON.parse(raw);
+        let res = { ok: true, session: mockSession };
+        if (req.action === 'getBoot') {
+          res = { ok: true, version: ${JSON.stringify(PLUGIN_VERSION)}, settings: mockSettings, session: mockSession };
+        } else if (req.action === 'getBacklinks') {
+          res = { ok: true, path: req.path, title: 'dist', backlinks: [], outlinks: [] };
+        } else if (req.action === 'getNavContext') {
+          res = {
+            ok: true,
+            activePath: req.path,
+            childSourceScope: 'opened_and_outlinks',
+            parentDirection: 'left',
+            current: { path: req.path, key: String(req.path).toLowerCase(), title: 'dist', isDirectory: true, children: [] },
+            ancestors: [],
+            parent: null,
+            categories: [{ id: 'other', label: '其他', items: [] }],
+            totalCurrentChildren: 0,
+          };
+        } else if (req.action === 'revealInExplorer') {
+          revealCalls.push({ path: req.path, preferDirectory: Boolean(req.preferDirectory) });
+          res = { ok: true, mode: req.preferDirectory ? 'open-dir' : 'open-dir', targetPath: req.path, isDirectory: true };
+        }
+        setTimeout(() => window.__agAnchorWheelResolve?.(req.id, res), 0);
+      };
+
+      window.__agAnchorWheelBoot = { version: ${JSON.stringify(PLUGIN_VERSION)}, settings: mockSettings, wheelCss: ${JSON.stringify(wheelCss)} };
+      eval(${JSON.stringify(navSharedJs)});
+      eval(${JSON.stringify(wheelJs)});
+      eval(${JSON.stringify(bilateralJs)});
+      eval(${JSON.stringify(aeTreeJs)});
+      eval(${JSON.stringify(settingsModalJs)});
+      eval(${JSON.stringify(mdJs)});
+      eval(${JSON.stringify(docViewerJs)});
+      eval(${JSON.stringify(nativeJs)});
+      await new Promise((r) => setTimeout(r, 150));
+
+      // 1. Companion Strip 1-click button renders for directoryView and calls revealInExplorer
+      const stripRevealBtn = document.querySelector('#aw-companion-strip [data-aw-role="reveal-btn"]');
+      const stripRevealText = stripRevealBtn?.textContent || '';
+      stripRevealBtn?.click();
+      await new Promise((r) => setTimeout(r, 40));
+
+      // 2. Open native overflow menu containing ONLY '复制路径' -> AnchorWheel injects Chinese Explorer item!
+      const menuZh = document.createElement('div');
+      menuZh.id = 'native-overflow-zh';
+      menuZh.setAttribute('role', 'menu');
+      const copyItemZh = document.createElement('div');
+      copyItemZh.setAttribute('role', 'menuitem');
+      copyItemZh.textContent = '复制路径';
+      menuZh.appendChild(copyItemZh);
+      let escDismissed = false;
+      menuZh.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+          escDismissed = true;
+          moreBtn.setAttribute('aria-expanded', 'false');
+          moreBtn.removeAttribute('aria-controls');
+          menuZh.remove();
+        }
+      });
+      moreBtn.setAttribute('aria-expanded', 'true');
+      moreBtn.setAttribute('aria-controls', 'native-overflow-zh');
+      document.body.appendChild(menuZh);
+      moreBtn.click();
+      await new Promise((r) => setTimeout(r, 80));
+
+      const injectedZh = menuZh.querySelector('[data-aw-role="reveal-menu-item"]');
+      const injectedZhText = injectedZh?.textContent || '';
+      injectedZh?.click();
+      await new Promise((r) => setTimeout(r, 50));
+
+      // 3. Open native overflow menu in English ('Copy Path' only) -> adapts to English!
+      const menuEn = document.createElement('div');
+      menuEn.id = 'native-overflow-en';
+      menuEn.setAttribute('role', 'menu');
+      const copyItemEn = document.createElement('div');
+      copyItemEn.setAttribute('role', 'menuitem');
+      copyItemEn.textContent = 'Copy Path';
+      menuEn.appendChild(copyItemEn);
+      moreBtn.setAttribute('aria-expanded', 'true');
+      moreBtn.setAttribute('aria-controls', 'native-overflow-en');
+      document.body.appendChild(menuEn);
+      moreBtn.click();
+      await new Promise((r) => setTimeout(r, 80));
+      const injectedEnText = menuEn.querySelector('[data-aw-role="reveal-menu-item"]')?.textContent || '';
+      menuEn.remove();
+      moreBtn.setAttribute('aria-expanded', 'false');
+      moreBtn.removeAttribute('aria-controls');
+
+      // 4. Open native overflow menu that ALREADY has 'Show in File Explorer' -> zero duplicates!
+      const menuHasNative = document.createElement('div');
+      menuHasNative.id = 'native-overflow-file';
+      menuHasNative.setAttribute('role', 'menu');
+      const copyItem3 = document.createElement('div');
+      copyItem3.setAttribute('role', 'menuitem');
+      copyItem3.textContent = 'Copy Path';
+      const nativeExplorerItem = document.createElement('div');
+      nativeExplorerItem.setAttribute('role', 'menuitem');
+      nativeExplorerItem.textContent = 'Show in File Explorer';
+      menuHasNative.append(copyItem3, nativeExplorerItem);
+      moreBtn.setAttribute('aria-expanded', 'true');
+      moreBtn.setAttribute('aria-controls', 'native-overflow-file');
+      document.body.appendChild(menuHasNative);
+      moreBtn.click();
+      await new Promise((r) => setTimeout(r, 80));
+      const dupCount = menuHasNative.querySelectorAll('[data-aw-role="reveal-menu-item"]').length;
+      menuHasNative.remove();
+      moreBtn.setAttribute('aria-expanded', 'false');
+
+      // 5. Right-click workspace sidebar tree directory item -> context menu opens & reveals tree folder!
+      treeItem.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 520, clientY: 220 }));
+      await new Promise((r) => setTimeout(r, 30));
+      const treeMenuOpen = Boolean(document.querySelector('[data-aw-role="explorer-ctx-menu"]'));
+      const treeHasParentAct = Boolean(document.querySelector('[data-aw-ctx-act="open-parent"]'));
+      document.querySelector('[data-aw-ctx-act="reveal"]')?.click();
+      await new Promise((r) => setTimeout(r, 40));
+
+      // 6. Right-click file row in directoryView -> offers BOTH 'reveal' and 'open-parent'
+      zipRow.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 200, clientY: 260 }));
+      await new Promise((r) => setTimeout(r, 30));
+      const fileHasParentAct = Boolean(document.querySelector('[data-aw-ctx-act="open-parent"]'));
+      document.querySelector('[data-aw-ctx-act="open-parent"]')?.click();
+      await new Promise((r) => setTimeout(r, 40));
+
+      // 7. Right-click parent breadcrumb -> opens context menu and Escape dismisses cleanly
+      bcParent.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 120, clientY: 120 }));
+      await new Promise((r) => setTimeout(r, 30));
+      const bcMenuTitle = document.querySelector('.aw-ctx-header-name')?.textContent || '';
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      await new Promise((r) => setTimeout(r, 20));
+      const closedOnEsc = !document.querySelector('[data-aw-role="explorer-ctx-menu"]');
+
+      return {
+        stripRevealText,
+        injectedZhText,
+        escDismissed,
+        injectedEnText,
+        dupCount,
+        treeMenuOpen,
+        treeHasParentAct,
+        fileHasParentAct,
+        bcMenuTitle,
+        closedOnEsc,
+        revealCalls,
+      };
+    })()`);
+
+    assert.deepEqual(cdp.errors, []);
+    assert.equal(res.stripRevealText, '打开目录');
+    assert.match(res.injectedZhText, /在(?:文件资源管理器|访达|文件管理器)中打开/);
+    assert.equal(res.escDismissed, true);
+    assert.match(res.injectedEnText, /Open in (?:File Explorer|Finder|File Manager)/);
+    assert.equal(res.dupCount, 0);
+    assert.equal(res.treeMenuOpen, true);
+    assert.equal(res.treeHasParentAct, false);
+    assert.equal(res.fileHasParentAct, true);
+    assert.equal(res.bcMenuTitle, 'agy-anchor-wheel');
+    assert.equal(res.closedOnEsc, true);
+    assert.equal(res.revealCalls.length, 4);
+    assert.ok(res.revealCalls[0].path.endsWith('dist'));
+    assert.ok(res.revealCalls[1].path.endsWith('dist'));
+    assert.ok(res.revealCalls[2].path.endsWith('scripts'));
+    assert.ok(res.revealCalls[3].path.endsWith('agy-anchor-wheel-v0.8.0.zip'));
+    assert.equal(res.revealCalls[3].preferDirectory, true);
+  } finally {
+    try { ws?.close(); } catch {}
+    if (browserProc) {
+      await new Promise((resolve) => {
+        const timer = setTimeout(resolve, 1500);
+        browserProc.once('exit', () => { clearTimeout(timer); resolve(); });
+        try { browserProc.kill(); } catch { resolve(); }
+      });
+    }
+    try {
+      fs.rmSync(tmpRoot, { recursive: true, force: true, maxRetries: 6, retryDelay: 150 });
+    } catch {}
+  }
+});
