@@ -18,15 +18,16 @@ import { buildNavContext, classifyFile } from '../sidecars/anchor_wheel/backend/
 import { canonicalKey } from '../sidecars/anchor_wheel/backend/security.mjs';
 
 test('evictOverflowChildren protects anchor and locked children and evicts oldest unlocked LRU', () => {
+  const ws = path.join(os.tmpdir(), 'aw-mock-ws');
   const group = {
     id: 'g1',
-    anchorPath: 'C:\\ws\\summary.md',
+    anchorPath: path.join(ws, 'summary.md'),
     children: [
-      { path: 'C:\\ws\\a.md', lastAccessedAt: 100, addedAt: 10, locked: true },
-      { path: 'C:\\ws\\b.md', lastAccessedAt: 200, addedAt: 20, locked: false },
-      { path: 'C:\\ws\\c.md', lastAccessedAt: 500, addedAt: 30, locked: false },
-      { path: 'C:\\ws\\d.md', lastAccessedAt: 300, addedAt: 40, locked: false },
-      { path: 'C:\\ws\\e.md', lastAccessedAt: 400, addedAt: 50, locked: false },
+      { path: path.join(ws, 'a.md'), lastAccessedAt: 100, addedAt: 10, locked: true },
+      { path: path.join(ws, 'b.md'), lastAccessedAt: 200, addedAt: 20, locked: false },
+      { path: path.join(ws, 'c.md'), lastAccessedAt: 500, addedAt: 30, locked: false },
+      { path: path.join(ws, 'd.md'), lastAccessedAt: 300, addedAt: 40, locked: false },
+      { path: path.join(ws, 'e.md'), lastAccessedAt: 400, addedAt: 50, locked: false },
     ],
   };
 
@@ -44,34 +45,41 @@ test('evictOverflowChildren protects anchor and locked children and evicts oldes
 });
 
 test('history stack supports back, forward, scroll preservation, and branch truncation', () => {
+  const ws = path.join(os.tmpdir(), 'aw-mock-hist');
+  const pAnchor = path.join(ws, 'anchor.md');
+  const pChild1 = path.join(ws, 'child1.md');
+  const pChild2 = path.join(ws, 'child2.md');
+  const pChild3 = path.join(ws, 'child3.md');
+
   let h = { entries: [], index: -1 };
-  h = pushHistory(h, { path: 'C:\\ws\\anchor.md', scrollTop: 120 });
-  h = pushHistory(h, { path: 'C:\\ws\\child1.md', scrollTop: 0 });
-  h = pushHistory(h, { path: 'C:\\ws\\child2.md', scrollTop: 340 });
+  h = pushHistory(h, { path: pAnchor, scrollTop: 120 });
+  h = pushHistory(h, { path: pChild1, scrollTop: 0 });
+  h = pushHistory(h, { path: pChild2, scrollTop: 340 });
   assert.equal(h.index, 2);
 
   let step = stepHistory(h, -1);
-  assert.equal(step.targetEntry.path, 'C:\\ws\\child1.md');
+  assert.equal(step.targetEntry.path, pChild1);
   step = stepHistory(step.historyState, -1);
-  assert.equal(step.targetEntry.path, 'C:\\ws\\anchor.md');
+  assert.equal(step.targetEntry.path, pAnchor);
   assert.equal(step.targetEntry.scrollTop, 120);
 
   // Branch off from anchor.md
-  const branched = pushHistory(step.historyState, { path: 'C:\\ws\\child3.md' });
+  const branched = pushHistory(step.historyState, { path: pChild3 });
   assert.equal(branched.entries.length, 2);
-  assert.equal(branched.entries[1].path, 'C:\\ws\\child3.md');
+  assert.equal(branched.entries[1].path, pChild3);
 });
 
 test('StateStore persists sessions, records recentlyEvicted, and restores evicted item', () => {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aw-store-'));
+  const ws = path.join(dataDir, 'ws');
   try {
     const store = new StateStore(dataDir);
     store.updateSettings({ maxChildrenPerGroup: 2 });
-    store.pinAnchor('conv-1', { path: 'C:\\ws\\master.md', title: 'Master' });
+    store.pinAnchor('conv-1', { path: path.join(ws, 'master.md'), title: 'Master' });
 
-    store.adoptChild('conv-1', { childPath: 'C:\\ws\\f1.md' });
-    store.adoptChild('conv-1', { childPath: 'C:\\ws\\f2.md' });
-    const r3 = store.adoptChild('conv-1', { childPath: 'C:\\ws\\f3.md' });
+    store.adoptChild('conv-1', { childPath: path.join(ws, 'f1.md') });
+    store.adoptChild('conv-1', { childPath: path.join(ws, 'f2.md') });
+    const r3 = store.adoptChild('conv-1', { childPath: path.join(ws, 'f3.md') });
     assert.equal(r3.evicted.length, 1);
     assert.equal(r3.session.recentlyEvicted.length, 1);
 
@@ -111,8 +119,8 @@ test('sanitizeSettings preserves mandatory 其他 fallback category and validate
 
   const rulesOnly = sanitizeCategoryRules([]);
   assert.ok(rulesOnly.length >= 1);
-  assert.equal(classifyFile('C:\\demo\\a.unknown', s.categoryRules).id, 'other');
-  assert.equal(classifyFile('C:\\demo\\hero.PNG', s.categoryRules).label, '立绘');
+  assert.equal(classifyFile(path.join(os.tmpdir(), 'a.unknown'), s.categoryRules).id, 'other');
+  assert.equal(classifyFile(path.join(os.tmpdir(), 'hero.PNG'), s.categoryRules).label, '立绘');
 });
 
 test('StateStore lineage resolves multi-level ancestors cleanly and rejects cycle edges', () => {
