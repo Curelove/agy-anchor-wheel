@@ -1,0 +1,5 @@
+{
+  "testedAntigravityVersions": ["2.34.0"],
+  "testedRange": "Antigravity 2.34.x",
+  "nativeEnhancerNotice": "Mode 1（原生侧栏增强）依赖调试端口及右侧栏 React/Redux 内部结构，AGY 大版本改版时可能部分失效；Mode 2（独立工作台）基于官方 Sidecar 接口，跨版本更稳定。"
+}

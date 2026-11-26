@@ -537,9 +537,30 @@ export class UpdateService {
         name: 'agy-anchor-wheel',
         version: '0.0.0',
         repository: { url: 'https://github.com/Curelove/agy-anchor-wheel' },
-        compatibility: {},
       };
     }
+  }
+
+  readCompatibility(manifest = null) {
+    const candidates = [
+      path.join(this.pluginRoot, 'sidecars', 'anchor_wheel', 'compatibility.json'),
+      path.join(this.pluginRoot, 'compatibility.json'),
+    ];
+    for (const filePath of candidates) {
+      try {
+        if (!fs.existsSync(filePath)) continue;
+        const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          return parsed;
+        }
+      } catch {
+        // ignore malformed or unreadable fallback file
+      }
+    }
+    if (manifest?.compatibility && typeof manifest.compatibility === 'object' && !Array.isArray(manifest.compatibility)) {
+      return manifest.compatibility;
+    }
+    return {};
   }
 
   getLocalCompatibility(compatibility) {
@@ -558,9 +579,10 @@ export class UpdateService {
   getPluginMeta() {
     const mf = this.readManifest();
     const version = String(mf.version || '0.0.0');
-    const repoUrl = String(mf.repository?.url || 'https://github.com/Curelove/agy-anchor-wheel').replace(/\.git$/i, '');
+    const rawRepoUrl = typeof mf.repository === 'string' ? mf.repository : mf.repository?.url;
+    const repoUrl = String(rawRepoUrl || 'https://github.com/Curelove/agy-anchor-wheel').replace(/\.git$/i, '');
     const parsed = parseGithubRepo(repoUrl) || { owner: 'Curelove', repo: 'agy-anchor-wheel' };
-    const compatibility = mf.compatibility || {};
+    const compatibility = this.readCompatibility(mf);
     return {
       name: mf.name || 'agy-anchor-wheel',
       version,

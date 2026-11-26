@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "pluginRoot": ".",
+  "categories": ["productivity", "writing-knowledge"],
+  "tags": [
+    "sidecar",
+    "radial-menu",
+    "pie-menu",
+    "folder-navigation",
+    "backlinks",
+    "markdown",
+    "encoding"
+  ],
+  "minAntigravityVersion": "2.34.0",
+  "platforms": ["win32", "darwin", "linux"],
+  "preservePaths": [
+    "data/**",
+    "sidecars/anchor_wheel/data/**"
+  ]
+}

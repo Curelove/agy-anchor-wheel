@@ -84,12 +84,16 @@ AI 对话总结出一份含十几个参考文件的 Markdown 报告时，在 Ant
 
 仅需本机已安装 **Node.js `>= 22`**（纯原生实现，零第三方 npm 依赖）。可选安装 `ffmpeg` 以解锁长视频 3 秒动态预览缓存，未安装也可流畅使用其它全部功能。
 
-### 方式一：下载 GitHub Release 压缩包（零命令行 · 推荐）
+### 方式一：通过 AGY Market 插件市场一键安装与更新（推荐）
+
+如果已在 Antigravity 中安装社区插件市场 [AGY Market](https://github.com/azwosile/agy-market)，可直接在市场侧边栏搜索 **`AnchorWheel`** 或 **`锚点轮盘`** 一键安装，后续版本更新会自动保留你的本地分组与设置（`data/**`）。
+
+### 方式二：下载 GitHub Release 压缩包（零命令行）
 
 1. 前往 [GitHub Releases](https://github.com/Curelove/agy-anchor-wheel/releases) 下载最新版本的 `agy-anchor-wheel-v*.zip`。
 2. 解压到本地任意中文或英文目录后，直接**双击根目录下的 `install-plugin.cmd`**，脚本会自动备份旧版本（保留 `data/` 内已有分组与设置）并部署到本机 Antigravity 插件目录。
 
-### 方式二：Git 克隆安装与命令行升级
+### 方式三：Git 克隆安装与命令行升级
 
 1. 克隆仓库并进入目录：
 

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   UpdateService,
   compareSemver,
@@ -186,4 +187,29 @@ test('UpdateService checks latest GitHub release, caches result, and handles off
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
+});
+
+test('plugin.json stays strictly within Antigravity 10-field allowlist and reads compatibility.json cleanly', () => {
+  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const allowedKeys = new Set([
+    'name',
+    'displayName',
+    'description',
+    'version',
+    'logo',
+    'author',
+    'homepage',
+    'repository',
+    'suggestedPrompts',
+    'disabled',
+  ]);
+  const manifest = JSON.parse(fs.readFileSync(path.join(repoRoot, 'plugin.json'), 'utf8'));
+  const unknownKeys = Object.keys(manifest).filter((k) => !allowedKeys.has(k));
+  assert.deepEqual(unknownKeys, []);
+
+  const svc = new UpdateService({ pluginRoot: repoRoot, detectAgyImpl: () => '2.34.0' });
+  const meta = svc.getPluginMeta();
+  assert.ok(Array.isArray(meta.compatibility?.testedAntigravityVersions));
+  assert.ok(meta.compatibility.testedAntigravityVersions.includes('2.34.0'));
+  assert.equal(meta.localAntigravity.compatLevel, 'verified');
 });

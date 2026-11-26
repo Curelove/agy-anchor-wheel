@@ -10,7 +10,7 @@ const TARGET_ROOT = path.join(os.homedir(), '.gemini', 'config', 'plugins', PLUG
 const BACKUP_AUTO_DIR = path.join(REPO_ROOT, 'backups', 'auto');
 const BACKUP_LATEST_DIR = path.join(REPO_ROOT, 'backups', 'latest-current');
 
-const DEPLOY_ENTRIES = ['plugin.json', 'package.json', 'README.md', 'LICENSE', 'assets', 'sidecars'];
+const DEPLOY_ENTRIES = ['plugin.json', 'agy-market.json', 'package.json', 'README.md', 'LICENSE', 'assets', 'sidecars'];
 
 function formatStamp(d = new Date()) {
   const pad = (n) => String(n).padStart(2, '0');

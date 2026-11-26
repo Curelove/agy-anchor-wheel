@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -8,7 +9,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..');
 
 function copyFiltered(src, dst, skipNames = new Set(['data', 'backups', 'node_modules', '.git', 'dist', 'scratch'])) {
-  const st = fs.statSync(src);
+  const st = fs.lstatSync(src);
+  if (st.isSymbolicLink()) {
+    throw new Error(`Refusing to package symlink into release bundle: ${src}`);
+  }
   if (st.isDirectory()) {
     fs.mkdirSync(dst, { recursive: true });
     for (const ent of fs.readdirSync(src, { withFileTypes: true })) {
@@ -21,7 +25,7 @@ function copyFiltered(src, dst, skipNames = new Set(['data', 'backups', 'node_mo
   }
 }
 
-function buildReleaseZip() {
+function buildReleaseBundles() {
   const manifest = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'plugin.json'), 'utf8'));
   const pkg = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'package.json'), 'utf8'));
   const version = String(manifest.version || '').trim();
@@ -35,7 +39,11 @@ function buildReleaseZip() {
   const distDir = path.join(REPO_ROOT, 'dist');
   fs.mkdirSync(distDir, { recursive: true });
   const outZip = path.join(distDir, `agy-anchor-wheel-v${version}.zip`);
-  if (fs.existsSync(outZip)) fs.rmSync(outZip, { force: true });
+  const outTar = path.join(distDir, `agy-anchor-wheel-v${version}.tar.gz`);
+  const outSha = `${outTar}.sha256`;
+  for (const p of [outZip, outTar, outSha]) {
+    if (fs.existsSync(p)) fs.rmSync(p, { force: true });
+  }
 
   const stageTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'aw-release-'));
   const stageRoot = path.join(stageTmp, 'agy-anchor-wheel');
@@ -43,6 +51,7 @@ function buildReleaseZip() {
 
   const entries = [
     'plugin.json',
+    'agy-market.json',
     'package.json',
     'README.md',
     'LICENSE',
@@ -69,12 +78,19 @@ function buildReleaseZip() {
       execFileSync('zip', ['-r', outZip, 'agy-anchor-wheel'], { cwd: stageTmp, stdio: 'inherit' });
     }
 
-    const bytes = fs.statSync(outZip).size;
-    console.log(`[package:release] Created ${outZip} (${(bytes / 1024).toFixed(1)} KB)`);
-    return outZip;
+    // Build POSIX-safe .tar.gz for AGY Market prebuilt release distribution
+    execFileSync('tar', ['-czf', outTar, 'agy-anchor-wheel'], { cwd: stageTmp, stdio: 'inherit' });
+    const tarSha256 = crypto.createHash('sha256').update(fs.readFileSync(outTar)).digest('hex');
+    fs.writeFileSync(outSha, `${tarSha256}  ${path.basename(outTar)}\n`, 'utf8');
+
+    const zipBytes = fs.statSync(outZip).size;
+    const tarBytes = fs.statSync(outTar).size;
+    console.log(`[package:release] Created ${outZip} (${(zipBytes / 1024).toFixed(1)} KB)`);
+    console.log(`[package:release] Created ${outTar} (${(tarBytes / 1024).toFixed(1)} KB, sha256=${tarSha256})`);
+    return { outZip, outTar, outSha, tarSha256 };
   } finally {
     fs.rmSync(stageTmp, { recursive: true, force: true, maxRetries: 6, retryDelay: 120 });
   }
 }
 
-buildReleaseZip();
+buildReleaseBundles();
