@@ -15,6 +15,10 @@ function findBrowserExe() {
     'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
     'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
     'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
+    '/usr/bin/google-chrome',
+    '/usr/bin/google-chrome-stable',
+    '/usr/bin/chromium-browser',
+    '/usr/bin/chromium',
   ];
   for (const c of candidates) {
     if (fs.existsSync(c)) return c;
@@ -108,6 +112,8 @@ test('Mode 1 native_enhancer: DOM container tracking, non-overwriting tab dispat
         '--disable-gpu',
         '--no-first-run',
         '--no-default-browser-check',
+        '--no-sandbox',
+        '--disable-dev-shm-usage',
         '--remote-debugging-port=0',
         `--user-data-dir=${profileDir}`,
         'about:blank',
@@ -880,6 +886,8 @@ test('Mode 1 native_enhancer: directoryView in-place transition, YYc file-row no
         '--disable-gpu',
         '--no-first-run',
         '--no-default-browser-check',
+        '--no-sandbox',
+        '--disable-dev-shm-usage',
         '--remote-debugging-port=0',
         `--user-data-dir=${profileDir}`,
         'about:blank',
@@ -1284,6 +1292,8 @@ test('Mode 1 native_enhancer: auto-renders DOCX overlay over dead native preview
         '--disable-gpu',
         '--no-first-run',
         '--no-default-browser-check',
+        '--no-sandbox',
+        '--disable-dev-shm-usage',
         '--remote-debugging-port=0',
         `--user-data-dir=${profileDir}`,
         'about:blank',
@@ -1617,6 +1627,8 @@ test('Mode 1 native_enhancer: directoryView overflow menu injects explorer open 
         '--disable-gpu',
         '--no-first-run',
         '--no-default-browser-check',
+        '--no-sandbox',
+        '--disable-dev-shm-usage',
         '--remote-debugging-port=0',
         `--user-data-dir=${profileDir}`,
         'about:blank',
@@ -1923,6 +1935,285 @@ test('Mode 1 native_enhancer: directoryView overflow menu injects explorer open 
     assert.ok(res.revealCalls[2].path.endsWith('scripts'));
     assert.ok(res.revealCalls[3].path.endsWith('agy-anchor-wheel-v0.8.0.zip'));
     assert.equal(res.revealCalls[3].preferDirectory, true);
+  } finally {
+    try { ws?.close(); } catch {}
+    if (browserProc) {
+      await new Promise((resolve) => {
+        const timer = setTimeout(resolve, 1500);
+        browserProc.once('exit', () => { clearTimeout(timer); resolve(); });
+        try { browserProc.kill(); } catch { resolve(); }
+      });
+    }
+    try {
+      fs.rmSync(tmpRoot, { recursive: true, force: true, maxRetries: 6, retryDelay: 150 });
+    } catch {}
+  }
+});
+
+test('Mode 1 native_enhancer: Native-First Auto-Yield yields when host renders rich preview, preserves native breadcrumb header when unsupported, upgrades raw .ipynb, and toggles HiRes slides', async (t) => {
+  const exe = findBrowserExe();
+  if (!exe) {
+    t.skip('No headless Chromium binary available');
+    return;
+  }
+
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'aw-native-yield-test-'));
+  const profileDir = path.join(tmpRoot, 'profile');
+  fs.mkdirSync(profileDir, { recursive: true });
+
+  const wheelCss = fs.readFileSync(path.join(ROOT, 'sidecars', 'anchor_wheel', 'shared', 'wheel_styles.css'), 'utf8');
+  const navSharedJs = fs.readFileSync(path.join(ROOT, 'sidecars', 'anchor_wheel', 'shared', 'nav_shared.js'), 'utf8');
+  const wheelJs = fs.readFileSync(path.join(ROOT, 'sidecars', 'anchor_wheel', 'shared', 'radial_wheel.js'), 'utf8');
+  const bilateralJs = fs.readFileSync(path.join(ROOT, 'sidecars', 'anchor_wheel', 'shared', 'bilateral_wheel.js'), 'utf8');
+  const aeTreeJs = fs.readFileSync(path.join(ROOT, 'sidecars', 'anchor_wheel', 'shared', 'ae_tree.js'), 'utf8');
+  const settingsModalJs = fs.readFileSync(path.join(ROOT, 'sidecars', 'anchor_wheel', 'shared', 'settings_modal.js'), 'utf8');
+  const mdJs = fs.readFileSync(path.join(ROOT, 'sidecars', 'anchor_wheel', 'shared', 'markdown_render.js'), 'utf8');
+  const docViewerJs = fs.readFileSync(path.join(ROOT, 'sidecars', 'anchor_wheel', 'shared', 'doc_viewer.js'), 'utf8');
+  const nativeJs = fs.readFileSync(path.join(ROOT, 'sidecars', 'anchor_wheel', 'native', 'native_enhancer.js'), 'utf8');
+
+  let browserProc = null;
+  let ws = null;
+
+  try {
+    browserProc = spawn(
+      exe,
+      [
+        '--headless=new',
+        '--disable-gpu',
+        '--no-first-run',
+        '--no-default-browser-check',
+        '--no-sandbox',
+        '--remote-debugging-port=0',
+        `--user-data-dir=${profileDir}`,
+        'about:blank',
+      ],
+      { stdio: 'ignore', windowsHide: true }
+    );
+
+    const port = await waitForPortFile(profileDir);
+    const pages = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
+    const page = pages.find((p) => p.type === 'page') || pages[0];
+    ws = new WebSocket(page.webSocketDebuggerUrl);
+    await new Promise((r) => ws.addEventListener('open', r));
+    const cdp = new MiniCdp(ws);
+    await cdp.send('Runtime.enable');
+
+    const res = await cdp.evalAsync(`(async () => {
+      const root = document.createElement('div');
+      root.id = 'root';
+      document.body.appendChild(root);
+
+      const cid = '77777777-8888-9999-aaaa-bbbbbbbbbbbb';
+      const futurePptxUri = 'file:///c%3A/Users/demo/future_official.pptx';
+      const unsupportedPptxUri = 'file:///c%3A/Users/demo/unsupported_today.pptx';
+      const nbUri = 'file:///c%3A/Users/demo/train.ipynb';
+
+      const storeState = {
+        sidePanelV2: {
+          conversationPanes: {
+            [cid]: {
+              activeTabId: 'file__' + futurePptxUri,
+              tabs: [
+                { id: 'file__' + futurePptxUri, content: { type: 'fileView', fileView: { fileUri: futurePptxUri, cascadeId: cid } } },
+                { id: 'file__' + unsupportedPptxUri, content: { type: 'fileView', fileView: { fileUri: unsupportedPptxUri, cascadeId: cid } } },
+                { id: 'file__' + nbUri, content: { type: 'fileView', fileView: { fileUri: nbUri, cascadeId: cid } } },
+              ],
+            },
+          },
+        },
+      };
+
+      const listeners = new Set();
+      const reduxStore = {
+        getState: () => storeState,
+        subscribe: (fn) => { listeners.add(fn); return () => listeners.delete(fn); },
+        dispatch: (action) => {
+          const pane = storeState.sidePanelV2.conversationPanes[cid];
+          if (action.type === 'sidePanelV2/setActiveTab') pane.activeTabId = action.payload.tabId;
+          for (const fn of listeners) fn();
+        },
+      };
+      const browserCtx = { openUrlInBrowserPane: () => {}, getTargetTreeId: () => ({ kind: 'cascadeId', cascadeId: cid }) };
+      root.__reactContainer$test = { memoizedProps: { store: reduxStore, value: browserCtx, router: {} }, child: null, sibling: null };
+
+      const aux = document.createElement('div');
+      aux.setAttribute('data-testid', 'aux-pane-split');
+      const left = document.createElement('div');
+      const right = document.createElement('div');
+      right.style.cssText = 'width:560px;height:760px;';
+      const col = document.createElement('div');
+      col.className = 'flex flex-col browser-hole-ancestor';
+      col.style.cssText = 'width:560px;height:760px;display:flex;flex-direction:column;';
+
+      const tabBar = document.createElement('div');
+      tabBar.className = 'agy-layout-vars';
+      const contentWrap = document.createElement('div');
+      contentWrap.className = 'flex-grow basis-0 overflow-hidden';
+      contentWrap.style.cssText = 'flex:1;height:680px;overflow:hidden;display:flex;flex-direction:column;';
+
+      // Native breadcrumb + overflow header bar (as in real Antigravity 2.34.x)
+      const nativeHeader = document.createElement('div');
+      nativeHeader.id = 'agy-native-file-header';
+      nativeHeader.style.cssText = 'height:32px;display:flex;align-items:center;justify-content:space-between;';
+      nativeHeader.innerHTML = '<span>demo / file</span><button type="button" data-testid="more-actions-overflow">⋮</button>';
+
+      // Native body container (initially simulates future Antigravity rendering a real native slide viewer!)
+      const nativeBody = document.createElement('div');
+      nativeBody.id = 'agy-native-body';
+      nativeBody.innerHTML = '<article data-testid="official-slide-viewer"><canvas width="480" height="270"></canvas><p>Official Native Slide Render</p></article>';
+
+      contentWrap.append(nativeHeader, nativeBody);
+      col.append(tabBar, contentWrap);
+      right.appendChild(col);
+      aux.append(left, right);
+      root.appendChild(aux);
+
+      let renderDocVersion = 1;
+      let hiresCalled = 0;
+      const mockSettings = {
+        richDocPreviewEnabled: true,
+        richDocAutoStrategy: 'auto_yield',
+        richDocPaperMode: false,
+        autoCheckUpdates: false,
+      };
+      const mockSession = { groups: [], activeGroupId: null, history: { entries: [], index: -1 }, recentlyEvicted: [], lineage: { parentByKey: {} } };
+
+      window.__agAnchorWheelCall = (raw) => {
+        const req = JSON.parse(raw);
+        let res = { ok: true, session: mockSession };
+        if (req.action === 'getBoot') {
+          res = { ok: true, version: ${JSON.stringify(PLUGIN_VERSION)}, settings: mockSettings, session: mockSession };
+        } else if (req.action === 'getBacklinks') {
+          res = { ok: true, path: req.path, title: 'doc', backlinks: [], outlinks: [] };
+        } else if (req.action === 'getNavContext') {
+          res = { ok: true, activePath: req.path, current: { path: req.path, key: req.path, title: 'doc', children: [] }, ancestors: [], categories: [] };
+        } else if (req.action === 'renderDocument') {
+          if (String(req.path || '').endsWith('.ipynb')) {
+            res = {
+              ok: true,
+              format: 'ipynb',
+              formatLabel: 'Jupyter 笔记本',
+              badge: 'IPYNB',
+              path: req.path,
+              title: 'train.ipynb',
+              autoRender: true,
+              preferWhenRawCode: true,
+              meta: { statsLabel: '2 单元 · Python' },
+              outline: [{ id: 'aw-h-1', level: 1, title: '训练日志' }],
+              bodyHtml: '<div class="aw-nb-List"><section class="aw-nb-cell"><h1>训练日志</h1></section></div>',
+              plainText: '训练日志',
+            };
+          } else {
+            res = {
+              ok: true,
+              format: 'pptx',
+              formatLabel: 'PPT 演示文稿',
+              badge: 'PPTX',
+              path: req.path,
+              title: '路演汇报 v' + renderDocVersion,
+              autoRender: true,
+              supportsLocalHiRes: true,
+              meta: { statsLabel: '1 页 · 16:9 · v' + renderDocVersion },
+              outline: [{ id: 'aw-slide-1', level: 1, title: '1. 首页 v' + renderDocVersion }],
+              bodyHtml: '<div class="aw-slides-deck"><section class="aw-slide-frame-wrap" id="aw-slide-1"><div class="aw-slide-stage" style="aspect-ratio:16/9"><div class="aw-ppt-el" style="left:8%;top:12%">矢量版本 v' + renderDocVersion + '</div></div></section></div>',
+              plainText: '矢量版本 v' + renderDocVersion,
+            };
+          }
+        } else if (req.action === 'renderSlidesHiRes') {
+          hiresCalled++;
+          res = {
+            ok: true,
+            mode: 'slides',
+            engineLabel: 'Mock Office',
+            slides: [{ index: 1, dataUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a8b8AAAAASUVORK5CYII=' }],
+          };
+        }
+        setTimeout(() => window.__agAnchorWheelResolve?.(req.id, res), 0);
+      };
+
+      window.__agAnchorWheelBoot = { version: ${JSON.stringify(PLUGIN_VERSION)}, settings: mockSettings, wheelCss: ${JSON.stringify(wheelCss)} };
+      eval(${JSON.stringify(navSharedJs)});
+      eval(${JSON.stringify(wheelJs)});
+      eval(${JSON.stringify(bilateralJs)});
+      eval(${JSON.stringify(aeTreeJs)});
+      eval(${JSON.stringify(settingsModalJs)});
+      eval(${JSON.stringify(mdJs)});
+      eval(${JSON.stringify(docViewerJs)});
+      eval(${JSON.stringify(nativeJs)});
+
+      await new Promise((r) => setTimeout(r, 220));
+
+      // 1. Future Antigravity renders native rich slide viewer -> AnchorWheel yields automatically!
+      const dbgFuture = window.__agAnchorWheel.getDebugState();
+      const yieldedToOfficial = !dbgFuture.docOverlayVisible && nativeBody.style.display !== 'none';
+      const quietPillExists = Boolean(document.querySelector('#aw-companion-strip [data-aw-role="doc-preview-btn"]'));
+
+      // 2. Switch to unsupported PPTX (current Antigravity binary-file-no-preview) -> auto-renders AND keeps nativeHeader visible!
+      nativeBody.innerHTML = '<div data-testid="binary-file-no-preview">Preview is not available for this file type.</div>';
+      reduxStore.dispatch({ type: 'sidePanelV2/setActiveTab', payload: { tabId: 'file__' + unsupportedPptxUri } });
+      await new Promise((r) => setTimeout(r, 220));
+
+      const dbgUnsupported = window.__agAnchorWheel.getDebugState();
+      const nativeHeaderKeptVisible = nativeHeader.style.display !== 'none';
+      const deadBodyHidden = nativeBody.style.display === 'none';
+      const compactOmittedDupTitle = !document.querySelector('.aw-doc-quiet-title');
+      const hasVisualSlideStage = Boolean(document.querySelector('.aw-slide-stage'));
+
+      // 3. Click 本机精绘 (hires) -> switches to 1:1 rendered image slide, click again -> switches back to vector stage
+      document.querySelector('[data-aw-doc-act="hires"]')?.click();
+      await new Promise((r) => setTimeout(r, 80));
+      const hiresImgMounted = Boolean(document.querySelector('.aw-slide-stage-img img'));
+      document.querySelector('[data-aw-doc-act="hires"]')?.click();
+      await new Promise((r) => setTimeout(r, 40));
+      const backToVectorStage = Boolean(document.querySelector('.aw-slide-stage:not(.aw-slide-stage-img)'));
+
+      // 4. Simulate live disk edit -> re-opening overlay fetches fresh v2 instead of stale client cache!
+      renderDocVersion = 2;
+      document.querySelector('[data-aw-doc-act="raw"]')?.click();
+      await new Promise((r) => setTimeout(r, 30));
+      document.querySelector('#aw-companion-strip [data-aw-role="doc-preview-btn"]')?.click();
+      await new Promise((r) => setTimeout(r, 80));
+      const refreshedTextOnDiskEdit = (document.querySelector('.aw-slide-stage')?.textContent || '').includes('v2');
+
+      // 5. Switch to .ipynb where host shows raw JSON <pre> -> auto-upgrades to Notebook view!
+      nativeBody.innerHTML = '<pre class="raw-json">{ "cells": [] }</pre>';
+      reduxStore.dispatch({ type: 'sidePanelV2/setActiveTab', payload: { tabId: 'file__' + nbUri } });
+      await new Promise((r) => setTimeout(r, 220));
+      const nbAutoUpgraded = Boolean(document.querySelector('.aw-nb-List'));
+
+      return {
+        hostStateFuture: dbgFuture.hostPreviewState,
+        yieldedToOfficial,
+        quietPillExists,
+        hostStateUnsupported: dbgUnsupported.hostPreviewState,
+        mountedOnUnsupported: dbgUnsupported.docOverlayVisible,
+        nativeHeaderKeptVisible,
+        deadBodyHidden,
+        compactOmittedDupTitle,
+        hasVisualSlideStage,
+        hiresCalled,
+        hiresImgMounted,
+        backToVectorStage,
+        refreshedTextOnDiskEdit,
+        nbAutoUpgraded,
+      };
+    })()`);
+
+    assert.deepEqual(cdp.errors, []);
+    assert.equal(res.hostStateFuture, 'native_rich');
+    assert.equal(res.yieldedToOfficial, true);
+    assert.equal(res.quietPillExists, true);
+    assert.equal(res.hostStateUnsupported, 'unsupported');
+    assert.equal(res.mountedOnUnsupported, true);
+    assert.equal(res.nativeHeaderKeptVisible, true);
+    assert.equal(res.deadBodyHidden, true);
+    assert.equal(res.compactOmittedDupTitle, true);
+    assert.equal(res.hasVisualSlideStage, true);
+    assert.equal(res.hiresCalled, 1);
+    assert.equal(res.hiresImgMounted, true);
+    assert.equal(res.backToVectorStage, true);
+    assert.equal(res.refreshedTextOnDiskEdit, true);
+    assert.equal(res.nbAutoUpgraded, true);
   } finally {
     try { ws?.close(); } catch {}
     if (browserProc) {

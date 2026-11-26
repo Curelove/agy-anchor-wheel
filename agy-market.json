@@ -4,8 +4,12 @@
   "categories": ["productivity", "writing-knowledge"],
   "tags": [
     "sidecar",
+    "pptx-preview",
     "docx-preview",
     "office-preview",
+    "ipynb",
+    "sqlite",
+    "3d-viewer",
     "radial-menu",
     "pie-menu",
     "folder-navigation",

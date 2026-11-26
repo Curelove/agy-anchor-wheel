@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { openExternalDocument, renderDocument } from './document_renderer.mjs';
 import { convertFileToUtf8, inspectFileEncoding } from './encoding.mjs';
+import { renderSlidesWithLocalEngine } from './local_office_exporter.mjs';
 import { buildNavContext, classifyFile, listDirectoryDirectFiles } from './nav_context.mjs';
 import { PreviewService } from './preview_service.mjs';
 import { revealInSystemExplorer } from './system_explorer.mjs';
@@ -471,6 +472,11 @@ export class CdpBridge {
         return convertFileToUtf8(req.path, req.encoding || '');
       case 'renderDocument':
         return renderDocument(req.path || '', { snippetOnly: Boolean(req.snippetOnly) });
+      case 'renderSlidesHiRes':
+        return renderSlidesWithLocalEngine(req.path || '', {
+          dataDir: this.stateStore?.dataDir,
+          dryRun: Boolean(req.dryRun),
+        });
       case 'openExternal':
         return openExternalDocument(req.path || '', { dryRun: Boolean(req.dryRun) });
       case 'revealInExplorer':

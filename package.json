@@ -1,7 +1,7 @@
 {
   "name": "agy-anchor-wheel",
-  "version": "0.8.1",
-  "description": "Dual-mode Antigravity side-pane enhancer & workbench: zero-dependency DOCX/XLSX/PPTX/ODF/RTF/EPUB/CSV document preview, Priority Anchor tab groups, Bilateral Wheel, folder view navigation, Obsidian backlinks, non-overwriting MD links, and auto-encoding repair.",
+  "version": "0.9.0",
+  "description": "Dual-mode Antigravity side-pane enhancer & workbench: native-styled 2D visual PPTX/DOCX/XLSX/PDF/Notebook/SQLite/3D/Font/Archive preview with Native-First Auto-Yield, Priority Anchor tab groups, Bilateral Wheel, folder view navigation, Obsidian backlinks, and auto-encoding repair.",
   "type": "module",
   "main": "sidecars/anchor_wheel/main.mjs",
   "scripts": {

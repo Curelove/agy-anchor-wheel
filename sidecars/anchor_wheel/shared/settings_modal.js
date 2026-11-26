@@ -137,6 +137,7 @@
       if (g('#aw-sm-prev-delay')) draft.hoverPreviewDelayMs = Number(g('#aw-sm-prev-delay').value);
       if (g('#aw-sm-prev-anim')) draft.videoPreviewAnimated = Boolean(g('#aw-sm-prev-anim').checked);
       if (g('#aw-sm-rich-doc')) draft.richDocPreviewEnabled = Boolean(g('#aw-sm-rich-doc').checked);
+      if (g('#aw-sm-rich-strategy')) draft.richDocAutoStrategy = g('#aw-sm-rich-strategy').value;
       if (g('#aw-sm-rich-paper')) draft.richDocPaperMode = Boolean(g('#aw-sm-rich-paper').checked);
 
       const ruleRows = modalEl.querySelectorAll('[data-aw-rule-idx]');
@@ -206,7 +207,9 @@
       for (const id of ['#aw-sm-row-prev-delay', '#aw-sm-row-prev-anim']) {
         modalEl.querySelector(id)?.setAttribute('data-dim', prevOff ? '1' : '0');
       }
-      modalEl.querySelector('#aw-sm-row-rich-paper')?.setAttribute('data-dim', draft.richDocPreviewEnabled === false ? '1' : '0');
+      const docOff = draft.richDocPreviewEnabled === false;
+      modalEl.querySelector('#aw-sm-row-rich-strategy')?.setAttribute('data-dim', docOff ? '1' : '0');
+      modalEl.querySelector('#aw-sm-row-rich-paper')?.setAttribute('data-dim', docOff ? '1' : '0');
 
       modalEl.querySelectorAll('[data-aw-guide-card]').forEach((card) => {
         const key = card.getAttribute('data-aw-guide-card');
@@ -554,15 +557,26 @@
             </div>
             <div class="aw-form-row">
               <div class="aw-form-label">
-                <strong>右侧栏自动预览 Word / Excel / PPT 等文档</strong>
-                <span>支持 docx、xlsx、pptx、odt、rtf、epub、zip 直览，随时可切回原生</span>
+                <strong>启用右侧栏多格式文件预览</strong>
+                <span>支持 Word、Excel、PPT 真实比例画布、Notebook、SQLite、三维模型、字体与压缩包</span>
               </div>
               <input type="checkbox" id="aw-sm-rich-doc" class="aw-reactive-ctrl" ${s.richDocPreviewEnabled !== false ? 'checked' : ''} />
             </div>
+            <div class="aw-form-row" id="aw-sm-row-rich-strategy">
+              <div class="aw-form-label">
+                <strong>与 Antigravity 原生视图的优先关系</strong>
+                <span>智能退让模式下，若未来官方原生支持某格式预览将自动优先展示官方视图</span>
+              </div>
+              <select id="aw-sm-rich-strategy" class="aw-select aw-reactive-ctrl">
+                <option value="auto_yield" ${(s.richDocAutoStrategy || 'auto_yield') === 'auto_yield' ? 'selected' : ''}>智能退让（推荐：仅在官方无法预览时接管）</option>
+                <option value="always_plugin" ${s.richDocAutoStrategy === 'always_plugin' ? 'selected' : ''}>始终使用插件预览</option>
+                <option value="manual_only" ${s.richDocAutoStrategy === 'manual_only' ? 'selected' : ''}>仅手动点击时开启</option>
+              </select>
+            </div>
             <div class="aw-form-row" id="aw-sm-row-rich-paper">
               <div class="aw-form-label">
-                <strong>Word 等文档默认采用纸面原稿外观</strong>
-                <span>开启为白纸黑字保留原稿色阶；关闭则自动跟随明暗主题</span>
+                <strong>Word 等文稿默认采用纸面原稿外观</strong>
+                <span>关闭时与 Antigravity 官方平铺底色一致；开启则显示白纸黑字页框</span>
               </div>
               <input type="checkbox" id="aw-sm-rich-paper" class="aw-reactive-ctrl" ${s.richDocPaperMode ? 'checked' : ''} />
             </div>

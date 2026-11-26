@@ -267,29 +267,94 @@ async function runAudit() {
     makeAuditZip([
       {
         name: 'ppt/presentation.xml',
-        data: `<p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><p:sldIdLst><p:sldId id="256" r:id="rId1"/><p:sldId id="257" r:id="rId2"/></p:sldIdLst></p:presentation>`,
+        data: `<p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><p:sldSz cx="12192000" cy="6858000"/><p:sldIdLst><p:sldId id="256" r:id="rId1"/><p:sldId id="257" r:id="rId2"/></p:sldIdLst></p:presentation>`,
       },
       {
         name: 'ppt/_rels/presentation.xml.rels',
         data: `<Relationships><Relationship Id="rId1" Target="slides/slide1.xml"/><Relationship Id="rId2" Target="slides/slide2.xml"/></Relationships>`,
       },
       {
+        name: 'ppt/theme/theme1.xml',
+        data: `<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:themeElements><a:clrScheme name="Studio"><a:dk1><a:srgbClr val="111827"/></a:dk1><a:lt1><a:srgbClr val="FFFFFF"/></a:lt1><a:accent1><a:srgbClr val="2563EB"/></a:accent1><a:accent2><a:srgbClr val="0D9488"/></a:accent2><a:accent3><a:srgbClr val="F59E0B"/></a:accent3></a:clrScheme></a:themeElements></a:theme>`,
+      },
+      {
+        name: 'ppt/charts/chart1.xml',
+        data: `<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><c:chart><c:title><c:tx><c:rich><a:p><a:r><a:t>各端样本完播率对比 (%)</a:t></a:r></a:p></c:rich></c:tx></c:title><c:plotArea><c:barChart><c:barDir val="col"/><c:ser><c:tx><c:strRef><c:strCache><c:pt idx="0"><c:v>1.0x 原速</c:v></c:pt></c:strCache></c:strRef></c:tx><c:cat><c:strRef><c:strCache><c:pt idx="0"><c:v>通勤场景</c:v></c:pt><c:pt idx="1"><c:v>午休场景</c:v></c:pt><c:pt idx="2"><c:v>睡前场景</c:v></c:pt></c:strCache></c:strRef></c:cat><c:val><c:numRef><c:numCache><c:pt idx="0"><c:v>48</c:v></c:pt><c:pt idx="1"><c:v>63</c:v></c:pt><c:pt idx="2"><c:v>81</c:v></c:pt></c:numCache></c:numRef></c:val></c:ser><c:ser><c:tx><c:strRef><c:strCache><c:pt idx="0"><c:v>1.5x 倍速</c:v></c:pt></c:strCache></c:strRef></c:tx><c:cat><c:strRef><c:strCache><c:pt idx="0"><c:v>通勤场景</c:v></c:pt><c:pt idx="1"><c:v>午休场景</c:v></c:pt><c:pt idx="2"><c:v>睡前场景</c:v></c:pt></c:strCache></c:strRef></c:cat><c:val><c:numRef><c:numCache><c:pt idx="0"><c:v>76</c:v></c:pt><c:pt idx="1"><c:v>79</c:v></c:pt><c:pt idx="2"><c:v>72</c:v></c:pt></c:numCache></c:numRef></c:val></c:ser></c:barChart></c:plotArea></c:chart></c:chartSpace>`,
+      },
+      {
         name: 'ppt/slides/_rels/slide1.xml.rels',
-        data: `<Relationships><Relationship Id="rNote1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesSlide" Target="../notesSlides/notesSlide1.xml"/></Relationships>`,
+        data: `<Relationships><Relationship Id="rNote1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesSlide" Target="../notesSlides/notesSlide1.xml"/><Relationship Id="rChart1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart" Target="../charts/chart1.xml"/></Relationships>`,
       },
       {
         name: 'ppt/slides/slide1.xml',
-        data: `<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><p:cSld><p:spTree><p:sp><p:nvSpPr><p:nvPr><p:ph type="ctrTitle"/></p:nvPr></p:nvSpPr><p:txBody><a:p><a:r><a:t>新媒体调查方法 · 阶段汇报</a:t></a:r></a:p></p:txBody></p:sp><p:sp><p:nvSpPr><p:nvPr><p:ph type="subTitle"/></p:nvPr></p:nvSpPr><p:txBody><a:p><a:r><a:t>短视频平台青年用户碎片化观看机制研究</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sld>`,
+        data: `<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><p:cSld>
+          <p:bg><p:bgPr><a:solidFill><a:srgbClr val="F8FAFC"/></a:solidFill></p:bgPr></p:bg>
+          <p:spTree>
+            <p:sp><p:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="220000" cy="6858000"/></a:xfrm><a:prstGeom prst="rect"/><a:solidFill><a:schemeClr val="accent1"/></a:solidFill></p:spPr></p:sp>
+            <p:sp><p:spPr><a:xfrm><a:off x="720000" y="480000"/><a:ext cx="10600000" cy="860000"/></a:xfrm></p:spPr><p:txBody><a:p><a:r><a:rPr sz="2800" b="1"><a:solidFill><a:srgbClr val="0F172A"/></a:solidFill></a:rPr><a:t>新媒体调查方法 · 阶段汇报</a:t></a:r></a:p></p:txBody></p:sp>
+            <p:sp><p:spPr><a:xfrm><a:off x="720000" y="1280000"/><a:ext cx="9200000" cy="520000"/></a:xfrm></p:spPr><p:txBody><a:p><a:r><a:rPr sz="1400"><a:solidFill><a:srgbClr val="475569"/></a:solidFill></a:rPr><a:t>短视频平台青年用户碎片化观看机制与倍速行为研究</a:t></a:r></a:p></p:txBody></p:sp>
+            <p:sp><p:spPr><a:xfrm><a:off x="720000" y="2100000"/><a:ext cx="4300000" cy="1850000"/></a:xfrm><a:prstGeom prst="roundRect"/><a:solidFill><a:srgbClr val="EFF6FF"/></a:solidFill><a:ln w="12700"><a:solidFill><a:srgbClr val="BFDBFE"/></a:solidFill></a:ln></p:spPr><p:txBody><a:bodyPr lIns="180000" tIns="140000"/><a:p><a:r><a:rPr sz="1500" b="1"><a:solidFill><a:srgbClr val="1D4ED8"/></a:solidFill></a:rPr><a:t>样本回收 92.4%</a:t></a:r></a:p><a:p><a:r><a:rPr sz="1200"><a:solidFill><a:srgbClr val="334155"/></a:solidFill></a:rPr><a:t>有效样本 N = 648，覆盖双城高校在读群体</a:t></a:r></a:p></p:txBody></p:sp>
+            <p:sp><p:spPr><a:xfrm><a:off x="720000" y="4250000"/><a:ext cx="4300000" cy="1850000"/></a:xfrm><a:prstGeom prst="roundRect"/><a:solidFill><a:srgbClr val="F0FDFA"/></a:solidFill><a:ln w="12700"><a:solidFill><a:srgbClr val="99F6E4"/></a:solidFill></a:ln></p:spPr><p:txBody><a:bodyPr lIns="180000" tIns="140000"/><a:p><a:r><a:rPr sz="1500" b="1"><a:solidFill><a:srgbClr val="0F766E"/></a:solidFill></a:rPr><a:t>倍速常态化 64.2%</a:t></a:r></a:p><a:p><a:r><a:rPr sz="1200"><a:solidFill><a:srgbClr val="334155"/></a:solidFill></a:rPr><a:t>3 分钟以上中长内容普遍启用 1.5x 观看</a:t></a:r></a:p></p:txBody></p:sp>
+            <p:graphicFrame><p:xfrm><a:off x="5450000" y="2100000"/><a:ext cx="6050000" cy="4000000"/></p:xfrm><a:graphic><a:graphicData><c:chart r:id="rChart1"/></a:graphicData></a:graphic></p:graphicFrame>
+          </p:spTree></p:cSld></p:sld>`,
       },
       {
         name: 'ppt/slides/slide2.xml',
-        data: `<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><p:cSld><p:spTree><p:sp><p:nvSpPr><p:nvPr><p:ph type="title"/></p:nvPr></p:nvSpPr><p:txBody><a:p><a:r><a:t>关键发现与数据对比</a:t></a:r></a:p></p:txBody></p:sp><p:sp><p:nvSpPr><p:nvPr/></p:nvSpPr><p:txBody><a:p><a:pPr lvl="0"/><a:r><a:t>日均使用时长与碎片化频次显著正相关</a:t></a:r></a:p><a:p><a:pPr lvl="1"/><a:r><a:t>倍速观看已成为长视频消费常态</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sld>`,
+        data: `<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><p:cSld>
+          <p:bg><p:bgPr><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill></p:bgPr></p:bg>
+          <p:spTree>
+            <p:sp><p:spPr><a:xfrm><a:off x="720000" y="520000"/><a:ext cx="10600000" cy="800000"/></a:xfrm></p:spPr><p:txBody><a:p><a:r><a:rPr sz="2400" b="1"><a:solidFill><a:srgbClr val="0F172A"/></a:solidFill></a:rPr><a:t>研究推进链路</a:t></a:r></a:p></p:txBody></p:sp>
+            <p:sp><p:spPr><a:xfrm><a:off x="720000" y="2300000"/><a:ext cx="3100000" cy="1400000"/></a:xfrm><a:prstGeom prst="chevron"/><a:solidFill><a:srgbClr val="1E40AF"/></a:solidFill></p:spPr><p:txBody><a:bodyPr anchor="ctr"/><a:p><a:pPr algn="ctr"/><a:r><a:rPr sz="1500" b="1"><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill></a:rPr><a:t>1. 问卷预调研</a:t></a:r></a:p></p:txBody></p:sp>
+            <p:sp><p:spPr><a:xfrm><a:off x="4300000" y="2300000"/><a:ext cx="3100000" cy="1400000"/></a:xfrm><a:prstGeom prst="chevron"/><a:solidFill><a:srgbClr val="2563EB"/></a:solidFill></p:spPr><p:txBody><a:bodyPr anchor="ctr"/><a:p><a:pPr algn="ctr"/><a:r><a:rPr sz="1500" b="1"><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill></a:rPr><a:t>2. 分层抽样回收</a:t></a:r></a:p></p:txBody></p:sp>
+            <p:sp><p:spPr><a:xfrm><a:off x="7880000" y="2300000"/><a:ext cx="3100000" cy="1400000"/></a:xfrm><a:prstGeom prst="chevron"/><a:solidFill><a:srgbClr val="0D9488"/></a:solidFill></p:spPr><p:txBody><a:bodyPr anchor="ctr"/><a:p><a:pPr algn="ctr"/><a:r><a:rPr sz="1500" b="1"><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill></a:rPr><a:t>3. 深度访谈交叉</a:t></a:r></a:p></p:txBody></p:sp>
+          </p:spTree></p:cSld></p:sld>`,
       },
       {
         name: 'ppt/notesSlides/notesSlide1.xml',
         data: `<p:notes xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><p:cSld><p:spTree><p:sp><p:txBody><a:p><a:r><a:t>开场 30 秒：简要介绍选题来源与样本覆盖范围。</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:notes>`,
       },
     ])
+  );
+
+  // Interactive 3D Octahedron + Jupyter Notebook fixtures for v0.9.0 visual audit
+  const sampleObj = path.join(wsDir, '几何白模样本.obj');
+  fs.writeFileSync(
+    sampleObj,
+    [
+      'v 0 1.25 0',
+      'v 1 0 0',
+      'v 0 0 1',
+      'v -1 0 0',
+      'v 0 0 -1',
+      'v 0 -1.25 0',
+      'f 1 3 2',
+      'f 1 2 5',
+      'f 1 5 4',
+      'f 1 4 3',
+      'f 6 2 3',
+      'f 6 5 2',
+      'f 6 4 5',
+      'f 6 3 4',
+    ].join('\n'),
+    'utf8'
+  );
+
+  const sampleIpynb = path.join(wsDir, '数据回归分析.ipynb');
+  fs.writeFileSync(
+    sampleIpynb,
+    JSON.stringify({
+      metadata: { kernelspec: { display_name: 'Python 3.12' } },
+      cells: [
+        { cell_type: 'markdown', source: ['# 碎片化观看时长回归模型\n', '检验日均短视频打开频次与注意力的相关性。'] },
+        {
+          cell_type: 'code',
+          execution_count: 4,
+          source: ['import numpy as np\n', 'r2, p_val = 0.684, 0.0003\n', 'print(f"R² = {r2:.3f}, p = {p_val}")'],
+          outputs: [{ output_type: 'stream', name: 'stdout', text: ['R² = 0.684, p = 0.0003\n'] }],
+        },
+      ],
+    }),
+    'utf8'
   );
 
   const grandparentMd = path.join(convBrain, '00_总纲入口.md');
@@ -562,6 +627,25 @@ async function runAudit() {
     const overflowPptx = await cdp.evalAsync(`document.documentElement.scrollWidth - document.documentElement.clientWidth`);
     await cdp.screenshot(path.join(outDir, '16_1100_warm_pptx.png'));
 
+    await cdp.setViewport(390, 844);
+    await cdp.evalAsync(`document.documentElement.setAttribute('data-aw-theme', 'obsidian')`);
+    await new Promise((r) => setTimeout(r, 200));
+    const overflowPptxNarrow = await cdp.evalAsync(`document.documentElement.scrollWidth - document.documentElement.clientWidth`);
+    await cdp.screenshot(path.join(outDir, '17_390_obsidian_pptx_narrow.png'));
+
+    await cdp.setViewport(1100, 860);
+    await cdp.evalAsync(`document.documentElement.setAttribute('data-aw-theme', 'obsidian')`);
+    await cdp.evalAsync(`window.__awWorkbench.openFile(${JSON.stringify(sampleObj)}, { inNewTab: true })`);
+    await new Promise((r) => setTimeout(r, 260));
+    const overflow3d = await cdp.evalAsync(`document.documentElement.scrollWidth - document.documentElement.clientWidth`);
+    await cdp.screenshot(path.join(outDir, '18_1100_obsidian_3d_obj.png'));
+
+    await cdp.evalAsync(`document.documentElement.setAttribute('data-aw-theme', 'alabaster')`);
+    await cdp.evalAsync(`window.__awWorkbench.openFile(${JSON.stringify(sampleIpynb)}, { inNewTab: true })`);
+    await new Promise((r) => setTimeout(r, 260));
+    const overflowIpynb = await cdp.evalAsync(`document.documentElement.scrollWidth - document.documentElement.clientWidth`);
+    await cdp.screenshot(path.join(outDir, '19_1100_alabaster_ipynb.png'));
+
     console.log(JSON.stringify({
       ok: true,
       outDir,
@@ -574,6 +658,9 @@ async function runAudit() {
       overflowDocxNarrow,
       overflowXlsx,
       overflowPptx,
+      overflowPptxNarrow,
+      overflow3d,
+      overflowIpynb,
       consoleErrors: cdp.errors,
     }, null, 2));
   } finally {

@@ -866,21 +866,30 @@
 
     if (doc.isRichDoc && window.AnchorWheelDocViewer) {
       els.reader.setAttribute('data-aw-doc-mode', '1');
-      const isCsvLike = doc.format === 'csv' || doc.format === 'tsv';
+      const isRawSwitchable =
+        doc.format === 'csv' ||
+        doc.format === 'tsv' ||
+        doc.format === 'jsonl' ||
+        doc.format === 'ipynb' ||
+        doc.format === 'eml' ||
+        Boolean(doc.optionalTable) ||
+        Boolean(doc.preferWhenRawCode);
       state.docViewerInstance = window.AnchorWheelDocViewer.mountDocumentViewer(els.reader, doc, {
         paperMode: Boolean(state.settings?.richDocPaperMode),
         pdfRawUrl: doc.format === 'pdf' ? `/api/file/raw?path=${encodeURIComponent(doc.path)}` : '',
-        rawLabel: isCsvLike ? '源码视图' : '',
+        rawLabel: isRawSwitchable ? '源码视图' : '',
         onTogglePaperMode: (nextPaper) => {
           state.settings = { ...(state.settings || {}), richDocPaperMode: Boolean(nextPaper) };
           void apiPost('/api/settings', { settings: { richDocPaperMode: Boolean(nextPaper) } });
         },
+        onRequestHiRes: (p) => apiPost('/api/doc/render-hires', { path: p || doc.path }),
+        onNotify: (msg) => showToast(msg),
         onOpenExternal: async (p) => {
           const r = await apiPost('/api/file/open-external', { path: p || doc.path });
           if (r?.ok) showToast('已调用系统默认应用打开');
           else showToast(`外部打开失败：${r?.error || '未知错误'}`);
         },
-        onSwitchToRaw: isCsvLike
+        onSwitchToRaw: isRawSwitchable
           ? () => void openFile(doc.path, { skipHistory: true, forceRawText: true })
           : null,
       });

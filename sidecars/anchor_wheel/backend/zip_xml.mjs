@@ -448,6 +448,36 @@ export function parseXml(xmlInput) {
   return root;
 }
 
+/**
+ * Recursively resolves `<mc:AlternateContent>` nodes in-place by keeping `<mc:Choice>`
+ * (when non-empty) and discarding duplicate `<mc:Fallback>` branches so shapes, images,
+ * and Word/PPT textboxes are never rendered twice.
+ */
+export function pruneAlternateContent(node) {
+  if (!node || !Array.isArray(node.children) || !node.children.length) return node;
+  const next = [];
+  for (const ch of node.children) {
+    if (!ch || ch.text !== undefined) {
+      next.push(ch);
+      continue;
+    }
+    if (ch.local === 'AlternateContent') {
+      const choice = findChild(ch, 'Choice');
+      const fallback = findChild(ch, 'Fallback');
+      const picked = choice && Array.isArray(choice.children) && choice.children.length ? choice : fallback;
+      if (picked && Array.isArray(picked.children)) {
+        pruneAlternateContent(picked);
+        for (const sub of picked.children) next.push(sub);
+      }
+      continue;
+    }
+    pruneAlternateContent(ch);
+    next.push(ch);
+  }
+  node.children = next;
+  return node;
+}
+
 export function getAttr(node, name) {
   if (!node || !node.attrs) return '';
   if (node.attrs[name] !== undefined) return node.attrs[name];

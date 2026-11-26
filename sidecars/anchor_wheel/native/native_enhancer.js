@@ -43,6 +43,9 @@
   let docViewerInstance = null;
   let lastRenderedDocKey = '';
   let lastRenderedDocData = null;
+  let lastHostPreviewState = 'unknown';
+  let docProbeTimer = null;
+  let docProbeCount = 0;
   let activePopoverName = '';
   let dragPayload = null;
   let domObserver = null;
@@ -1829,6 +1832,9 @@
     renderStrip();
   }
 
+  const UNSUPPORTED_HOST_TEXT_RE =
+    /Preview is not available|Unable to display|Failed to read file|exceeds the \d+(?:\.\d+)?\s*(?:MB|KB|GB) display limit|此文件类型无法预览|无法预览此文件|无法预览该文件|无法显示|无法读取文件内容|超出.*显示上限/i;
+
   function getActiveRichDocMeta() {
     if (!activeFilePath || activeIsDirectory) return null;
     const meta = W.AnchorWheelDocViewer?.classifyDocPathClient?.(activeFilePath) || null;
@@ -1836,10 +1842,143 @@
     return meta;
   }
 
-  function hideNativeContentSiblings(contentWrap, keepIds) {
-    if (!contentWrap) return;
+  function isNativeFileHeaderBar(el) {
+    if (!el || el.nodeType !== 1 || el.getAttribute?.('data-aw-owned') === '1') return false;
+    if (!el.querySelector?.('[data-testid="more-actions-overflow"]')) return false;
+    if (
+      el.querySelector?.(
+        '[data-testid="binary-file-no-preview"], [data-testid="artifact-pdf-no-preview"], [data-testid*="no-preview"], [data-omni-aux-error], pre, code, iframe, canvas, table, .monaco-editor, .cm-editor, .markdown-body'
+      )
+    ) {
+      return false;
+    }
+    const txt = (el.textContent || '').slice(0, 900);
+    if (UNSUPPORTED_HOST_TEXT_RE.test(txt)) return false;
+    return true;
+  }
+
+  function resolveDocMountLayout(contentWrap) {
+    if (!contentWrap) return { mountParent: null, hasNativeHeader: false };
+    const directChildren = Array.from(contentWrap.children).filter(
+      (ch) => ch.getAttribute?.('data-aw-owned') !== '1'
+    );
+    if (directChildren.some((ch) => isNativeFileHeaderBar(ch))) {
+      return { mountParent: contentWrap, hasNativeHeader: true };
+    }
+    if (directChildren.length === 1) {
+      const inner = directChildren[0];
+      const innerKids = Array.from(inner.children || []).filter(
+        (ch) => ch.getAttribute?.('data-aw-owned') !== '1'
+      );
+      if (innerKids.some((ch) => isNativeFileHeaderBar(ch))) {
+        return { mountParent: inner, hasNativeHeader: true };
+      }
+    }
+    return { mountParent: contentWrap, hasNativeHeader: false };
+  }
+
+  function inspectHostFileViewState(contentWrap) {
+    if (!contentWrap) return 'missing';
+    if (
+      contentWrap.querySelector?.(
+        '[data-omni-aux-mounted="1"]:not([data-omni-aux-error]), [data-testid="ag-omni-aux-switcher"]'
+      )
+    ) {
+      return 'companion_mounted';
+    }
+    if (
+      contentWrap.querySelector?.(
+        '[data-testid="binary-file-no-preview"], [data-testid="artifact-pdf-no-preview"], [data-testid*="no-preview"], [data-omni-aux-error]'
+      )
+    ) {
+      return 'unsupported';
+    }
+
+    let hostBodyText = '';
+    let hasRichVisual = false;
+    let hasRawCode = false;
+
+    const inspectNode = (el) => {
+      if (!el || el.nodeType !== 1) return;
+      if (el.getAttribute?.('data-aw-owned') === '1' || el.id === DOC_OVERLAY_ID || el.id === OVERLAY_ID) {
+        return;
+      }
+      if (isNativeFileHeaderBar(el)) return;
+
+      const tag = String(el.tagName || '').toUpperCase();
+      if (
+        tag === 'IFRAME' ||
+        tag === 'EMBED' ||
+        tag === 'OBJECT' ||
+        tag === 'VIDEO' ||
+        tag === 'AUDIO' ||
+        tag === 'CANVAS' ||
+        tag === 'TABLE'
+      ) {
+        hasRichVisual = true;
+      } else if (tag === 'IMG' && !el.closest?.('button, [role="button"]')) {
+        hasRichVisual = true;
+      } else if (
+        el.matches?.(
+          '.markdown-body, article, [data-testid*="notebook"], [data-testid*="spreadsheet"], [data-testid*="slide"], [data-testid*="pdf-viewer"]'
+        )
+      ) {
+        hasRichVisual = true;
+      } else if (tag === 'PRE' || tag === 'CODE' || el.matches?.('.monaco-editor, .cm-editor, [data-line-number]')) {
+        hasRawCode = true;
+      }
+
+      const kids = el.children;
+      if (!kids || kids.length === 0) {
+        if (hostBodyText.length < 4096) {
+          hostBodyText += ' ' + (el.textContent || '');
+        }
+        return;
+      }
+      for (let i = 0; i < kids.length; i++) {
+        inspectNode(kids[i]);
+      }
+      // Also capture direct text nodes on mixed elements
+      for (let n = el.firstChild; n && hostBodyText.length < 4096; n = n.nextSibling) {
+        if (n.nodeType === 3 && n.nodeValue && n.nodeValue.trim()) {
+          hostBodyText += ' ' + n.nodeValue;
+        }
+      }
+    };
+
     for (const ch of Array.from(contentWrap.children)) {
-      if (keepIds.has(ch.id)) continue;
+      inspectNode(ch);
+    }
+
+    if (UNSUPPORTED_HOST_TEXT_RE.test(hostBodyText)) {
+      return 'unsupported';
+    }
+    if (!hostBodyText.trim() && !hasRichVisual && !hasRawCode) {
+      return 'empty_loading';
+    }
+    if (hasRawCode && !hasRichVisual) {
+      return 'raw_code_only';
+    }
+    return 'native_rich';
+  }
+
+  function shouldAutoOpenDocOverlay(meta, hostState) {
+    if (!meta || !meta.autoRender || meta.optionalTable) return false;
+    if (settings.richDocPreviewEnabled === false) return false;
+    const strategy = settings.richDocAutoStrategy || 'auto_yield';
+    if (strategy === 'manual_only') return false;
+    if (hostState === 'companion_mounted') return false;
+    if (strategy === 'always_plugin') return true;
+    // Default 'auto_yield': auto-preview when Antigravity cannot preview, yield when official rich view exists!
+    if (hostState === 'unsupported') return true;
+    if (hostState === 'raw_code_only' && meta.preferWhenRawCode) return true;
+    return false;
+  }
+
+  function hideNativeContentSiblings(mountParent, keepIds) {
+    if (!mountParent) return;
+    for (const ch of Array.from(mountParent.children)) {
+      if (keepIds.has(ch.id) || isNativeFileHeaderBar(ch)) continue;
       if (!ch.hasAttribute('data-aw-orig-hidden')) {
         ch.setAttribute('data-aw-orig-hidden', '1');
         ch.setAttribute('data-aw-orig-disp', ch.style.display || '');
@@ -1850,19 +1989,22 @@
     }
   }
 
-  function restoreNativeContentSiblings(contentWrap) {
-    if (!contentWrap) return;
-    for (const ch of Array.from(contentWrap.children)) {
-      if (ch.hasAttribute('data-aw-orig-hidden')) {
-        ch.style.display = ch.getAttribute('data-aw-orig-disp') || '';
-        ch.removeAttribute('data-aw-orig-hidden');
-        ch.removeAttribute('data-aw-orig-disp');
-      }
-    }
+  function restoreNativeContentSiblings(rootEl) {
+    if (!rootEl) return;
+    const restoreEl = (el) => {
+      if (!el || !el.hasAttribute?.('data-aw-orig-hidden')) return;
+      el.style.display = el.getAttribute('data-aw-orig-disp') || '';
+      el.removeAttribute('data-aw-orig-hidden');
+      el.removeAttribute('data-aw-orig-disp');
+    };
+    for (const ch of Array.from(rootEl.children || [])) restoreEl(ch);
+    for (const desc of Array.from(rootEl.querySelectorAll?.('[data-aw-orig-hidden="1"]') || [])) restoreEl(desc);
   }
 
   function closeDocOverlay({ dismiss = false } = {}) {
     docRenderSeq++;
+    clearTimeout(docProbeTimer);
+    docProbeTimer = null;
     try { docViewerInstance?.destroy?.(); } catch {}
     docViewerInstance = null;
     const existing = D.getElementById(DOC_OVERLAY_ID);
@@ -1896,67 +2038,73 @@
     }
 
     const mySeq = ++docRenderSeq;
+    const { mountParent, hasNativeHeader } = resolveDocMountLayout(contentWrap);
+    if (!mountParent) return false;
+
     let host = D.getElementById(DOC_OVERLAY_ID);
-    if (!host || host.parentElement !== contentWrap) {
+    if (!host || host.parentElement !== mountParent) {
       if (host) {
         try { host.remove(); } catch {}
       }
       host = markOwned(D.createElement('div'));
       host.id = DOC_OVERLAY_ID;
       host.className = 'aw-doc-overlay-host';
-      contentWrap.appendChild(host);
+      mountParent.appendChild(host);
     }
     applyThemeAttr(host);
-    hideNativeContentSiblings(contentWrap, new Set([DOC_OVERLAY_ID]));
+    hideNativeContentSiblings(mountParent, new Set([DOC_OVERLAY_ID]));
     docOverlayVisible = true;
 
-    let docData = lastRenderedDocKey === targetKey && lastRenderedDocData ? lastRenderedDocData : null;
-    if (!docData) {
+    const hadPriorSameKey = lastRenderedDocKey === targetKey && Boolean(lastRenderedDocData);
+    if (!hadPriorSameKey) {
       host.innerHTML = `<div class="aw-doc-loading-card">正在解析 ${S?.esc ? S.esc(baseName(targetPath)) : baseName(targetPath)} ...</div>`;
-      const res = await callRpc('renderDocument', { path: targetPath }, 15000);
-      if (destroyed || mySeq !== docRenderSeq || normKey(activeFilePath) !== targetKey) {
-        return false;
-      }
-      if (!res || !res.ok) {
-        host.innerHTML = `
-          <div class="aw-doc-loading-card">
-            <div style="margin-bottom:10px;color:var(--aw-fg);font-weight:600">无法在侧边栏直接渲染此文件</div>
-            <div style="margin-bottom:12px">${S?.esc ? S.esc(res?.error || '格式暂不支持或文件受加密保护') : String(res?.error || '')}</div>
-            <div style="display:flex;justify-content:center;gap:8px;flex-wrap:wrap">
-              <button type="button" class="aw-primary-btn" id="aw-doc-err-ext">用系统软件打开</button>
-              <button type="button" class="aw-ghost-btn" id="aw-doc-err-native">切回原生视图</button>
-            </div>
-          </div>
-        `;
-        host.querySelector('#aw-doc-err-ext')?.addEventListener('click', () => {
-          void callRpc('openExternal', { path: targetPath }).then((r) => {
-            if (!r?.ok) showToast(`外部打开失败：${r?.error || '未知错误'}`);
-          });
-        });
-        host.querySelector('#aw-doc-err-native')?.addEventListener('click', () => {
-          closeDocOverlay({ dismiss: true });
-          renderStrip();
-        });
-        renderStrip();
-        return false;
-      }
-      docData = res;
-      lastRenderedDocKey = targetKey;
-      lastRenderedDocData = res;
     }
+    const res = await callRpc('renderDocument', { path: targetPath }, 15000);
+    if (destroyed || mySeq !== docRenderSeq || normKey(activeFilePath) !== targetKey) {
+      return false;
+    }
+    if (!res || !res.ok) {
+      host.innerHTML = `
+        <div class="aw-doc-loading-card">
+          <div style="margin-bottom:10px;color:var(--aw-fg);font-weight:600">无法在侧边栏直接渲染此文件</div>
+          <div style="margin-bottom:12px">${S?.esc ? S.esc(res?.error || '格式暂不支持或文件受加密保护') : String(res?.error || '')}</div>
+          <div style="display:flex;justify-content:center;gap:8px;flex-wrap:wrap">
+            <button type="button" class="aw-primary-btn" id="aw-doc-err-ext">用系统软件打开</button>
+            <button type="button" class="aw-ghost-btn" id="aw-doc-err-native">切回原生视图</button>
+          </div>
+        </div>
+      `;
+      host.querySelector('#aw-doc-err-ext')?.addEventListener('click', () => {
+        void callRpc('openExternal', { path: targetPath }).then((r) => {
+          if (!r?.ok) showToast(`外部打开失败：${r?.error || '未知错误'}`);
+        });
+      });
+      host.querySelector('#aw-doc-err-native')?.addEventListener('click', () => {
+        closeDocOverlay({ dismiss: true });
+        renderStrip();
+      });
+      renderStrip();
+      return false;
+    }
+    const docData = res;
+    lastRenderedDocKey = targetKey;
+    lastRenderedDocData = res;
 
     try { docViewerInstance?.destroy?.(); } catch {}
     docViewerInstance = W.AnchorWheelDocViewer.mountDocumentViewer(host, docData, {
       paperMode: Boolean(settings.richDocPaperMode),
+      compactChrome: Boolean(hasNativeHeader),
       rawLabel: meta.optionalTable ? '源码视图' : '原生视图',
       onTogglePaperMode: (nextPaper) => {
         settings = { ...settings, richDocPaperMode: Boolean(nextPaper) };
         void callRpc('updateSettings', { settings: { richDocPaperMode: Boolean(nextPaper) } });
       },
+      onRequestHiRes: (p) => callRpc('renderSlidesHiRes', { path: p || targetPath }, 32000),
+      onNotify: (msg) => showToast(msg),
       onOpenExternal: async (p) => {
-        const res = await callRpc('openExternal', { path: p || targetPath });
-        if (res?.ok) showToast('已调用系统默认应用打开');
-        else showToast(`外部打开失败：${res?.error || '未知错误'}`);
+        const extRes = await callRpc('openExternal', { path: p || targetPath });
+        if (extRes?.ok) showToast('已调用系统默认应用打开');
+        else showToast(`外部打开失败：${extRes?.error || '未知错误'}`);
       },
       onSwitchToRaw: () => {
         closeDocOverlay({ dismiss: true });
@@ -2013,13 +2161,21 @@
         navScopeOverride = '';
         applyThemeToNativeNodes();
         applyNonDestructiveTabFolding();
-        if (docOverlayVisible && settings.richDocPreviewEnabled === false) {
+        if (docOverlayVisible && (settings.richDocPreviewEnabled === false || settings.richDocAutoStrategy === 'manual_only')) {
           closeDocOverlay({ dismiss: false });
         } else if (docOverlayVisible && docViewerInstance?.setPaperMode) {
           docViewerInstance.setPaperMode(Boolean(settings.richDocPaperMode));
+          const contentWrap = getContentContainer(getRightPaneColumn());
+          const hostState = inspectHostFileViewState(contentWrap);
+          const meta = getActiveRichDocMeta();
+          if (settings.richDocAutoStrategy === 'auto_yield' && hostState === 'native_rich' && !meta?.preferWhenRawCode) {
+            closeDocOverlay({ dismiss: false });
+          }
         } else if (!docOverlayVisible && settings.richDocPreviewEnabled !== false) {
           const meta = getActiveRichDocMeta();
-          if (meta?.autoRender && docOverlayDismissedKey !== normKey(activeFilePath)) {
+          const contentWrap = getContentContainer(getRightPaneColumn());
+          const hostState = inspectHostFileViewState(contentWrap);
+          if (shouldAutoOpenDocOverlay(meta, hostState) && docOverlayDismissedKey !== normKey(activeFilePath)) {
             void openDocOverlay({ force: false });
           }
         }
@@ -2200,11 +2356,17 @@
       const docBtn = markOwned(D.createElement('button'));
       docBtn.className = 'aw-status-pill';
       docBtn.setAttribute('data-aw-role', 'doc-preview-btn');
-      docBtn.setAttribute('data-has-links', '1');
-      docBtn.textContent = activeRichMeta.optionalTable ? '表格预览' : `${activeRichMeta.badge} 预览`;
+      if (lastHostPreviewState !== 'native_rich' && lastHostPreviewState !== 'companion_mounted') {
+        docBtn.setAttribute('data-has-links', '1');
+      }
+      const pillLabel =
+        activeRichMeta.pillLabel || (activeRichMeta.optionalTable ? '表格预览' : `${activeRichMeta.badge} 预览`);
+      docBtn.textContent = pillLabel;
       docBtn.title = activeRichMeta.optionalTable
-        ? '以交互表格方式查看此 CSV / TSV 文件'
-        : `在侧边栏直接渲染此 ${activeRichMeta.badge} 文档`;
+        ? `以结构化表格方式查看此 ${activeRichMeta.badge} 文件`
+        : lastHostPreviewState === 'native_rich'
+        ? `宿主已提供原生预览；点击可切换至锚点轮盘 ${activeRichMeta.badge} 视图`
+        : `在侧边栏直接渲染此 ${activeRichMeta.badge} 文件`;
       docBtn.addEventListener('click', (e) => {
         e.stopPropagation();
         void openDocOverlay({ force: true });
@@ -2335,6 +2497,10 @@
       docOverlayDismissedKey = '';
       lastRenderedDocKey = '';
       lastRenderedDocData = null;
+      lastHostPreviewState = 'unknown';
+      docProbeCount = 0;
+      clearTimeout(docProbeTimer);
+      docProbeTimer = null;
       activeFilePath = curFile;
       activeIsDirectory = curIsDir;
     }
@@ -2390,19 +2556,41 @@
       cachedNavContext = await fetchNavContext(navScopeOverride);
     }
 
-    // Automatically render rich documents (DOCX, XLSX, PPTX, ODT, RTF, EPUB, DOC, ZIP) when Antigravity cannot preview them
+    // Native-First Auto-Yield rich document preview:
+    // Auto-render when Antigravity shows an unsupported placeholder (or raw source for .ipynb/.eml/.obj/.stl);
+    // automatically yield when Antigravity natively renders a real rich preview!
+    const contentWrap = getContentContainer(getRightPaneColumn());
+    lastHostPreviewState = activeDocMeta && contentWrap ? inspectHostFileViewState(contentWrap) : 'none';
     if (
       activeDocMeta &&
       activeDocMeta.autoRender &&
       settings.richDocPreviewEnabled !== false &&
       docOverlayDismissedKey !== normKey(activeFilePath)
     ) {
-      const contentWrap = getContentContainer(getRightPaneColumn());
-      const curOverlay = D.getElementById(DOC_OVERLAY_ID);
-      if (!docOverlayVisible || !curOverlay || curOverlay.parentElement !== contentWrap) {
-        void openDocOverlay({ force: false });
-      } else {
-        hideNativeContentSiblings(contentWrap, new Set([DOC_OVERLAY_ID]));
+      if (shouldAutoOpenDocOverlay(activeDocMeta, lastHostPreviewState)) {
+        clearTimeout(docProbeTimer);
+        docProbeTimer = null;
+        const { mountParent } = resolveDocMountLayout(contentWrap);
+        const curOverlay = D.getElementById(DOC_OVERLAY_ID);
+        if (!docOverlayVisible || !curOverlay || curOverlay.parentElement !== mountParent) {
+          void openDocOverlay({ force: false });
+        } else {
+          hideNativeContentSiblings(mountParent, new Set([DOC_OVERLAY_ID]));
+        }
+      } else if (lastHostPreviewState === 'empty_loading' && !docOverlayVisible && docProbeCount < 4) {
+        clearTimeout(docProbeTimer);
+        docProbeTimer = setTimeout(() => {
+          docProbeTimer = null;
+          docProbeCount++;
+          if (!destroyed) void refreshState();
+        }, 130);
+      } else if (
+        docOverlayVisible &&
+        (settings.richDocAutoStrategy || 'auto_yield') === 'auto_yield' &&
+        (lastHostPreviewState === 'native_rich' || lastHostPreviewState === 'companion_mounted') &&
+        !(lastHostPreviewState === 'raw_code_only' && activeDocMeta.preferWhenRawCode)
+      ) {
+        closeDocOverlay({ dismiss: false });
       }
     } else if (!activeDocMeta && docOverlayVisible) {
       closeDocOverlay({ dismiss: false });
@@ -2897,11 +3085,17 @@
           return;
         }
         if (docOverlayVisible && contentEl) {
+          const { mountParent } = resolveDocMountLayout(contentEl);
           const docOv = D.getElementById(DOC_OVERLAY_ID);
-          if (!docOv || docOv.parentElement !== contentEl) {
+          if (!docOv || docOv.parentElement !== mountParent) {
             scheduleSync();
           } else {
-            hideNativeContentSiblings(contentEl, new Set([DOC_OVERLAY_ID]));
+            hideNativeContentSiblings(mountParent, new Set([DOC_OVERLAY_ID]));
+          }
+        } else if (!docOverlayVisible && contentEl && getActiveRichDocMeta()?.autoRender) {
+          const nextHostState = inspectHostFileViewState(contentEl);
+          if (nextHostState !== lastHostPreviewState) {
+            scheduleSync();
           }
         }
       }, 150);
@@ -2917,6 +3111,7 @@
     },
     getDebugState() {
       const col = getRightPaneColumn();
+      const contentWrap = getContentContainer(col);
       return {
         version: bootMeta.version || BOOT.version || '',
         conversationId: lastConversationId || resolveConversationId(),
@@ -2926,11 +3121,13 @@
         docOverlayVisible,
         activeDocFormat: lastRenderedDocData?.format || '',
         docOutlineCount: lastRenderedDocData?.outline?.length || 0,
+        hostPreviewState: contentWrap ? inspectHostFileViewState(contentWrap) : 'missing',
+        richDocAutoStrategy: settings.richDocAutoStrategy || 'auto_yield',
         activePopoverName,
         outlinkCount: activeFileLinks.outlinks?.length || 0,
         backlinkCount: activeFileLinks.backlinks?.length || 0,
-        hasContentContainer: Boolean(getContentContainer(col)),
-        contentContainerIndex: col ? Array.from(col.children).indexOf(getContentContainer(col)) : -1,
+        hasContentContainer: Boolean(contentWrap),
+        contentContainerIndex: col ? Array.from(col.children).indexOf(contentWrap) : -1,
         wheelOpen: Boolean(wheelInstance?.isOpen?.()),
         bilateralOpen: Boolean(bilateralInstance?.isOpen?.()),
         aeTreeOpen: Boolean(aeTreeInstance?.isOpen?.()),
@@ -2942,7 +3139,7 @@
       if (payload.settings) {
         settings = payload.settings;
         applyThemeToNativeNodes();
-        if (docOverlayVisible && settings.richDocPreviewEnabled === false) {
+        if (docOverlayVisible && (settings.richDocPreviewEnabled === false || settings.richDocAutoStrategy === 'manual_only')) {
           closeDocOverlay({ dismiss: false });
         } else if (docOverlayVisible && docViewerInstance?.setPaperMode) {
           docViewerInstance.setPaperMode(Boolean(settings.richDocPaperMode));
@@ -2962,6 +3159,7 @@
       clearTimeout(holdTimer);
       clearTimeout(obsThrottle);
       clearTimeout(bgUpdateTimer);
+      clearTimeout(docProbeTimer);
       clearTimeout(suppressAuxTimer);
       clearTimeout(suppressCtxTimer);
       if (menuEnhanceRaf) {
@@ -2974,6 +3172,7 @@
       holdTimer = null;
       obsThrottle = null;
       bgUpdateTimer = null;
+      docProbeTimer = null;
       suppressAuxTimer = null;
       suppressCtxTimer = null;
       for (const rec of pendingRpc.values()) {

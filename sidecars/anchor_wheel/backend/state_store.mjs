@@ -18,8 +18,9 @@ export const DEFAULT_CATEGORY_RULES = Object.freeze([
     id: 'doc',
     label: '文档',
     extensions: Object.freeze([
-      'md', 'mdx', 'txt', 'pdf', 'docx', 'doc', 'xlsx', 'xlsm', 'xls', 'pptx', 'ppt',
-      'odt', 'ods', 'odp', 'rtf', 'epub', 'srt', 'ass', 'ssa', 'json', 'yaml', 'yml', 'csv', 'tsv',
+      'md', 'mdx', 'txt', 'pdf', 'docx', 'docm', 'dotx', 'doc', 'xlsx', 'xlsm', 'xltx', 'xls',
+      'pptx', 'ppsx', 'potx', 'ppt', 'odt', 'ods', 'odp', 'rtf', 'epub', 'eml', 'ipynb',
+      'sqlite', 'sqlite3', 'db', 'srt', 'ass', 'ssa', 'vtt', 'lrc', 'json', 'jsonl', 'ndjson', 'yaml', 'yml', 'csv', 'tsv',
     ]),
   }),
 ]);
@@ -41,6 +42,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
   hoverPreviewDelayMs: 250,
   videoPreviewAnimated: true,
   richDocPreviewEnabled: true,
+  richDocAutoStrategy: 'auto_yield', // 'auto_yield' | 'always_plugin' | 'manual_only'
   richDocPaperMode: false,
   categoryRules: DEFAULT_CATEGORY_RULES,
   scanWorkspace: true,
@@ -60,6 +62,7 @@ const VALID_CHILD_SCOPES = new Set(['opened_and_outlinks', 'opened_only']);
 const VALID_PARENT_DIRS = new Set(['left', 'top', 'right', 'bottom']);
 const VALID_THEMES = new Set(['auto', 'obsidian', 'warm', 'crystal', 'alabaster']);
 const VALID_SECTORS = new Set([4, 6, 8]);
+const VALID_DOC_STRATEGIES = new Set(['auto_yield', 'always_plugin', 'manual_only']);
 
 export function sanitizeCategoryRules(rawRules, fallback = DEFAULT_CATEGORY_RULES) {
   const src = Array.isArray(rawRules) ? rawRules : fallback;
@@ -134,6 +137,7 @@ export function sanitizeSettings(raw, base = DEFAULT_SETTINGS) {
   }
   if (typeof src.videoPreviewAnimated === 'boolean') next.videoPreviewAnimated = src.videoPreviewAnimated;
   if (typeof src.richDocPreviewEnabled === 'boolean') next.richDocPreviewEnabled = src.richDocPreviewEnabled;
+  if (VALID_DOC_STRATEGIES.has(src.richDocAutoStrategy)) next.richDocAutoStrategy = src.richDocAutoStrategy;
   if (typeof src.richDocPaperMode === 'boolean') next.richDocPaperMode = src.richDocPaperMode;
   if (Array.isArray(src.categoryRules)) {
     next.categoryRules = sanitizeCategoryRules(src.categoryRules, next.categoryRules);

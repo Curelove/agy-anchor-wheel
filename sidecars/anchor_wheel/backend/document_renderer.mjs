@@ -2,6 +2,19 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { decodeBuffer } from './encoding.mjs';
+import {
+  parse3dModel,
+  parseArchiveInventory,
+  parseEmlMessage,
+  parseFontSpecimen,
+  parseIpynb,
+  parseJsonLinesTable,
+  parseLegacyPpt,
+  parseLegacyXls,
+  parseSqliteDb,
+  parseSubtitleTimeline,
+} from './extra_formats_renderer.mjs';
+import { parseOoxmlTheme, renderVisualPptx } from './pptx_visual_renderer.mjs';
 import { escapeHtml, resolveSafeReadPath } from './security.mjs';
 import {
   collectText,
@@ -12,6 +25,7 @@ import {
   normalizeZipPath,
   parseRelsXml,
   parseXml,
+  pruneAlternateContent,
   readZipArchive,
   resolveZipRelPath,
 } from './zip_xml.mjs';
@@ -38,32 +52,82 @@ const IMAGE_MIME_BY_EXT = Object.freeze({
 });
 
 export const RICH_DOC_TYPES = Object.freeze({
+  // Word / Rich Text / E-Books / Email
   '.docx': Object.freeze({ format: 'docx', label: 'Word 文档', badge: 'DOCX', autoRender: true, supportsPaperMode: true }),
+  '.docm': Object.freeze({ format: 'docx', label: 'Word 宏文档', badge: 'DOCM', autoRender: true, supportsPaperMode: true }),
+  '.dotx': Object.freeze({ format: 'docx', label: 'Word 模板', badge: 'DOTX', autoRender: true, supportsPaperMode: true }),
   '.doc': Object.freeze({ format: 'doc', label: 'Word 旧版文档', badge: 'DOC', autoRender: true, supportsPaperMode: true }),
-  '.xlsx': Object.freeze({ format: 'xlsx', label: 'Excel 表格', badge: 'XLSX', autoRender: true, supportsPaperMode: false }),
-  '.xlsm': Object.freeze({ format: 'xlsx', label: 'Excel 表格', badge: 'XLSM', autoRender: true, supportsPaperMode: false }),
-  '.pptx': Object.freeze({ format: 'pptx', label: 'PPT 演示文稿', badge: 'PPTX', autoRender: true, supportsPaperMode: false }),
   '.odt': Object.freeze({ format: 'odt', label: 'OpenDocument 文档', badge: 'ODT', autoRender: true, supportsPaperMode: true }),
-  '.ods': Object.freeze({ format: 'ods', label: 'OpenDocument 表格', badge: 'ODS', autoRender: true, supportsPaperMode: false }),
-  '.odp': Object.freeze({ format: 'odp', label: 'OpenDocument 演示', badge: 'ODP', autoRender: true, supportsPaperMode: false }),
   '.rtf': Object.freeze({ format: 'rtf', label: 'RTF 富文本', badge: 'RTF', autoRender: true, supportsPaperMode: true }),
   '.epub': Object.freeze({ format: 'epub', label: 'EPUB 电子书', badge: 'EPUB', autoRender: true, supportsPaperMode: true }),
+  '.eml': Object.freeze({ format: 'eml', label: '电子邮件', badge: 'EML', autoRender: true, preferWhenRawCode: true, supportsPaperMode: true }),
+
+  // Spreadsheets & Databases
+  '.xlsx': Object.freeze({ format: 'xlsx', label: 'Excel 表格', badge: 'XLSX', autoRender: true, supportsPaperMode: false }),
+  '.xlsm': Object.freeze({ format: 'xlsx', label: 'Excel 表格', badge: 'XLSM', autoRender: true, supportsPaperMode: false }),
+  '.xltx': Object.freeze({ format: 'xlsx', label: 'Excel 模板', badge: 'XLTX', autoRender: true, supportsPaperMode: false }),
+  '.xls': Object.freeze({ format: 'xls', label: 'Excel 旧版表格', badge: 'XLS', autoRender: true, supportsPaperMode: false }),
+  '.ods': Object.freeze({ format: 'ods', label: 'OpenDocument 表格', badge: 'ODS', autoRender: true, supportsPaperMode: false }),
+  '.sqlite': Object.freeze({ format: 'sqlite', label: 'SQLite 数据库', badge: 'SQLITE', autoRender: true, supportsPaperMode: false }),
+  '.sqlite3': Object.freeze({ format: 'sqlite', label: 'SQLite 数据库', badge: 'SQLITE3', autoRender: true, supportsPaperMode: false }),
+  '.db': Object.freeze({ format: 'sqlite', label: 'SQLite 数据库', badge: 'DB', autoRender: true, supportsPaperMode: false }),
+
+  // Presentations (2D Visual Canvas + Optional Silent Local HiRes)
+  '.pptx': Object.freeze({ format: 'pptx', label: 'PPT 演示文稿', badge: 'PPTX', autoRender: true, supportsPaperMode: false, supportsLocalHiRes: true }),
+  '.ppsx': Object.freeze({ format: 'pptx', label: 'PPT 放映文稿', badge: 'PPSX', autoRender: true, supportsPaperMode: false, supportsLocalHiRes: true }),
+  '.potx': Object.freeze({ format: 'pptx', label: 'PPT 模板', badge: 'POTX', autoRender: true, supportsPaperMode: false, supportsLocalHiRes: true }),
+  '.ppt': Object.freeze({ format: 'ppt', label: 'PPT 旧版演示', badge: 'PPT', autoRender: true, supportsPaperMode: false, supportsLocalHiRes: true }),
+  '.odp': Object.freeze({ format: 'odp', label: 'OpenDocument 演示', badge: 'ODP', autoRender: true, supportsPaperMode: false, supportsLocalHiRes: true }),
+
+  // AI Notebooks, 3D Models, Fonts, PDF & Archives
+  '.ipynb': Object.freeze({ format: 'ipynb', label: 'Jupyter 笔记本', badge: 'IPYNB', autoRender: true, preferWhenRawCode: true, supportsPaperMode: false }),
+  '.glb': Object.freeze({ format: 'model3d', label: 'GLB 三维模型', badge: 'GLB', autoRender: true, supportsPaperMode: false }),
+  '.stl': Object.freeze({ format: 'model3d', label: 'STL 三维模型', badge: 'STL', autoRender: true, preferWhenRawCode: true, supportsPaperMode: false }),
+  '.obj': Object.freeze({ format: 'model3d', label: 'OBJ 三维模型', badge: 'OBJ', autoRender: true, preferWhenRawCode: true, supportsPaperMode: false }),
+  '.ttf': Object.freeze({ format: 'font', label: 'TrueType 字体', badge: 'TTF', autoRender: true, supportsPaperMode: false }),
+  '.otf': Object.freeze({ format: 'font', label: 'OpenType 字体', badge: 'OTF', autoRender: true, supportsPaperMode: false }),
+  '.woff': Object.freeze({ format: 'font', label: 'WOFF 字体', badge: 'WOFF', autoRender: true, supportsPaperMode: false }),
+  '.woff2': Object.freeze({ format: 'font', label: 'WOFF2 字体', badge: 'WOFF2', autoRender: true, supportsPaperMode: false }),
   '.zip': Object.freeze({ format: 'zip', label: 'ZIP 压缩包', badge: 'ZIP', autoRender: true, supportsPaperMode: false }),
-  '.csv': Object.freeze({ format: 'csv', label: 'CSV 数据表', badge: 'CSV', autoRender: false, supportsPaperMode: false }),
-  '.tsv': Object.freeze({ format: 'tsv', label: 'TSV 数据表', badge: 'TSV', autoRender: false, supportsPaperMode: false }),
-  '.pdf': Object.freeze({ format: 'pdf', label: 'PDF 文档', badge: 'PDF', autoRender: false, supportsPaperMode: false, mode2Only: true }),
+  '.tar': Object.freeze({ format: 'archive', label: 'TAR 归档包', badge: 'TAR', autoRender: true, supportsPaperMode: false }),
+  '.tgz': Object.freeze({ format: 'archive', label: 'TGZ 归档包', badge: 'TGZ', autoRender: true, supportsPaperMode: false }),
+  '.tar.gz': Object.freeze({ format: 'archive', label: 'TAR.GZ 归档包', badge: 'TAR.GZ', autoRender: true, supportsPaperMode: false }),
+  '.tar.xz': Object.freeze({ format: 'archive', label: 'TAR.XZ 归档包', badge: 'TAR.XZ', autoRender: true, supportsPaperMode: false }),
+  '.tar.bz2': Object.freeze({ format: 'archive', label: 'TAR.BZ2 归档包', badge: 'TAR.BZ2', autoRender: true, supportsPaperMode: false }),
+  '.tar.zst': Object.freeze({ format: 'archive', label: 'TAR.ZST 归档包', badge: 'TAR.ZST', autoRender: true, supportsPaperMode: false }),
+  '.7z': Object.freeze({ format: 'archive', label: '7Z 压缩包', badge: '7Z', autoRender: true, supportsPaperMode: false }),
+  '.rar': Object.freeze({ format: 'archive', label: 'RAR 压缩包', badge: 'RAR', autoRender: true, supportsPaperMode: false }),
+  '.pdf': Object.freeze({ format: 'pdf', label: 'PDF 文档', badge: 'PDF', autoRender: true, supportsPaperMode: false }),
+
+  // Optional Table / Timeline Toggle Formats (keep native text/code view by default; offer 1-click structured view)
+  '.csv': Object.freeze({ format: 'csv', label: 'CSV 数据表', badge: 'CSV', autoRender: false, optionalTable: true, supportsPaperMode: false }),
+  '.tsv': Object.freeze({ format: 'tsv', label: 'TSV 数据表', badge: 'TSV', autoRender: false, optionalTable: true, supportsPaperMode: false }),
+  '.jsonl': Object.freeze({ format: 'jsonl', label: 'JSONL 记录表', badge: 'JSONL', autoRender: false, optionalTable: true, supportsPaperMode: false }),
+  '.ndjson': Object.freeze({ format: 'jsonl', label: 'NDJSON 记录表', badge: 'NDJSON', autoRender: false, optionalTable: true, supportsPaperMode: false }),
+  '.srt': Object.freeze({ format: 'subtitle', label: 'SRT 字幕轴', badge: 'SRT', autoRender: false, optionalTable: true, supportsPaperMode: false }),
+  '.ass': Object.freeze({ format: 'subtitle', label: 'ASS 特效字幕', badge: 'ASS', autoRender: false, optionalTable: true, supportsPaperMode: false }),
+  '.ssa': Object.freeze({ format: 'subtitle', label: 'SSA 字幕', badge: 'SSA', autoRender: false, optionalTable: true, supportsPaperMode: false }),
+  '.vtt': Object.freeze({ format: 'subtitle', label: 'WebVTT 字幕', badge: 'VTT', autoRender: false, optionalTable: true, supportsPaperMode: false }),
+  '.lrc': Object.freeze({ format: 'subtitle', label: 'LRC 歌词轴', badge: 'LRC', autoRender: false, optionalTable: true, supportsPaperMode: false }),
 });
+
+const COMPOUND_EXTS = ['.tar.gz', '.tar.xz', '.tar.bz2', '.tar.zst'];
 
 export function getSupportedDocumentMeta(filePath) {
   if (!filePath) return null;
-  const ext = path.extname(String(filePath).replace(/[\\/]+$/, '')).toLowerCase();
+  const clean = String(filePath).replace(/[\\/]+$/, '');
+  const lower = clean.toLowerCase();
+  for (const ce of COMPOUND_EXTS) {
+    if (lower.endsWith(ce)) return RICH_DOC_TYPES[ce] || null;
+  }
+  const ext = path.extname(clean).toLowerCase();
   return RICH_DOC_TYPES[ext] || null;
 }
 
 export function isBinaryOfficeFormat(filePath) {
   const meta = getSupportedDocumentMeta(filePath);
   if (!meta) return false;
-  return !['csv', 'tsv', 'rtf'].includes(meta.format);
+  return !['csv', 'tsv', 'jsonl', 'subtitle', 'rtf', 'ipynb', 'eml'].includes(meta.format) && path.extname(String(filePath)).toLowerCase() !== '.obj';
 }
 
 // ── Shared Formatting & Color Utilities ─────────────────────────────────────
@@ -298,7 +362,20 @@ function parseWordBool(el) {
   return !/^(?:0|false|off|none)$/i.test(v);
 }
 
-function parseWordRPr(rPrNode) {
+const WORD_THEME_MAP = Object.freeze({
+  dark1: 'dk1',
+  light1: 'lt1',
+  dark2: 'dk2',
+  light2: 'lt2',
+  text1: 'dk1',
+  background1: 'lt1',
+  text2: 'dk2',
+  background2: 'lt2',
+  hyperlink: 'hlink',
+  followedHyperlink: 'folHlink',
+});
+
+function parseWordRPr(rPrNode, wordTheme = null) {
   const r = {};
   if (!rPrNode) return r;
   const rStyle = findChild(rPrNode, 'rStyle');
@@ -323,7 +400,12 @@ function parseWordRPr(rPrNode) {
   }
   const color = findChild(rPrNode, 'color');
   if (color) {
-    const hex = normalizeHexColor(getAttr(color, 'val'));
+    let hex = normalizeHexColor(getAttr(color, 'val'));
+    if (!hex && wordTheme?.colors) {
+      const tc = getAttr(color, 'themeColor');
+      const mapped = WORD_THEME_MAP[tc] || tc;
+      if (mapped && wordTheme.colors[mapped]) hex = wordTheme.colors[mapped];
+    }
     if (hex) r.color = hex;
   }
   const hl = findChild(rPrNode, 'highlight');
@@ -344,7 +426,7 @@ function parseWordRPr(rPrNode) {
   return r;
 }
 
-function parseWordPPr(pPrNode) {
+function parseWordPPr(pPrNode, wordTheme = null) {
   const p = {};
   if (!pPrNode) return p;
   const pStyle = findChild(pPrNode, 'pStyle');
@@ -395,24 +477,24 @@ function parseWordPPr(pPrNode) {
   const pbBefore = findChild(pPrNode, 'pageBreakBefore');
   if (pbBefore && parseWordBool(pbBefore)) p.pageBreakBefore = true;
   const rPr = findChild(pPrNode, 'rPr');
-  if (rPr) p.pRPr = parseWordRPr(rPr);
+  if (rPr) p.pRPr = parseWordRPr(rPr, wordTheme);
   return p;
 }
 
-function parseDocxStyles(zip) {
+function parseDocxStyles(zip, wordTheme = null) {
   const styles = new Map();
   let defaultPPr = {};
   let defaultRPr = {};
   const xml = zip.getEntryText('word/styles.xml');
   if (!xml) return { styles, defaultPPr, defaultRPr, resolveParaStyle: () => ({}), resolveRunStyle: () => ({}) };
 
-  const root = parseXml(xml);
+  const root = pruneAlternateContent(parseXml(xml));
   const docDefaults = findAll(root, 'docDefaults')[0];
   if (docDefaults) {
     const rDef = findChild(findChild(docDefaults, 'rPrDefault'), 'rPr');
     const pDef = findChild(findChild(docDefaults, 'pPrDefault'), 'pPr');
-    if (rDef) defaultRPr = parseWordRPr(rDef);
-    if (pDef) defaultPPr = parseWordPPr(pDef);
+    if (rDef) defaultRPr = parseWordRPr(rDef, wordTheme);
+    if (pDef) defaultPPr = parseWordPPr(pDef, wordTheme);
   }
 
   for (const st of findAll(root, 'style')) {
@@ -421,8 +503,8 @@ function parseDocxStyles(zip) {
     const type = getAttr(st, 'type');
     const name = getAttr(findChild(st, 'name'), 'val');
     const basedOn = getAttr(findChild(st, 'basedOn'), 'val');
-    const pPr = parseWordPPr(findChild(st, 'pPr'));
-    const rPr = parseWordRPr(findChild(st, 'rPr'));
+    const pPr = parseWordPPr(findChild(st, 'pPr'), wordTheme);
+    const rPr = parseWordRPr(findChild(st, 'rPr'), wordTheme);
     styles.set(id, { id, type, name, basedOn, pPr, rPr });
   }
 
@@ -729,7 +811,8 @@ function parseDocx(buf, filePath, stat, { snippetOnly = false } = {}) {
   }
 
   const coreProps = extractCoreProps(zip);
-  const stylesCtx = parseDocxStyles(zip);
+  const wordTheme = parseOoxmlTheme(zip, 'word/theme/theme1.xml');
+  const stylesCtx = parseDocxStyles(zip, wordTheme);
   const numCtx = parseDocxNumbering(zip);
   const rels = parseRelsXml(zip.getEntryText('word/_rels/document.xml.rels'));
   const media = createMediaLoader(zip, { snippetOnly });
@@ -737,7 +820,7 @@ function parseDocx(buf, filePath, stat, { snippetOnly = false } = {}) {
   const endnotes = snippetOnly ? new Map() : renderDocxNotesMap(zip, 'word/endnotes.xml');
   const comments = snippetOnly ? [] : renderDocxComments(zip);
 
-  const docRoot = parseXml(docXml);
+  const docRoot = pruneAlternateContent(parseXml(docXml));
   const body = findAll(docRoot, 'body')[0] || docRoot;
 
   const outline = [];
@@ -845,7 +928,7 @@ function parseDocx(buf, filePath, stat, { snippetOnly = false } = {}) {
   }
 
   function renderRun(runNode, paraBaseRPr) {
-    const directRPr = parseWordRPr(findChild(runNode, 'rPr'));
+    const directRPr = parseWordRPr(findChild(runNode, 'rPr'), wordTheme);
     const rStyleRPr = directRPr.rStyle ? stylesCtx.resolveRunStyle(directRPr.rStyle) : {};
     const mergedRPr = { ...paraBaseRPr, ...rStyleRPr, ...directRPr };
 
@@ -953,7 +1036,7 @@ function parseDocx(buf, filePath, stat, { snippetOnly = false } = {}) {
   }
 
   function renderParagraph(pNode, { inCell = false } = {}) {
-    const directPPr = parseWordPPr(findChild(pNode, 'pPr'));
+    const directPPr = parseWordPPr(findChild(pNode, 'pPr'), wordTheme);
     const stResolved = stylesCtx.resolveParaStyle(directPPr.pStyle);
     const mergedPPr = { ...stResolved.pPr, ...directPPr };
     const paraBaseRPr = { ...stResolved.rPr, ...(mergedPPr.pRPr || {}) };
@@ -1019,6 +1102,12 @@ function parseDocx(buf, filePath, stat, { snippetOnly = false } = {}) {
               innerHtml += `<span class="aw-doc-math">${escapeHtml(formula)}</span>`;
               plainText += formula;
             }
+            break;
+          }
+          case 'drawing':
+          case 'pict': {
+            const imgHtml = renderDrawingNode(ch);
+            if (imgHtml) innerHtml += imgHtml;
             break;
           }
           case 'AlternateContent': {
@@ -1381,23 +1470,40 @@ function isExcelDateFormatCode(code) {
   return /[ymdhs]/i.test(cleaned) && !/[#0?]/.test(cleaned.replace(/\.0+/g, ''));
 }
 
-function parseXlsxDateStyleSet(zip) {
+function parseXlsxStyleMeta(zip) {
   const dateStyleIndices = new Set();
+  const percentStyleIndices = new Set();
+  const boldStyleIndices = new Set();
   const xml = zip.getEntryText('xl/styles.xml');
-  if (!xml) return dateStyleIndices;
-  const root = parseXml(xml);
+  if (!xml) return { dateStyleIndices, percentStyleIndices, boldStyleIndices };
+  const root = pruneAlternateContent(parseXml(xml));
   const customDateFmtIds = new Set();
+  const customPctFmtIds = new Set();
   for (const nf of findAll(root, 'numFmt')) {
     const id = Number(getAttr(nf, 'numFmtId'));
     const code = getAttr(nf, 'formatCode');
-    if (Number.isFinite(id) && isExcelDateFormatCode(code)) customDateFmtIds.add(id);
+    if (Number.isFinite(id)) {
+      if (isExcelDateFormatCode(code)) customDateFmtIds.add(id);
+      else if (String(code || '').includes('%')) customPctFmtIds.add(id);
+    }
+  }
+  const boldFontIds = new Set();
+  const fontsNode = findAll(root, 'fonts')[0];
+  if (fontsNode) {
+    findChildren(fontsNode, 'font').forEach((fNode, fIdx) => {
+      if (findChild(fNode, 'b') && parseWordBool(findChild(fNode, 'b')) !== false) boldFontIds.add(fIdx);
+    });
   }
   const cellXfs = findAll(root, 'cellXfs')[0];
   if (cellXfs) {
     const xfs = findChildren(cellXfs, 'xf');
     xfs.forEach((xf, idx) => {
       const fmtId = Number(getAttr(xf, 'numFmtId'));
-      if (
+      const fontId = Number(getAttr(xf, 'fontId'));
+      if (boldFontIds.has(fontId)) boldStyleIndices.add(idx);
+      if (fmtId === 9 || fmtId === 10 || customPctFmtIds.has(fmtId)) {
+        percentStyleIndices.add(idx);
+      } else if (
         (fmtId >= 14 && fmtId <= 22) ||
         (fmtId >= 27 && fmtId <= 36) ||
         (fmtId >= 45 && fmtId <= 47) ||
@@ -1408,7 +1514,20 @@ function parseXlsxDateStyleSet(zip) {
       }
     });
   }
-  return dateStyleIndices;
+  return { dateStyleIndices, percentStyleIndices, boldStyleIndices };
+}
+
+function collectExcelSiText(siNode) {
+  if (!siNode || !Array.isArray(siNode.children)) return '';
+  const parts = [];
+  for (const ch of siNode.children) {
+    if (!ch || ch.text !== undefined) continue;
+    // Skip `<rPh>` (phonetic pinyin/furigana guides) so CJK Excel cells are never polluted
+    if (ch.local === 'rPh' || ch.local === 'phoneticPr') continue;
+    if (ch.local === 't') parts.push(collectText(ch));
+    else if (ch.local === 'r') parts.push(collectText(findChild(ch, 't')));
+  }
+  return parts.join('');
 }
 
 function formatExcelDateSerial(serial, use1904 = false) {
@@ -1437,17 +1556,16 @@ function parseXlsx(buf, filePath, stat, { snippetOnly = false } = {}) {
   const use1904 = getAttr(wbPr, 'date1904') === '1' || getAttr(wbPr, 'date1904') === 'true';
   const wbRels = parseRelsXml(zip.getEntryText('xl/_rels/workbook.xml.rels'));
 
-  // Shared strings table
+  // Shared strings table (excluding <rPh> phonetic ruby annotations)
   const sharedStrings = [];
   const ssXml = zip.getEntryText('xl/sharedStrings.xml');
   if (ssXml) {
-    const ssRoot = parseXml(ssXml);
+    const ssRoot = pruneAlternateContent(parseXml(ssXml));
     for (const si of findAll(ssRoot, 'si')) {
-      const ts = findAll(si, 't');
-      sharedStrings.push(ts.map((t) => collectText(t)).join(''));
+      sharedStrings.push(collectExcelSiText(si));
     }
   }
-  const dateStyleIndices = parseXlsxDateStyleSet(zip);
+  const { dateStyleIndices, percentStyleIndices } = parseXlsxStyleMeta(zip);
 
   const sheetNodes = findAll(wbRoot, 'sheet');
   const sections = [];
@@ -1533,6 +1651,8 @@ function parseXlsx(buf, filePath, stat, { snippetOnly = false } = {}) {
             const num = Number(rawV);
             if (Number.isFinite(num) && Number.isFinite(styleIdx) && dateStyleIndices.has(styleIdx)) {
               val = formatExcelDateSerial(num, use1904);
+            } else if (Number.isFinite(num) && Number.isFinite(styleIdx) && percentStyleIndices.has(styleIdx)) {
+              val = `${Number((num * 100).toFixed(2))}%`;
             } else if (Number.isFinite(num) && /\.\d{7,}/.test(rawV)) {
               val = String(Number(num.toFixed(4)));
             } else {
@@ -1626,237 +1746,21 @@ function parseXlsx(buf, filePath, stat, { snippetOnly = false } = {}) {
   };
 }
 
-// ── 3. PPTX Presentation Renderer ───────────────────────────────────────────
-
-function renderPptTextBody(txBodyNode) {
-  const paras = [];
-  const plain = [];
-  for (const p of findChildren(txBodyNode, 'p')) {
-    const pPr = findChild(p, 'pPr');
-    const lvl = Math.min(5, Math.max(0, Number(getAttr(pPr, 'lvl') || 0)));
-    const buNone = Boolean(findChild(pPr, 'buNone'));
-    const buChar = getAttr(findChild(pPr, 'buChar'), 'char');
-    const buAuto = Boolean(findChild(pPr, 'buAutoNum'));
-
-    const runs = [];
-    let rawLine = '';
-    for (const ch of p.children || []) {
-      if (ch.local === 'r') {
-        const rPr = findChild(ch, 'rPr');
-        const txt = collectText(findChild(ch, 't'));
-        if (!txt) continue;
-        rawLine += txt;
-        const b = getAttr(rPr, 'b') === '1';
-        const it = getAttr(rPr, 'i') === '1';
-        let h = escapeHtml(txt);
-        if (b) h = `<strong>${h}</strong>`;
-        if (it) h = `<em>${h}</em>`;
-        runs.push(h);
-      } else if (ch.local === 'fld') {
-        const txt = collectText(findChild(ch, 't'));
-        if (txt) {
-          rawLine += txt;
-          runs.push(escapeHtml(txt));
-        }
-      } else if (ch.local === 'br') {
-        runs.push('<br/>');
-        rawLine += ' ';
-      }
-    }
-    const clean = rawLine.trim();
-    if (!clean) continue;
-    plain.push(clean);
-    const bullet = !buNone && (buChar || buAuto || lvl > 0) ? `<span class="aw-slide-bullet">${escapeHtml(buChar || '•')}</span>` : '';
-    paras.push(`<p class="aw-slide-p" data-lvl="${lvl}">${bullet}<span>${runs.join('')}</span></p>`);
-  }
-  return { html: paras.join(''), plain };
-}
-
-function renderPptTable(tblNode) {
-  const rows = findChildren(tblNode, 'tr');
-  if (!rows.length) return '';
-  const trHtml = rows
-    .map((tr, rIdx) => {
-      const cells = findChildren(tr, 'tc');
-      const tag = rIdx === 0 ? 'th' : 'td';
-      return `<tr>${cells
-        .filter((tc) => getAttr(tc, 'hMerge') !== '1' && getAttr(tc, 'vMerge') !== '1')
-        .map((tc) => {
-          const cs = Number(getAttr(tc, 'gridSpan') || 1);
-          const rs = Number(getAttr(tc, 'rowSpan') || 1);
-          const attrs = [];
-          if (cs > 1) attrs.push(`colspan="${cs}"`);
-          if (rs > 1) attrs.push(`rowspan="${rs}"`);
-          const txt = findAll(tc, 't').map((t) => collectText(t)).join('');
-          return `<${tag}${attrs.length ? ` ${attrs.join(' ')}` : ''}>${escapeHtml(txt)}</${tag}>`;
-        })
-        .join('')}</tr>`;
-    })
-    .join('');
-  return `<div class="aw-doc-table-wrap"><table class="aw-doc-table">${trHtml}</table></div>`;
-}
+// ── 3. PPTX / PPSX / POTX 2D Visual Slide Canvas Renderer ──────────────────
 
 function parsePptx(buf, filePath, stat, { snippetOnly = false } = {}) {
   const zip = readZipArchive(buf);
-  const presXml = zip.getEntryText('ppt/presentation.xml');
-  if (!presXml) throw new Error('PPTX 文件缺少 ppt/presentation.xml（可能已损坏或加密）');
-
   const coreProps = extractCoreProps(zip);
-  const presRoot = parseXml(presXml);
-  const presRels = parseRelsXml(zip.getEntryText('ppt/_rels/presentation.xml.rels'));
   const media = createMediaLoader(zip, { snippetOnly });
-
-  // Resolve slide order via p:sldIdLst
-  const slidePaths = [];
-  for (const sldId of findAll(presRoot, 'sldId')) {
-    const rid = getAttr(sldId, 'id');
-    const rel = presRels.get(rid);
-    if (rel && !rel.external) {
-      slidePaths.push(resolveZipRelPath('ppt/presentation.xml', rel.target));
-    }
-  }
-  if (!slidePaths.length) {
-    // Fallback natural order scan
-    const collator = new Intl.Collator(undefined, { numeric: true });
-    for (const ent of zip.entries) {
-      if (/^ppt\/slides\/slide\d+\.xml$/i.test(ent.name)) slidePaths.push(ent.name);
-    }
-    slidePaths.sort((a, b) => collator.compare(a, b));
-  }
-
-  const outline = [];
-  const slideCardsHtml = [];
-  const plainChunks = [];
-  const snippetLines = [];
-  const warnings = [];
-  const maxSlides = snippetOnly ? 6 : 120;
-
-  for (let i = 0; i < slidePaths.length && i < maxSlides; i++) {
-    const sp = slidePaths[i];
-    const xml = zip.getEntryText(sp);
-    if (!xml) continue;
-    const slideRoot = parseXml(xml);
-    const relsPath = sp.replace(/^ppt\/slides\//i, 'ppt/slides/_rels/') + '.rels';
-    const slideRels = parseRelsXml(zip.getEntryText(relsPath));
-
-    let slideTitle = '';
-    const blocks = [];
-    const slidePlain = [];
-
-    for (const spNode of findAll(slideRoot, 'sp')) {
-      const ph = findAll(spNode, 'ph')[0];
-      const phType = getAttr(ph, 'type');
-      const txBody = findChild(spNode, 'txBody');
-      if (!txBody) continue;
-      const rendered = renderPptTextBody(txBody);
-      if (!rendered.plain.length) continue;
-      if (!slideTitle && (phType === 'title' || phType === 'ctrTitle')) {
-        slideTitle = rendered.plain.join(' ').slice(0, 90);
-        blocks.unshift(`<h3 class="aw-slide-title">${escapeHtml(slideTitle)}</h3>`);
-      } else if (phType === 'subTitle') {
-        blocks.push(`<p class="aw-slide-subtitle">${escapeHtml(rendered.plain.join(' '))}</p>`);
-      } else if (phType === 'sldNum' || phType === 'ftr' || phType === 'dt') {
-        continue;
-      } else {
-        blocks.push(`<div class="aw-slide-textblock">${rendered.html}</div>`);
-      }
-      slidePlain.push(...rendered.plain);
-    }
-
-    // Tables on slide
-    for (const tbl of findAll(slideRoot, 'tbl')) {
-      const tHtml = renderPptTable(tbl);
-      if (tHtml) blocks.push(tHtml);
-    }
-
-    // Embedded pictures on slide
-    if (!snippetOnly) {
-      const imgs = [];
-      for (const pic of findAll(slideRoot, 'pic')) {
-        const blip = findAll(pic, 'blip')[0];
-        const rid = getAttr(blip, 'embed');
-        const rel = rid ? slideRels.get(rid) : null;
-        if (!rel || rel.external) continue;
-        const imgPath = resolveZipRelPath(sp, rel.target);
-        const loaded = media.loadImageDataUrl(imgPath);
-        if (loaded.ok) {
-          imgs.push(`<img src="${loaded.dataUrl}" alt="幻灯片 ${i + 1} 配图" loading="lazy" />`);
-        }
-      }
-      if (imgs.length) {
-        blocks.push(`<div class="aw-slide-media-grid">${imgs.join('')}</div>`);
-      }
-    }
-
-    // Speaker notes
-    let notesText = '';
-    if (!snippetOnly) {
-      for (const rel of slideRels.values()) {
-        if (!rel.external && /notesslide/i.test(String(rel.type || rel.target || ''))) {
-          const notePath = resolveZipRelPath(sp, rel.target);
-          const noteXml = zip.getEntryText(notePath);
-          if (noteXml) {
-            const noteRoot = parseXml(noteXml);
-            notesText = findAll(noteRoot, 'sp')
-              .filter((n) => getAttr(findAll(n, 'ph')[0], 'type') !== 'sldNum')
-              .map((n) => findAll(n, 'p').map((p) => collectText(p).trim()).filter(Boolean).join('\n'))
-              .filter(Boolean)
-              .join('\n')
-              .trim();
-          }
-          break;
-        }
-      }
-    }
-
-    const displayTitle = slideTitle || slidePlain[0]?.slice(0, 60) || `第 ${i + 1} 页`;
-    const anchorId = `aw-slide-${i + 1}`;
-    outline.push({ id: anchorId, level: 1, title: `${i + 1}. ${displayTitle}` });
-    snippetLines.push(`P${i + 1}: ${displayTitle}`);
-    plainChunks.push(`--- 幻灯片 ${i + 1}: ${displayTitle} ---\n${slidePlain.join('\n')}${notesText ? `\n[备注] ${notesText}` : ''}`);
-
-    const notesHtml = notesText
-      ? `<details class="aw-slide-notes"><summary>演讲者备注</summary><div class="aw-slide-notes-body">${escapeHtml(notesText).replace(/\n/g, '<br/>')}</div></details>`
-      : '';
-
-    slideCardsHtml.push(`
-      <section class="aw-slide-card" id="${anchorId}">
-        <div class="aw-slide-head">
-          <span class="aw-slide-num">P${String(i + 1).padStart(2, '0')} / ${String(slidePaths.length).padStart(2, '0')}</span>
-          <span class="aw-slide-head-title">${escapeHtml(displayTitle)}</span>
-        </div>
-        <div class="aw-slide-body">${blocks.join('') || '<p class="aw-doc-empty-msg">本页仅含图形或空白内容</p>'}</div>
-        ${notesHtml}
-      </section>
-    `);
-  }
-
-  if (slidePaths.length > maxSlides && !snippetOnly) {
-    warnings.push(`演示文稿共 ${slidePaths.length} 页，已展示前 ${maxSlides} 页。`);
-  }
-
-  const mStats = media.getStats();
+  const visual = renderVisualPptx(zip, filePath, stat, { snippetOnly, media });
   return {
-    ok: true,
-    format: 'pptx',
-    formatLabel: 'PPT 演示文稿',
-    badge: 'PPTX',
-    path: filePath,
+    ...visual,
     title: coreProps.title || path.basename(filePath),
-    ext: 'pptx',
-    sizeBytes: stat.size,
-    autoRender: true,
-    supportsPaperMode: false,
     meta: {
       ...coreProps,
-      statsLabel: `${slidePaths.length} 页幻灯片${mStats.embeddedCount ? ` · ${mStats.embeddedCount} 图` : ''}`,
-      slideCount: slidePaths.length,
+      ...visual.meta,
     },
-    outline,
-    bodyHtml: `<div class="aw-slides-deck">${slideCardsHtml.join('\n')}</div>`,
-    plainText: plainChunks.join('\n\n').slice(0, MAX_PLAIN_TEXT_CHARS),
-    snippetLines: snippetLines.slice(0, 14),
-    warnings,
+    plainText: String(visual.plainText || '').slice(0, MAX_PLAIN_TEXT_CHARS),
   };
 }
 
@@ -2762,9 +2666,11 @@ function parseZipListing(buf, filePath, stat, { snippetOnly = false } = {}) {
   };
 }
 
-// ── 10. PDF Lightweight Metadata Inspector (Hover Preview + Mode 2 Embed) ───
+// ── 10. PDF Metadata & Dual-Mode Safe Blob Embed ────────────────────────────
 
-function parsePdfMeta(buf, filePath, stat) {
+const MAX_PDF_INLINE_B64_BYTES = 24 * 1024 * 1024;
+
+function parsePdfMeta(buf, filePath, stat, { snippetOnly = false } = {}) {
   const sample = buf.subarray(0, Math.min(buf.length, 512 * 1024)).toString('latin1');
   const pageMatches = sample.match(/\/Type\s*\/Page\b(?!s)/g);
   const countMatch = /\/Type\s*\/Pages[\s\S]{0,160}?\/Count\s+(\d+)/.exec(sample);
@@ -2773,6 +2679,7 @@ function parsePdfMeta(buf, filePath, stat) {
   const pdfTitle = titleMatch ? titleMatch[1].replace(/\\([()\\])/g, '$1').trim() : '';
 
   const statsLabel = pageCount > 0 ? `约 ${pageCount} 页 · ${formatBytesShort(stat.size)}` : formatBytesShort(stat.size);
+  const includeB64 = !snippetOnly && buf.length <= MAX_PDF_INLINE_B64_BYTES;
   return {
     ok: true,
     format: 'pdf',
@@ -2782,9 +2689,9 @@ function parsePdfMeta(buf, filePath, stat) {
     title: pdfTitle || path.basename(filePath),
     ext: 'pdf',
     sizeBytes: stat.size,
-    autoRender: false,
+    autoRender: true,
     supportsPaperMode: false,
-    mode2Only: true,
+    pdfBase64: includeB64 ? buf.toString('base64') : '',
     meta: { title: pdfTitle, pageCount, statsLabel },
     outline: [],
     bodyHtml: '',
@@ -2794,7 +2701,7 @@ function parsePdfMeta(buf, filePath, stat) {
       pageCount > 0 ? `页数：约 ${pageCount} 页` : '',
       `大小：${formatBytesShort(stat.size)}`,
     ].filter(Boolean),
-    warnings: [],
+    warnings: !snippetOnly && !includeB64 ? [`PDF 文件体积 ${formatBytesShort(stat.size)} 较大，建议点击系统打开阅读。`] : [],
   };
 }
 
@@ -2860,14 +2767,42 @@ export function renderDocument(rawPath, { snippetOnly = false } = {}) {
       case 'xlsx':
         result = parseXlsx(buf, filePath, stat, { snippetOnly });
         break;
+      case 'xls': {
+        const xlsRes = parseLegacyXls(buf, filePath, stat, { snippetOnly });
+        if (xlsRes?.redirectFormat === 'xlsx') {
+          result = parseXlsx(buf, filePath, stat, { snippetOnly });
+          if (xlsRes.warning) result.warnings = [xlsRes.warning, ...(result.warnings || [])];
+        } else if (xlsRes?.redirectFormat === 'tsv_or_csv') {
+          result = parseCsvTsv(buf, filePath, stat, false, { snippetOnly });
+        } else {
+          result = xlsRes;
+        }
+        break;
+      }
       case 'pptx':
         result = parsePptx(buf, filePath, stat, { snippetOnly });
         break;
+      case 'ppt': {
+        const pptRes = parseLegacyPpt(buf, filePath, stat, { snippetOnly });
+        if (pptRes?.redirectFormat === 'pptx') {
+          result = parsePptx(buf, filePath, stat, { snippetOnly });
+          if (pptRes.warning) result.warnings = [pptRes.warning, ...(result.warnings || [])];
+        } else {
+          result = pptRes;
+        }
+        break;
+      }
       case 'csv':
         result = parseCsvTsv(buf, filePath, stat, false, { snippetOnly });
         break;
       case 'tsv':
         result = parseCsvTsv(buf, filePath, stat, true, { snippetOnly });
+        break;
+      case 'jsonl':
+        result = parseJsonLinesTable(buf, filePath, stat, { snippetOnly });
+        break;
+      case 'subtitle':
+        result = parseSubtitleTimeline(buf, filePath, stat, { snippetOnly });
         break;
       case 'odt':
         result = parseOdt(buf, filePath, stat, { snippetOnly });
@@ -2884,17 +2819,40 @@ export function renderDocument(rawPath, { snippetOnly = false } = {}) {
       case 'epub':
         result = parseEpub(buf, filePath, stat, { snippetOnly });
         break;
+      case 'eml':
+        result = parseEmlMessage(buf, filePath, stat, {
+          sanitizeHtmlFn: (bodyNode, plainOut) => sanitizeXhtmlNode(bodyNode, '', null, plainOut),
+        });
+        break;
+      case 'ipynb':
+        result = parseIpynb(buf, filePath, stat, { snippetOnly });
+        break;
+      case 'sqlite':
+        result = parseSqliteDb(buf, filePath, stat, { snippetOnly });
+        break;
+      case 'model3d':
+        result = parse3dModel(buf, filePath, stat, { snippetOnly });
+        break;
+      case 'font':
+        result = parseFontSpecimen(buf, filePath, stat, { snippetOnly });
+        break;
       case 'doc':
         result = parseLegacyDoc(buf, filePath, stat, { snippetOnly });
         break;
       case 'zip':
         result = parseZipListing(buf, filePath, stat, { snippetOnly });
         break;
+      case 'archive':
+        result = parseArchiveInventory(buf, filePath, stat, { snippetOnly });
+        break;
       case 'pdf':
-        result = parsePdfMeta(buf, filePath, stat);
+        result = parsePdfMeta(buf, filePath, stat, { snippetOnly });
         break;
       default:
         return { ok: false, unsupported: true, error: `Unsupported format: ${meta.format}` };
+    }
+    if (result && typeof result === 'object') {
+      result.mtimeMs = stat.mtimeMs;
     }
     setCachedDoc(cacheKey, result);
     return result;
@@ -2910,9 +2868,11 @@ export function renderDocument(rawPath, { snippetOnly = false } = {}) {
 }
 
 const SAFE_EXTERNAL_OPEN_EXTS = new Set([
-  '.docx', '.doc', '.xlsx', '.xlsm', '.xls', '.pptx', '.ppt',
-  '.odt', '.ods', '.odp', '.rtf', '.epub', '.pdf', '.csv', '.tsv',
-  '.txt', '.md', '.mdx', '.zip',
+  '.docx', '.docm', '.dotx', '.doc', '.xlsx', '.xlsm', '.xltx', '.xls', '.pptx', '.ppsx', '.potx', '.ppt',
+  '.odt', '.ods', '.odp', '.rtf', '.epub', '.eml', '.pdf', '.csv', '.tsv', '.jsonl', '.ndjson', '.ipynb',
+  '.sqlite', '.sqlite3', '.db', '.srt', '.ass', '.ssa', '.vtt', '.lrc',
+  '.txt', '.md', '.mdx', '.zip', '.tar', '.tgz', '.gz', '.xz', '.bz2', '.zst', '.7z', '.rar',
+  '.glb', '.stl', '.obj', '.ttf', '.otf', '.woff', '.woff2',
   '.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp', '.svg',
   '.mp4', '.mov', '.mkv', '.webm', '.mp3', '.wav', '.flac', '.m4a',
 ]);

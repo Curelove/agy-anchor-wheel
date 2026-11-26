@@ -28,7 +28,7 @@ const MAX_MD_BYTES = 2 * 1024 * 1024;
 const MAX_SCAN_FILES = 12000;
 const AUTO_RESCAN_COOLDOWN_MS = 60000;
 const KNOWN_FILE_EXT_RE =
-  /\.(?:md|mdx|txt|log|rst|json|jsonc|yaml|yml|toml|ini|js|mjs|cjs|jsx|ts|mts|cts|tsx|py|rb|go|rs|java|kt|c|h|cpp|hpp|cs|php|lua|sh|bash|ps1|bat|cmd|sql|css|scss|less|html|htm|xml|svg|png|jpg|jpeg|webp|gif|avif|bmp|ico|mp4|webm|mov|mkv|avi|mp3|wav|ogg|flac|m4a|aac|srt|ass|ssa|pdf|csv|tsv|jsonl|docx|doc|xlsx|xlsm|xls|pptx|ppt|odt|ods|odp|rtf|epub|zip)$/i;
+  /\.(?:md|mdx|txt|log|rst|json|jsonc|yaml|yml|toml|ini|js|mjs|cjs|jsx|ts|mts|cts|tsx|py|rb|go|rs|java|kt|c|h|cpp|hpp|cs|php|lua|sh|bash|ps1|bat|cmd|sql|css|scss|less|html|htm|xml|svg|png|jpg|jpeg|webp|gif|avif|bmp|ico|mp4|webm|mov|mkv|avi|mp3|wav|ogg|flac|m4a|aac|srt|ass|ssa|vtt|lrc|pdf|csv|tsv|jsonl|ndjson|ipynb|sqlite|sqlite3|db|docx|docm|dotx|doc|xlsx|xlsm|xltx|xls|pptx|ppsx|potx|ppt|odt|ods|odp|rtf|epub|eml|zip|tar|tgz|gz|xz|bz2|zst|7z|rar|glb|stl|obj|ttf|otf|woff|woff2)$/i;
 
 const MD_LINK_RE = /!?\[([^\]]*)\]\(([^)\r\n]+)\)/g;
 const WIKILINK_RE = /\[\[([^\]|\r\n#]+)(?:#([^\]|\r\n]+))?(?:\|([^\]\r\n]+))?\]\]/g;

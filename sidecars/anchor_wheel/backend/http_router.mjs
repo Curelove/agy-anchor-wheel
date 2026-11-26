@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { openExternalDocument, renderDocument } from './document_renderer.mjs';
 import { convertFileToUtf8, inspectFileEncoding } from './encoding.mjs';
+import { renderSlidesWithLocalEngine } from './local_office_exporter.mjs';
 import { buildNavContext, classifyFile, listDirectoryDirectFiles } from './nav_context.mjs';
 import { PreviewService } from './preview_service.mjs';
 import { resolveSafeReadPath } from './security.mjs';
@@ -340,6 +341,13 @@ export function createRouterHandlers({
 
   routes.set('POST /api/doc/render', (data) => {
     return renderDocument(data?.path || '', { snippetOnly: Boolean(data?.snippetOnly) });
+  });
+
+  routes.set('POST /api/doc/render-hires', async (data) => {
+    return renderSlidesWithLocalEngine(data?.path || '', {
+      dataDir: stateStore.dataDir,
+      dryRun: Boolean(data?.dryRun),
+    });
   });
 
   routes.set('POST /api/file/open-external', (data) => {
