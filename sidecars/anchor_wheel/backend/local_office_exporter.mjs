@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { resolveSafeReadPath } from './security.mjs';
 
 const HIRES_SLIDE_LIMIT = 80;
@@ -33,6 +34,14 @@ export function detectLocalPresentationEngine() {
     );
   } else if (process.platform === 'darwin') {
     sofficeCandidates.push('/Applications/LibreOffice.app/Contents/MacOS/soffice');
+  } else {
+    sofficeCandidates.push(
+      '/usr/bin/soffice',
+      '/usr/local/bin/soffice',
+      '/snap/bin/libreoffice',
+      '/var/lib/flatpak/exports/bin/org.libreoffice.LibreOffice',
+      path.join(os.homedir(), '.local', 'share', 'flatpak', 'exports', 'bin', 'org.libreoffice.LibreOffice')
+    );
   }
   try {
     const cmd = process.platform === 'win32' ? 'where' : 'which';
@@ -180,7 +189,7 @@ try {
 async function exportViaLibreOffice(sofficeBin, filePath, outDir, ffmpegBin = '') {
   // Isolated temporary LibreOffice profile per Rule 0.5 sandbox isolation
   const tmpWork = fs.mkdtempSync(path.join(os.tmpdir(), 'aw-soffice-'));
-  const profileUri = 'file:///' + path.join(tmpWork, 'profile').replace(/\\/g, '/');
+  const profileUri = pathToFileURL(path.join(tmpWork, 'profile')).href;
   try {
     // Convert to PDF headlessly first, or single-slide PNG if pdftoppm/ffmpeg unavailable
     await execFileAsync(

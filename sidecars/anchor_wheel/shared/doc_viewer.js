@@ -47,9 +47,9 @@
   const VIDEO_MEDIA_EXT_RE =
     /\.(?:mp4|m4v|mov|qt|mkv|webm|avi|flv|f4v|wmv|asf|ts|mts|m2ts|mpg|mpeg|m2v|ogv|3gp|3g2|rmvb|rm|vob|mxf|divx)$/i;
   const AUTO_BINARY_EXT_RE =
-    /\.(?:docx|docm|dotx|doc|xlsx|xlsm|xltx|xls|pptx|ppsx|potx|ppt|odt|ods|odp|rtf|epub|sqlite|sqlite3|db|zip|tar|tgz|7z|rar|glb|ttf|otf|woff|woff2|pdf)$/i;
-  const PREFER_WHEN_RAW_EXT_RE = /\.(?:ipynb|eml|stl|obj)$/i;
-  const OPTIONAL_TABLE_EXT_RE = /\.(?:csv|tsv|jsonl|ndjson|srt|ass|ssa|vtt|lrc)$/i;
+    /\.(?:docx|docm|dotx|doc|xlsx|xlsm|xltx|xls|pptx|ppsx|potx|ppt|odt|ods|odp|rtf|epub|sqlite|sqlite3|db|zip|tar|tgz|7z|rar|glb|ttf|otf|woff|woff2|pdf|psd|psb|aep|prproj|ai|mogrt|indd)$/i;
+  const PREFER_WHEN_RAW_EXT_RE = /\.(?:ipynb|eml|stl|obj|aepx|prtextstyle|sesx)$/i;
+  const OPTIONAL_TABLE_EXT_RE = /\.(?:csv|tsv|jsonl|ndjson|srt|ass|ssa|vtt|lrc|cube)$/i;
 
   function classifyDocPathClient(filePath) {
     const p = String(filePath || '').trim().replace(/[\\/]+$/, '');
@@ -102,13 +102,14 @@
     }
     if (OPTIONAL_TABLE_EXT_RE.test(p)) {
       const isSubtitle = /^(?:srt|ass|ssa|vtt|lrc)$/.test(ext);
+      const isLut = ext === 'cube';
       return {
         ext,
         badge: ext.toUpperCase(),
         autoRender: false,
         preferWhenRawCode: false,
         optionalTable: true,
-        pillLabel: isSubtitle ? '时间轴表' : '表格预览',
+        pillLabel: isLut ? 'LUT 预览' : isSubtitle ? '时间轴表' : '表格预览',
         isBinaryDoc: false,
       };
     }
@@ -943,7 +944,7 @@
         const sec = docData.sections[activeSectionIdx] || docData.sections[0];
         canvasEl.className = isSpreadsheet ? 'aw-doc-canvas aw-doc-canvas-sheet' : 'aw-doc-canvas aw-doc-canvas-article';
         canvasEl.innerHTML = sec?.html || '<p class="aw-doc-empty-msg">内容为空。</p>';
-      } else if (isCsvLike || format === 'zip') {
+      } else if (isCsvLike || format === 'zip' || format === 'adobe') {
         canvasEl.className = 'aw-doc-canvas aw-doc-canvas-sheet';
         canvasEl.innerHTML = docData.bodyHtml || '<p class="aw-doc-empty-msg">内容为空。</p>';
       } else if (isPresentation) {

@@ -5,7 +5,14 @@ import path from 'node:path';
 import { getSupportedDocumentMeta, renderDocument } from './document_renderer.mjs';
 import { decodeBuffer } from './encoding.mjs';
 import { isSensitiveFilePath, resolveSafeDirPath, resolveSafeReadPath } from './security.mjs';
-import { AUDIO_EXTENSIONS, VIDEO_EXTENSIONS, detectMediaBinaries } from './video_service.mjs';
+import {
+  ALPHA_PIX_FMT_RE,
+  AUDIO_EXTENSIONS,
+  VIDEO_EXTENSIONS,
+  buildAlphaCheckerFilter,
+  detectMediaBinaries,
+  parseFfmpegStderrProbe,
+} from './video_service.mjs';
 
 const IMAGE_MIME = Object.freeze({
   '.png': 'image/png',
@@ -64,8 +71,11 @@ function toDataUrl(filePath, mime) {
 
 export class PreviewService {
   constructor(dataDir, options = {}) {
+    const bins = detectMediaBinaries();
     this.cacheDir = path.join(String(dataDir || process.cwd()), 'preview_cache');
-    this.ffmpegBin = options.ffmpegBin !== undefined ? options.ffmpegBin : detectFfmpegBinary();
+    this.ffmpegBin = options.ffmpegBin !== undefined ? options.ffmpegBin : bins.ffmpegBin || '';
+    this.ffprobeBin = options.ffprobeBin !== undefined ? options.ffprobeBin : bins.ffprobeBin || '';
+    this.alphaCache = new Map();
     this.memCache = new Map();
     this.inflightClips = new Map();
     this.inflightHigh = new Map();
@@ -237,30 +247,81 @@ export class PreviewService {
     return job;
   }
 
-  async #ensurePosterFrame(filePath, hash) {
+  async #detectVideoHasAlpha(filePath, hash) {
+    if (this.alphaCache.has(hash)) return this.alphaCache.get(hash);
+    let hasAlpha = false;
+    if (this.ffprobeBin) {
+      try {
+        const { stdout } = await runFfmpeg(
+          this.ffprobeBin,
+          ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=pix_fmt', '-of', 'default=nw=1:nk=1', filePath],
+          2200,
+          this.activeProcs
+        );
+        hasAlpha = ALPHA_PIX_FMT_RE.test(String(stdout || '').trim());
+      } catch {
+        hasAlpha = false;
+      }
+    } else if (this.ffmpegBin) {
+      try {
+        const stderr = await new Promise((resolve) => {
+          const child = execFile(
+            this.ffmpegBin,
+            ['-hide_banner', '-i', filePath],
+            { timeout: 2200, windowsHide: true, maxBuffer: 256 * 1024 },
+            (_err, _out, errStr) => {
+              this.activeProcs.delete(child);
+              resolve(String(errStr || ''));
+            }
+          );
+          this.activeProcs.add(child);
+        });
+        hasAlpha = Boolean(parseFfmpegStderrProbe(stderr)?.hasAlpha);
+      } catch {
+        hasAlpha = false;
+      }
+    }
+    if (this.alphaCache.size > 200) {
+      const oldest = this.alphaCache.keys().next().value;
+      if (oldest) this.alphaCache.delete(oldest);
+    }
+    this.alphaCache.set(hash, hasAlpha);
+    return hasAlpha;
+  }
+
+  async #ensurePosterFrame(filePath, hash, { hasAlpha = false } = {}) {
     this.#ensureCacheDir();
-    const outPath = path.join(this.cacheDir, `${hash}_poster.jpg`);
+    const outPath = path.join(this.cacheDir, `${hash}_poster_${hasAlpha ? 'a2' : 'v2'}.jpg`);
     if (fs.existsSync(outPath) && fs.statSync(outPath).size > 200) {
       return toDataUrl(outPath, 'image/jpeg');
     }
-    const failKey = `poster:${hash}`;
+    const failKey = `poster:${hash}:${hasAlpha ? 'a2' : 'v2'}`;
     if (this.#isRecentlyFailed(failKey)) return '';
-    const inflightKey = `poster:${hash}`;
+    const inflightKey = failKey;
     if (this.inflightHigh.has(inflightKey)) {
       return this.inflightHigh.get(inflightKey);
     }
 
     const job = this.#enqueueFfmpegJob(
       async () => {
-        // Fast input-seek past common black intro frames, then pick representative bright frame;
-        // explicitly map 0:v:0 and convert to yuv420p/yuvj420p so 10-bit HEVC, ProRes 4444 alpha & QuickTime timecode tracks never fail.
-        const attempts = [
-          { ss: '1.2', vf: 'thumbnail=8,scale=320:-2,format=yuv420p' },
-          { ss: '0', vf: 'thumbnail=8,scale=320:-2,format=yuv420p' },
-          { ss: '0', vf: 'scale=320:-2,format=yuv420p' },
-        ];
-        for (const { ss, vf } of attempts) {
+        const posterScale = "scale='min(640,iw)':-2:force_original_aspect_ratio=decrease";
+        const attempts = hasAlpha
+          ? [
+              { ss: '1.2', fc: buildAlphaCheckerFilter(`thumbnail=8,${posterScale}`, { cellSize: 12 }) },
+              { ss: '0', fc: buildAlphaCheckerFilter(`thumbnail=8,${posterScale}`, { cellSize: 12 }) },
+              { ss: '0', fc: buildAlphaCheckerFilter(posterScale, { cellSize: 12 }) },
+              { ss: '0', vf: `${posterScale},format=yuv420p` },
+            ]
+          : [
+              { ss: '1.2', vf: `thumbnail=8,${posterScale},format=yuv420p` },
+              { ss: '0', vf: `thumbnail=8,${posterScale},format=yuv420p` },
+              { ss: '0', vf: `${posterScale},format=yuv420p` },
+            ];
+        for (const attempt of attempts) {
           try {
+            const filterArgs = attempt.fc
+              ? ['-filter_complex', attempt.fc, '-map', '[vout]']
+              : ['-map', '0:v:0', '-vf', attempt.vf];
             await runFfmpeg(
               this.ffmpegBin,
               [
@@ -268,23 +329,20 @@ export class PreviewService {
                 '-loglevel',
                 'error',
                 '-ss',
-                ss,
+                attempt.ss,
                 '-i',
                 filePath,
-                '-map',
-                '0:v:0',
-                '-vf',
-                vf,
+                ...filterArgs,
                 '-pix_fmt',
                 'yuvj420p',
                 '-frames:v',
                 '1',
                 '-q:v',
-                '6',
+                '5',
                 '-y',
                 outPath,
               ],
-              3600,
+              4200,
               this.activeProcs
             );
             if (fs.existsSync(outPath) && fs.statSync(outPath).size > 200) {
@@ -304,95 +362,77 @@ export class PreviewService {
     return job;
   }
 
-  async getVideoPosterDataUrl(rawPath) {
+  async getVideoPosterDataUrl(rawPath, { hasAlpha } = {}) {
     if (!this.ffmpegBin || !rawPath) return '';
     const safeFile = resolveSafeReadPath(rawPath);
     if (!safeFile.ok) return '';
     const ext = path.extname(safeFile.filePath).toLowerCase();
     if (!VIDEO_EXTS.has(ext)) return '';
     const hash = this.#makeCacheHash(safeFile.key, safeFile.stat);
-    return this.#ensurePosterFrame(safeFile.filePath, hash);
+    const alphaFlag = typeof hasAlpha === 'boolean' ? hasAlpha : await this.#detectVideoHasAlpha(safeFile.filePath, hash);
+    return this.#ensurePosterFrame(safeFile.filePath, hash, { hasAlpha: alphaFlag });
   }
 
-  #triggerClipGeneration(filePath, hash) {
+  #triggerClipGeneration(filePath, hash, { hasAlpha = false } = {}) {
     this.#ensureCacheDir();
-    const clipPath = path.join(this.cacheDir, `${hash}_clip.webp`);
+    const suffix = hasAlpha ? 'clip_a2' : 'clip_v2';
+    const clipPath = path.join(this.cacheDir, `${hash}_${suffix}.webp`);
     if (fs.existsSync(clipPath) && fs.statSync(clipPath).size > 300) {
       return clipPath;
     }
-    const failKey = `clip:${hash}`;
+    const failKey = `${suffix}:${hash}`;
     if (this.#isRecentlyFailed(failKey)) return 'failed';
-    if (this.inflightClips.has(hash)) return null;
+    if (this.inflightClips.has(failKey)) return null;
+
+    const clipScale = "fps=6,scale='min(300,iw)':-2:flags=lanczos:force_original_aspect_ratio=decrease";
+    const buildClipArgs = (ss, useAlphaChecker) => {
+      const filterArgs = useAlphaChecker
+        ? ['-filter_complex', buildAlphaCheckerFilter(clipScale, { cellSize: 10 }), '-map', '[vout]']
+        : ['-map', '0:v:0', '-vf', `${clipScale},format=yuv420p`];
+      return [
+        '-hide_banner',
+        '-loglevel',
+        'error',
+        ...(ss ? ['-ss', ss] : []),
+        '-t',
+        '3.0',
+        '-i',
+        filePath,
+        ...filterArgs,
+        '-c:v',
+        'libwebp_anim',
+        '-loop',
+        '0',
+        '-q:v',
+        '45',
+        '-compression_level',
+        '3',
+        '-an',
+        '-f',
+        'webp',
+        '-y',
+        clipPath,
+      ];
+    };
 
     const jobPromise = this.#enqueueFfmpegJob(
       async () => {
         try {
-          await runFfmpeg(
-            this.ffmpegBin,
-            [
-              '-hide_banner',
-              '-loglevel',
-              'error',
-              '-ss',
-              '1.0',
-              '-t',
-              '3.0',
-              '-i',
-              filePath,
-              '-map',
-              '0:v:0',
-              '-vf',
-              'fps=6,scale=300:-2:flags=lanczos,format=yuv420p',
-              '-c:v',
-              'libwebp_anim',
-              '-loop',
-              '0',
-              '-q:v',
-              '45',
-              '-compression_level',
-              '3',
-              '-an',
-              '-f',
-              'webp',
-              '-y',
-              clipPath,
-            ],
-            7500,
-            this.activeProcs
-          );
-          if (!fs.existsSync(clipPath) || fs.statSync(clipPath).size <= 300) {
-            // Retry from 0s for very short (<1s) clips
-            await runFfmpeg(
-              this.ffmpegBin,
-              [
-                '-hide_banner',
-                '-loglevel',
-                'error',
-                '-t',
-                '3.0',
-                '-i',
-                filePath,
-                '-map',
-                '0:v:0',
-                '-vf',
-                'fps=6,scale=300:-2:flags=lanczos,format=yuv420p',
-                '-c:v',
-                'libwebp_anim',
-                '-loop',
-                '0',
-                '-q:v',
-                '45',
-                '-compression_level',
-                '3',
-                '-an',
-                '-f',
-                'webp',
-                '-y',
-                clipPath,
-              ],
-              7500,
-              this.activeProcs
-            );
+          const runs = hasAlpha
+            ? [
+                ['1.0', true],
+                ['', true],
+                ['', false],
+              ]
+            : [
+                ['1.0', false],
+                ['', false],
+              ];
+          for (const [ss, useAlpha] of runs) {
+            try {
+              await runFfmpeg(this.ffmpegBin, buildClipArgs(ss, useAlpha), 7500, this.activeProcs);
+              if (fs.existsSync(clipPath) && fs.statSync(clipPath).size > 300) break;
+            } catch {}
           }
           if (!fs.existsSync(clipPath) || fs.statSync(clipPath).size <= 300) {
             this.#markFailed(failKey);
@@ -405,12 +445,12 @@ export class PreviewService {
             if (fs.existsSync(clipPath) && fs.statSync(clipPath).size < 200) fs.unlinkSync(clipPath);
           } catch {}
         } finally {
-          this.inflightClips.delete(hash);
+          this.inflightClips.delete(failKey);
         }
       },
       { priority: 'low' }
     );
-    this.inflightClips.set(hash, jobPromise);
+    this.inflightClips.set(failKey, jobPromise);
     return null;
   }
 
@@ -502,13 +542,14 @@ export class PreviewService {
         };
       }
 
-      const clipPath = path.join(this.cacheDir, `${hash}_clip.webp`);
+      const hasAlpha = await this.#detectVideoHasAlpha(filePath, hash);
+      const clipPath = path.join(this.cacheDir, `${hash}_${hasAlpha ? 'clip_a2' : 'clip_v2'}.webp`);
       const hasClip = animated && fs.existsSync(clipPath) && fs.statSync(clipPath).size > 300;
       const animDataUrl = hasClip ? toDataUrl(clipPath, 'image/webp') : '';
-      const posterDataUrl = animDataUrl ? '' : await this.#ensurePosterFrame(filePath, hash);
+      const posterDataUrl = animDataUrl ? '' : await this.#ensurePosterFrame(filePath, hash, { hasAlpha });
       let animPending = false;
       if (animated && !animDataUrl) {
-        const trig = this.#triggerClipGeneration(filePath, hash);
+        const trig = this.#triggerClipGeneration(filePath, hash, { hasAlpha });
         animPending = trig !== 'failed';
       }
 
@@ -561,6 +602,7 @@ export class PreviewService {
           sizeBytes: stat.size,
           lines,
           snippetText,
+          dataUrl: parsed.previewThumbDataUrl || '',
           truncated: true,
         };
         this.#setMem(memKey, res);

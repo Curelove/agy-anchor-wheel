@@ -1,11 +1,13 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 const IS_WIN = process.platform === 'win32';
+const IS_MAC = process.platform === 'darwin';
 
 const SENSITIVE_BASENAME_RE =
-  /^(?:\.env(?:\..+)?|id_rsa(?:\..*)?|id_ed25519(?:\..*)?|id_ecdsa(?:\..*)?|authorized_keys|known_hosts|credentials(?:\.[^.]+)?|secrets?(?:\.[^.]+)?|private_vault\.json|DevToolsActivePort|cookies(?:\.[^.]+)?)$/i;
+  /^(?:\.env(?:\..+)?|\.npmrc|\.pypirc|\.netrc|\.git-credentials|mcp_config\.json|id_rsa(?:\..*)?|id_ed25519(?:\..*)?|id_ecdsa(?:\..*)?|authorized_keys|known_hosts|credentials(?:\.[^.]+)?|secrets?(?:\.[^.]+)?|private_vault\.json|DevToolsActivePort|cookies(?:\.[^.]+)?)$/i;
 
 const SENSITIVE_EXT_RE = /\.(?:pem|key|p12|pfx|jks|keystore)$/i;
 
@@ -95,19 +97,28 @@ export function normalizeFilePath(rawUriOrPath) {
 
 export function canonicalKey(filePath) {
   const norm = normalizeFilePath(filePath);
-  const slashNorm = norm.replace(/\\/g, '/').replace(/\/+$/, '');
-  return IS_WIN ? slashNorm.toLowerCase() : slashNorm;
+  const slashNorm = norm.replace(/\\/g, '/');
+  const trimmed = slashNorm.length > 1 ? slashNorm.replace(/\/+$/, '') : slashNorm;
+  return IS_WIN || IS_MAC ? trimmed.toLowerCase() : trimmed;
 }
 
 export function toFileUri(filePath) {
   const abs = normalizeFilePath(filePath);
   if (!abs) return '';
+  try {
+    if (path.isAbsolute(abs)) {
+      return pathToFileURL(abs).href;
+    }
+  } catch {}
   const posix = abs.replace(/\\/g, '/');
   if (/^[A-Za-z]:\//.test(posix)) {
-    return encodeURI(`file:///${posix}`);
+    const drive = posix.slice(0, 2);
+    const rest = posix.slice(2).split('/').map((seg) => encodeURIComponent(seg)).join('/');
+    return `file:///${drive}${rest}`;
   }
   if (posix.startsWith('/')) {
-    return encodeURI(`file://${posix}`);
+    const rest = posix.split('/').map((seg) => encodeURIComponent(seg)).join('/');
+    return `file://${rest}`;
   }
   return '';
 }

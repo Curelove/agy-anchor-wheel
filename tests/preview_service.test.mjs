@@ -130,6 +130,45 @@ test('PreviewService generates non-black video poster and cached 3s animated Web
     assert.equal(second.kind, 'video');
     assert.ok(second.animDataUrl.startsWith('data:image/webp;base64,'));
     assert.equal(second.animPending, false);
+
+    // P0-3 regression: ProRes 4444 alpha .mov poster must composite checkerboard (NOT pure black RGB(0,0,0) in transparent corners)
+    const alphaMov = path.join(wsDir, 'alpha_sticker.mov');
+    execFileSync(
+      ffmpeg,
+      [
+        '-hide_banner',
+        '-loglevel',
+        'error',
+        '-f',
+        'lavfi',
+        '-i',
+        'color=c=black@0.0:s=160x160:d=0.4,format=rgba,drawbox=x=50:y=50:w=60:h=60:color=red@1.0:t=fill',
+        '-c:v',
+        'prores_ks',
+        '-profile:v',
+        '4444',
+        '-pix_fmt',
+        'yuva444p10le',
+        '-y',
+        alphaMov,
+      ],
+      { windowsHide: true, timeout: 10000 }
+    );
+    const alphaPoster = await svc.getVideoPosterDataUrl(alphaMov);
+    assert.ok(alphaPoster.startsWith('data:image/jpeg;base64,'));
+    const posterBuf = Buffer.from(alphaPoster.split(',')[1], 'base64');
+    const posterFile = path.join(tmpRoot, 'alpha_poster.jpg');
+    fs.writeFileSync(posterFile, posterBuf);
+    const rawRgb = execFileSync(
+      ffmpeg,
+      ['-hide_banner', '-loglevel', 'error', '-i', posterFile, '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'],
+      { windowsHide: true, timeout: 6000 }
+    );
+    // Top-left transparent corner (pixel 0,0) should be checkerboard dark-slate (~36,39,46), NOT pure black (0,0,0)
+    const r0 = rawRgb[0];
+    const g0 = rawRgb[1];
+    const b0 = rawRgb[2];
+    assert.ok(r0 >= 20 && g0 >= 20 && b0 >= 25, `Expected checkerboard corner pixel, got RGB(${r0},${g0},${b0})`);
   } finally {
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   }

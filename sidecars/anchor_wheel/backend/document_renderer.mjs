@@ -3,6 +3,17 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { decodeBuffer } from './encoding.mjs';
 import {
+  parseAepDocument,
+  parseAiDocument,
+  parseCubeLutDocument,
+  parseInddDocument,
+  parseMogrtDocument,
+  parsePrprojDocument,
+  parsePrTextStyleDocument,
+  parsePsdDocument,
+  parseSesxDocument,
+} from './adobe_formats_renderer.mjs';
+import {
   parse3dModel,
   parseArchiveInventory,
   parseEmlMessage,
@@ -68,9 +79,9 @@ export const RICH_DOC_TYPES = Object.freeze({
   '.xltx': Object.freeze({ format: 'xlsx', label: 'Excel 模板', badge: 'XLTX', autoRender: true, supportsPaperMode: false }),
   '.xls': Object.freeze({ format: 'xls', label: 'Excel 旧版表格', badge: 'XLS', autoRender: true, supportsPaperMode: false }),
   '.ods': Object.freeze({ format: 'ods', label: 'OpenDocument 表格', badge: 'ODS', autoRender: true, supportsPaperMode: false }),
-  '.sqlite': Object.freeze({ format: 'sqlite', label: 'SQLite 数据库', badge: 'SQLITE', autoRender: true, supportsPaperMode: false }),
-  '.sqlite3': Object.freeze({ format: 'sqlite', label: 'SQLite 数据库', badge: 'SQLITE3', autoRender: true, supportsPaperMode: false }),
-  '.db': Object.freeze({ format: 'sqlite', label: 'SQLite 数据库', badge: 'DB', autoRender: true, supportsPaperMode: false }),
+  '.sqlite': Object.freeze({ format: 'sqlite', label: 'SQLite 数据库', badge: 'SQLITE', autoRender: true, boundedRead: true, supportsPaperMode: false }),
+  '.sqlite3': Object.freeze({ format: 'sqlite', label: 'SQLite 数据库', badge: 'SQLITE3', autoRender: true, boundedRead: true, supportsPaperMode: false }),
+  '.db': Object.freeze({ format: 'sqlite', label: 'SQLite 数据库', badge: 'DB', autoRender: true, boundedRead: true, supportsPaperMode: false }),
 
   // Presentations (2D Visual Canvas + Optional Silent Local HiRes)
   '.pptx': Object.freeze({ format: 'pptx', label: 'PPT 演示文稿', badge: 'PPTX', autoRender: true, supportsPaperMode: false, supportsLocalHiRes: true }),
@@ -99,7 +110,20 @@ export const RICH_DOC_TYPES = Object.freeze({
   '.rar': Object.freeze({ format: 'archive', label: 'RAR 压缩包', badge: 'RAR', autoRender: true, supportsPaperMode: false }),
   '.pdf': Object.freeze({ format: 'pdf', label: 'PDF 文档', badge: 'PDF', autoRender: true, supportsPaperMode: false }),
 
-  // Optional Table / Timeline Toggle Formats (keep native text/code view by default; offer 1-click structured view)
+  // Adobe Creative Formats (bounded partial-read decoders — safe even on 500MB+ project files)
+  '.psd': Object.freeze({ format: 'adobe_psd', label: 'Photoshop 文档', badge: 'PSD', autoRender: true, boundedRead: true, supportsPaperMode: false }),
+  '.psb': Object.freeze({ format: 'adobe_psd', label: 'Photoshop 大型文档', badge: 'PSB', autoRender: true, boundedRead: true, supportsPaperMode: false }),
+  '.aep': Object.freeze({ format: 'adobe_aep', label: 'After Effects 工程', badge: 'AEP', autoRender: true, boundedRead: true, supportsPaperMode: false }),
+  '.aepx': Object.freeze({ format: 'adobe_aep', label: 'After Effects XML 工程', badge: 'AEPX', autoRender: true, preferWhenRawCode: true, boundedRead: true, supportsPaperMode: false }),
+  '.prproj': Object.freeze({ format: 'adobe_prproj', label: 'Premiere Pro 工程', badge: 'PRPROJ', autoRender: true, boundedRead: true, supportsPaperMode: false }),
+  '.ai': Object.freeze({ format: 'adobe_ai', label: 'Illustrator 矢量图', badge: 'AI', autoRender: true, boundedRead: true, supportsPaperMode: false }),
+  '.mogrt': Object.freeze({ format: 'adobe_mogrt', label: '动态图形模板', badge: 'MOGRT', autoRender: true, boundedRead: true, supportsPaperMode: false }),
+  '.prtextstyle': Object.freeze({ format: 'adobe_prtextstyle', label: 'Premiere 字幕样式', badge: 'PRTEXTSTYLE', autoRender: true, preferWhenRawCode: true, boundedRead: true, supportsPaperMode: false }),
+  '.sesx': Object.freeze({ format: 'adobe_sesx', label: 'Audition 多轨工程', badge: 'SESX', autoRender: true, preferWhenRawCode: true, boundedRead: true, supportsPaperMode: false }),
+  '.indd': Object.freeze({ format: 'adobe_indd', label: 'InDesign 排版文档', badge: 'INDD', autoRender: true, boundedRead: true, supportsPaperMode: false }),
+
+  // Optional Table / Timeline / LUT Toggle Formats (keep native text/code view by default; offer 1-click structured view)
+  '.cube': Object.freeze({ format: 'adobe_cube', label: '3D LUT 调色预设', badge: 'CUBE', autoRender: false, optionalTable: true, boundedRead: true, supportsPaperMode: false }),
   '.csv': Object.freeze({ format: 'csv', label: 'CSV 数据表', badge: 'CSV', autoRender: false, optionalTable: true, supportsPaperMode: false }),
   '.tsv': Object.freeze({ format: 'tsv', label: 'TSV 数据表', badge: 'TSV', autoRender: false, optionalTable: true, supportsPaperMode: false }),
   '.jsonl': Object.freeze({ format: 'jsonl', label: 'JSONL 记录表', badge: 'JSONL', autoRender: false, optionalTable: true, supportsPaperMode: false }),
@@ -127,7 +151,8 @@ export function getSupportedDocumentMeta(filePath) {
 export function isBinaryOfficeFormat(filePath) {
   const meta = getSupportedDocumentMeta(filePath);
   if (!meta) return false;
-  return !['csv', 'tsv', 'jsonl', 'subtitle', 'rtf', 'ipynb', 'eml'].includes(meta.format) && path.extname(String(filePath)).toLowerCase() !== '.obj';
+  return !['csv', 'tsv', 'jsonl', 'subtitle', 'rtf', 'ipynb', 'eml', 'adobe_prtextstyle', 'adobe_sesx', 'adobe_cube'].includes(meta.format) &&
+    !['.obj', '.aepx'].includes(path.extname(String(filePath)).toLowerCase());
 }
 
 // ── Shared Formatting & Color Utilities ─────────────────────────────────────
@@ -2739,7 +2764,7 @@ export function renderDocument(rawPath, { snippetOnly = false } = {}) {
   if (!meta) {
     return { ok: false, unsupported: true, error: `暂不支持该文件格式：${path.extname(filePath) || '未知'}` };
   }
-  if (stat.size > MAX_DOC_FILE_BYTES) {
+  if (!meta.boundedRead && stat.size > MAX_DOC_FILE_BYTES) {
     return {
       ok: false,
       tooLarge: true,
@@ -2750,6 +2775,59 @@ export function renderDocument(rawPath, { snippetOnly = false } = {}) {
   const cacheKey = `${key}|${stat.mtimeMs}|${stat.size}|${snippetOnly ? 'snip' : 'full'}`;
   const hit = getCachedDoc(cacheKey);
   if (hit) return hit;
+
+  if (meta.boundedRead) {
+    try {
+      let result;
+      switch (meta.format) {
+        case 'sqlite':
+          result = parseSqliteDb(null, filePath, stat, { snippetOnly });
+          break;
+        case 'adobe_psd':
+          result = parsePsdDocument(filePath, stat, { snippetOnly });
+          break;
+        case 'adobe_aep':
+          result = parseAepDocument(filePath, stat, { snippetOnly });
+          break;
+        case 'adobe_prproj':
+          result = parsePrprojDocument(filePath, stat, { snippetOnly });
+          break;
+        case 'adobe_ai':
+          result = parseAiDocument(filePath, stat, { snippetOnly });
+          break;
+        case 'adobe_mogrt':
+          result = parseMogrtDocument(filePath, stat, { snippetOnly });
+          break;
+        case 'adobe_prtextstyle':
+          result = parsePrTextStyleDocument(filePath, stat, { snippetOnly });
+          break;
+        case 'adobe_sesx':
+          result = parseSesxDocument(filePath, stat, { snippetOnly });
+          break;
+        case 'adobe_indd':
+          result = parseInddDocument(filePath, stat, { snippetOnly });
+          break;
+        case 'adobe_cube':
+          result = parseCubeLutDocument(filePath, stat, { snippetOnly });
+          break;
+        default:
+          return { ok: false, unsupported: true, error: `Unsupported format: ${meta.format}` };
+      }
+      if (result && typeof result === 'object') {
+        result.mtimeMs = stat.mtimeMs;
+      }
+      setCachedDoc(cacheKey, result);
+      return result;
+    } catch (err) {
+      return {
+        ok: false,
+        format: meta.format,
+        formatLabel: meta.label,
+        path: filePath,
+        error: `解析 ${meta.badge} 失败：${err?.message || err}`,
+      };
+    }
+  }
 
   let buf;
   try {
@@ -2877,6 +2955,7 @@ const SAFE_EXTERNAL_OPEN_EXTS = new Set([
   '.mp4', '.m4v', '.mov', '.qt', '.mkv', '.webm', '.avi', '.flv', '.f4v', '.wmv', '.asf',
   '.ts', '.mts', '.m2ts', '.mpg', '.mpeg', '.m2v', '.ogv', '.3gp', '.3g2', '.rmvb', '.rm', '.vob', '.mxf', '.divx',
   '.mp3', '.wav', '.ogg', '.flac', '.m4a', '.aac', '.opus', '.wma', '.aiff', '.aif',
+  '.psd', '.psb', '.aep', '.aepx', '.prproj', '.ai', '.mogrt', '.prtextstyle', '.sesx', '.indd', '.cube',
 ]);
 
 /**

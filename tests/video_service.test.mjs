@@ -13,6 +13,7 @@ import {
   getMediaMimeForExt,
   isAudioFilePath,
   isVideoFilePath,
+  parseFfmpegStderrProbe,
   parseHttpRangeHeader,
 } from '../sidecars/anchor_wheel/backend/video_service.mjs';
 
@@ -30,6 +31,22 @@ test('video_service recognizes wide video/audio formats, MIME fallbacks, HTTP Ra
   assert.deepEqual(parseHttpRangeHeader('bytes=900-', 1000), { start: 900, end: 999, chunkSize: 100 });
   assert.deepEqual(parseHttpRangeHeader('bytes=-50', 1000), { start: 950, end: 999, chunkSize: 50 });
   assert.equal(parseHttpRangeHeader('bytes=2000-2100', 1000).invalid, true);
+
+  // P1-4 regression: ffmpeg -i stderr fallback accurately detects 12-bit ProRes 4444 alpha without ffprobe
+  const stderrSample = `
+  Duration: 00:00:15.32, start: 0.000000, bitrate: 224100 kb/s
+  Stream #0:0[0x1](eng): Video: prores (4444) (ap4h / 0x68347061), yuva444p12le(tv, bt709, progressive), 960x1080, 223100 kb/s, 30 fps, 30 tbr
+  Stream #0:1[0x2](eng): Audio: pcm_s16le (lpcm / 0x6D63706C), 48000 Hz, mono, s16, 768 kb/s
+`;
+  const parsedProbe = parseFfmpegStderrProbe(stderrSample);
+  assert.equal(parsedProbe.videoCodec, 'prores');
+  assert.equal(parsedProbe.pixFmt, 'yuva444p12le');
+  assert.equal(parsedProbe.hasAlpha, true);
+  assert.equal(parsedProbe.width, 960);
+  assert.equal(parsedProbe.height, 1080);
+  assert.equal(parsedProbe.fps, 30);
+  assert.equal(parsedProbe.duration, 15.32);
+  assert.equal(parsedProbe.audioCodec, 'pcm_s16le');
 
   // Direct MP4 H.264 8-bit + AAC
   assert.equal(
@@ -235,7 +252,19 @@ test('VideoService remuxes H.264 MOV, transcodes ProRes alpha MOV, streams HTTP 
     assert.equal(blobRes.mime, 'video/mp4');
     assert.ok(blobRes.base64.length > 500);
 
-    // 4. ProRes 4444 alpha .mov -> transcode_cached + non-black poster succeeds
+    // 4. ProRes 4444 alpha .mov -> probeVideo reports needsTranscode + transcode_cached with alpha checkerboard succeeds
+    const probeProres = await (
+      await fetch(`${base}/api/media/probe`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: movProres }),
+      })
+    ).json();
+    assert.equal(probeProres.ok, true);
+    assert.equal(probeProres.needsTranscode, true);
+    assert.equal(probeProres.hasAlpha, true);
+    assert.equal(probeProres.strategy, 'transcode_cached');
+
     let prep2 = await (
       await fetch(`${base}/api/media/prepare`, {
         method: 'POST',
@@ -246,6 +275,7 @@ test('VideoService remuxes H.264 MOV, transcodes ProRes alpha MOV, streams HTTP 
     assert.equal(prep2.ok, true);
     assert.equal(prep2.strategy, 'transcode_cached');
     assert.equal(prep2.videoMeta.hasAlpha, true);
+    assert.ok(prep2.relStreamUrl.includes('alpha=1'));
     for (let i = 0; i < 40 && !prep2.ready; i++) {
       await new Promise((r) => setTimeout(r, 200));
       prep2 = await (
@@ -257,6 +287,11 @@ test('VideoService remuxes H.264 MOV, transcodes ProRes alpha MOV, streams HTTP 
       ).json();
     }
     assert.equal(prep2.ready, true);
+    const alphaRange = await fetch(`${base}${prep2.relStreamUrl}`, {
+      headers: { Range: 'bytes=0-127' },
+    });
+    assert.equal(alphaRange.status, 206);
+    assert.equal(alphaRange.headers.get('content-type'), 'video/mp4');
 
     const hoverPrev = await prevSvc.getPreview(movProres, { animated: false });
     assert.equal(hoverPrev.ok, true);

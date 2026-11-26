@@ -495,15 +495,21 @@ export class CdpBridge {
           dataDir: this.stateStore?.dataDir,
           dryRun: Boolean(req.dryRun),
         });
+      case 'probeVideo': {
+        if (!this.videoService) return { ok: false, error: 'Video service unavailable' };
+        return this.videoService.inspectVideoCompatibility(req.path || '');
+      }
       case 'prepareVideo': {
         if (!this.videoService) return { ok: false, error: 'Video service unavailable' };
         const targetPath = req.path || '';
+        const probed = await this.videoService.probeMedia(targetPath).catch(() => null);
+        const hasAlpha = Boolean(probed?.probe?.hasAlpha);
         let posterDataUrl = '';
         if (this.previewService) {
           try {
             posterDataUrl = await Promise.race([
-              this.previewService.getVideoPosterDataUrl(targetPath),
-              new Promise((r) => setTimeout(() => r(''), 1600)),
+              this.previewService.getVideoPosterDataUrl(targetPath, { hasAlpha }),
+              new Promise((r) => setTimeout(() => r(''), 2200)),
             ]);
           } catch {}
         }

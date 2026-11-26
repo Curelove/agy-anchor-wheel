@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
 import https from 'node:https';
+import os from 'node:os';
 import path from 'node:path';
 import tls from 'node:tls';
 import { fileURLToPath } from 'node:url';
@@ -543,6 +544,38 @@ export function detectInstalledAntigravityVersion(compatibility = {}) {
     }
     const primary = entries.find((e) => !/\bIDE\b/i.test(e.displayName)) || entries[0];
     if (primary) installedVersion = primary.displayVersion;
+  } else if (process.platform === 'darwin') {
+    const plistCandidates = [
+      '/Applications/Antigravity.app/Contents/Info.plist',
+      path.join(os.homedir(), 'Applications', 'Antigravity.app', 'Contents', 'Info.plist'),
+    ];
+    for (const plistPath of plistCandidates) {
+      try {
+        if (!fs.existsSync(plistPath)) continue;
+        const xml = fs.readFileSync(plistPath, 'utf8');
+        const m = /<key>CFBundleShortVersionString<\/key>\s*<string>([^<]+)<\/string>/i.exec(xml);
+        if (m?.[1]) {
+          installedVersion = m[1].trim();
+          break;
+        }
+      } catch {}
+    }
+  } else {
+    const pkgCandidates = [
+      '/usr/share/antigravity/resources/app/package.json',
+      '/opt/Antigravity/resources/app/package.json',
+      '/opt/antigravity/resources/app/package.json',
+    ];
+    for (const pkgPath of pkgCandidates) {
+      try {
+        if (!fs.existsSync(pkgPath)) continue;
+        const parsed = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+        if (parsed?.version) {
+          installedVersion = String(parsed.version).trim();
+          break;
+        }
+      } catch {}
+    }
   }
   return evaluateCompatibility(installedVersion, compatibility);
 }

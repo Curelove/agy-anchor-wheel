@@ -1,7 +1,7 @@
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { BacklinkIndex } from './backend/backlink_index.mjs';
 import { createRouterHandlers } from './backend/http_router.mjs';
 import { PreviewService } from './backend/preview_service.mjs';
@@ -23,8 +23,7 @@ async function loadSidecarSdk() {
 }
 
 function pathToFileUrlStr(p) {
-  const norm = String(p).replace(/\\/g, '/');
-  return norm.startsWith('/') ? `file://${norm}` : `file:///${norm}`;
+  return pathToFileURL(path.resolve(String(p))).href;
 }
 
 function parseCliArgs(argv) {
@@ -54,9 +53,12 @@ const MAX_REQUEST_BODY_BYTES = 2 * 1024 * 1024;
 
 function resolveAllowedOrigin(req) {
   const origin = String(req?.headers?.origin || '').trim();
-  if (!origin) return '';
-  if (origin === 'null') return 'null';
-  if (/^(?:https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?|vscode-file:\/\/[^\s]+|app:\/\/[^\s]+|file:\/\/.*)$/i.test(origin)) {
+  if (!origin || origin === 'null') return '';
+  if (
+    /^(?:https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?|vscode-file:\/\/[^\s]+|vscode-webview:\/\/[^\s]+|antigravity-ide:\/\/[^\s]+|app:\/\/[^\s]+)$/i.test(
+      origin
+    )
+  ) {
     return origin;
   }
   return '';

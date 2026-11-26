@@ -2584,3 +2584,298 @@ test('Mode 1 native_enhancer: MOV/video player auto-takeover, right/side mouse w
     } catch {}
   }
 });
+
+
+test('Mode 1 native_enhancer: companion ProRes MOV auto-takeover, chat preview-tab anti-overwrite, manual force persistence, and POSIX paths', async (t) => {
+  const browserBin = findBrowserExe();
+  if (!browserBin) {
+    t.skip('No local Chromium/Edge binary available for headless browser test');
+    return;
+  }
+
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'aw-v011-'));
+  const profileDir = path.join(tmpRoot, 'profile');
+  const sidecarRoot = path.join(ROOT, 'sidecars', 'anchor_wheel');
+  let browserProc = null;
+  let ws = null;
+
+  try {
+    browserProc = spawn(
+      browserBin,
+      [
+        '--headless=new',
+        '--disable-gpu',
+        '--no-sandbox',
+        '--disable-dev-shm-usage',
+        '--remote-debugging-port=0',
+        `--user-data-dir=${profileDir}`,
+        'about:blank',
+      ],
+      { stdio: 'ignore', windowsHide: true }
+    );
+
+    const port = await waitForPortFile(profileDir);
+    const pages = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
+    const page = pages.find((p) => p.type === 'page') || pages[0];
+    assert.ok(page);
+    ws = new WebSocket(page.webSocketDebuggerUrl);
+    await new Promise((resolve, reject) => {
+      ws.addEventListener('open', resolve, { once: true });
+      ws.addEventListener('error', reject, { once: true });
+    });
+    const cdp = new MiniCdp(ws);
+    await cdp.send('Runtime.enable');
+
+    const wheelCss = fs.readFileSync(path.join(sidecarRoot, 'shared', 'wheel_styles.css'), 'utf8');
+    const navSharedJs = fs.readFileSync(path.join(sidecarRoot, 'shared', 'nav_shared.js'), 'utf8');
+    const wheelJs = fs.readFileSync(path.join(sidecarRoot, 'shared', 'radial_wheel.js'), 'utf8');
+    const bilateralJs = fs.readFileSync(path.join(sidecarRoot, 'shared', 'bilateral_wheel.js'), 'utf8');
+    const aeTreeJs = fs.readFileSync(path.join(sidecarRoot, 'shared', 'ae_tree.js'), 'utf8');
+    const settingsModalJs = fs.readFileSync(path.join(sidecarRoot, 'shared', 'settings_modal.js'), 'utf8');
+    const mdJs = fs.readFileSync(path.join(sidecarRoot, 'shared', 'markdown_render.js'), 'utf8');
+    const docViewerJs = fs.readFileSync(path.join(sidecarRoot, 'shared', 'doc_viewer.js'), 'utf8');
+    const nativeJs = fs.readFileSync(path.join(sidecarRoot, 'native', 'native_enhancer.js'), 'utf8');
+
+    const res = await cdp.evalAsync(`(async () => {
+      document.body.innerHTML = \`
+        <div id="root">
+          <div data-testid="aux-pane-split" style="display:flex;width:1280px;height:780px">
+            <div id="chat-col" style="width:520px">
+              <a id="chat-link-2" href="file:///Users/alice/project/second.md">second.md</a>
+              <a id="chat-link-3" href="file:///Users/alice/project/third.py">third.py</a>
+            </div>
+            <div style="flex:1;min-width:0">
+              <div class="flex flex-col browser-hole-ancestor" style="height:100%;display:flex;flex-direction:column">
+                <div id="native-tabbar" style="height:36px;display:flex"><div class="agy-aux-tab">Tab</div></div>
+                <div id="native-content" style="flex:1;position:relative;display:flex;flex-direction:column">
+                  <div class="group/file-row" style="height:34px;display:flex"><button data-testid="more-actions-overflow">...</button></div>
+                  <div id="native-body" style="flex:1">
+                    <div data-omni-aux-mounted="1" data-testid="ag-omni-aux-switcher">检视台视图 / 原始视图</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      \`;
+
+      const movUri = 'file:///Users/alice/project/prores_alpha.mov';
+      const mp4Uri = 'file:///Users/alice/project/direct_h264.mp4';
+      const mdUri = 'file:///Users/alice/project/docs/readme.md';
+      const secondUri = 'file:///Users/alice/project/second.md';
+      const thirdUri = 'file:///Users/alice/project/third.py';
+
+      const cid = '55555555-6666-7777-8888-999999999999';
+      const listeners = new Set();
+      const promotedIds = [];
+      let state = {
+        sidePanelV2: {
+          conversationPanes: {
+            [cid]: {
+              activeTabId: 'file__' + movUri,
+              tabs: [
+                { id: 'file__' + movUri, isPreview: true, content: { type: 'fileView', fileView: { fileUri: movUri } } },
+              ],
+            },
+          },
+          overviewPanelOpen: {},
+        },
+      };
+
+      const reduxStore = {
+        getState: () => state,
+        subscribe: (fn) => { listeners.add(fn); return () => listeners.delete(fn); },
+        dispatch: (action) => {
+          const pane = state.sidePanelV2.conversationPanes[cid];
+          if (action.type === 'sidePanelV2/promoteTab') {
+            const tab = pane.tabs.find((t) => t.id === action.payload?.tabId);
+            if (tab && tab.isPreview) {
+              tab.isPreview = false;
+              promotedIds.push(tab.id);
+            }
+          } else if (action.type === 'sidePanelV2/setActiveTab') {
+            pane.activeTabId = action.payload.tabId;
+          } else if (action.type === 'sidePanelV2/setContent') {
+            const uri = action.payload?.content?.fileView?.fileUri || '';
+            const keepOpen = Boolean(action.payload?.keepOpen);
+            const existing = pane.tabs.find((t) => t.content?.fileView?.fileUri === uri);
+            if (existing) {
+              pane.activeTabId = existing.id;
+            } else {
+              const previewIdx = !keepOpen ? pane.tabs.findIndex((t) => t.isPreview === true) : -1;
+              const newTab = { id: 'file__' + uri, isPreview: !keepOpen, content: action.payload.content };
+              if (previewIdx !== -1) {
+                pane.tabs[previewIdx] = newTab;
+              } else {
+                pane.tabs.push(newTab);
+              }
+              pane.activeTabId = newTab.id;
+            }
+          }
+          for (const fn of [...listeners]) fn();
+        },
+      };
+
+      document.getElementById('chat-link-2').addEventListener('click', (e) => {
+        e.preventDefault();
+        reduxStore.dispatch({
+          type: 'sidePanelV2/setContent',
+          payload: { keepOpen: false, content: { type: 'fileView', fileView: { fileUri: secondUri } } },
+        });
+      });
+      document.getElementById('chat-link-3').addEventListener('click', (e) => {
+        e.preventDefault();
+        reduxStore.dispatch({
+          type: 'sidePanelV2/setContent',
+          payload: { keepOpen: false, content: { type: 'fileView', fileView: { fileUri: thirdUri } } },
+        });
+      });
+
+      const rootEl = document.getElementById('root');
+      rootEl.__reactFiber$mock = {
+        memoizedProps: { store: reduxStore },
+        child: { memoizedProps: { openUrlInBrowserPane: () => {}, getTargetTreeId: () => ({ kind: 'cascadeId', cascadeId: cid }) }, child: null, sibling: null },
+        sibling: null,
+      };
+
+      const mockSettings = {
+        middleMode: 'bilateral_wheel',
+        wheelTriggerButton: 'middle',
+        tabMode: 'ae_tree',
+        richDocPreviewEnabled: true,
+        richDocAutoStrategy: 'auto_yield',
+        preventPreviewTabOverwrite: true,
+        autoCheckUpdates: false,
+      };
+      const mockSession = { groups: [], history: { entries: [], index: -1 }, recentlyEvicted: [], lineage: { parentByKey: {} } };
+
+      window.__agAnchorWheelCall = (raw) => {
+        const req = JSON.parse(raw);
+        let res = { ok: true };
+        if (req.action === 'getBoot') {
+          res = { ok: true, version: '0.11.0', settings: mockSettings, session: mockSession };
+        } else if (req.action === 'getBacklinks') {
+          res = { ok: true, path: req.path, backlinks: [], outlinks: [] };
+        } else if (req.action === 'getNavContext') {
+          res = { ok: true, activePath: req.path, current: { path: req.path, title: 'item', isDirectory: false, children: [] }, ancestors: [], parent: null, categories: [] };
+        } else if (req.action === 'probeVideo') {
+          const isProres = String(req.path || '').endsWith('.mov');
+          res = {
+            ok: true,
+            path: req.path,
+            strategy: isProres ? 'transcode_cached' : 'direct',
+            needsTranscode: isProres,
+            hasAlpha: isProres,
+            ffmpegAvailable: true,
+          };
+        } else if (req.action === 'prepareVideo') {
+          res = {
+            ok: true,
+            format: 'video',
+            formatLabel: 'MOV 视频',
+            badge: 'MOV',
+            path: req.path,
+            title: req.path.split('/').pop(),
+            autoRender: true,
+            ffmpegAvailable: true,
+            strategy: 'transcode_cached',
+            strategyReason: '转码为侧边栏兼容 MP4',
+            ready: true,
+            preparing: false,
+            streamUrl: 'data:video/mp4;base64,',
+            videoMeta: { width: 960, height: 1080, duration: 15, durationText: '0:15', fps: 30, videoCodec: 'prores', hasAlpha: true },
+            meta: { statsLabel: '960×1080 · PRORES' },
+            warnings: [],
+          };
+        }
+        setTimeout(() => window.__agAnchorWheelResolve?.(req.id, res), 0);
+      };
+
+      window.__agAnchorWheelBoot = { version: '0.11.0', settings: mockSettings, wheelCss: ${JSON.stringify(wheelCss)} };
+      eval(${JSON.stringify(navSharedJs)});
+      eval(${JSON.stringify(wheelJs)});
+      eval(${JSON.stringify(bilateralJs)});
+      eval(${JSON.stringify(aeTreeJs)});
+      eval(${JSON.stringify(settingsModalJs)});
+      eval(${JSON.stringify(mdJs)});
+      eval(${JSON.stringify(docViewerJs)});
+      eval(${JSON.stringify(nativeJs)});
+
+      await new Promise((r) => setTimeout(r, 260));
+
+      const stMov = window.__agAnchorWheel.getDebugState();
+      const movPosixPath = stMov.activeFilePath;
+      const movAutoTookOverCompanion = stMov.docOverlayVisible && stMov.activeDocFormat === 'video';
+      const initialPreviewPromoted = promotedIds.includes('file__' + movUri);
+
+      reduxStore.dispatch({
+        type: 'sidePanelV2/setContent',
+        payload: { keepOpen: true, content: { type: 'fileView', fileView: { fileUri: mp4Uri } } },
+      });
+      await new Promise((r) => setTimeout(r, 260));
+      const mp4YieldedToCompanion = !window.__agAnchorWheel.getDebugState().docOverlayVisible;
+
+      document.querySelector('#aw-companion-strip [data-aw-role="doc-preview-btn"]')?.click();
+      await new Promise((r) => setTimeout(r, 200));
+      const mp4OpenedManually = window.__agAnchorWheel.getDebugState().docOverlayVisible;
+      window.__agAnchorWheel.onBackendSync({ settings: { ...mockSettings } });
+      await new Promise((r) => setTimeout(r, 150));
+      const mp4StayedOpenAfterSync = window.__agAnchorWheel.getDebugState().docOverlayVisible;
+
+      const tabsBeforeChatClicks = state.sidePanelV2.conversationPanes[cid].tabs.length;
+      document.getElementById('chat-link-2').click();
+      await new Promise((r) => setTimeout(r, 120));
+      const tabsAfterChatClick1 = state.sidePanelV2.conversationPanes[cid].tabs.length;
+      document.getElementById('chat-link-3').click();
+      await new Promise((r) => setTimeout(r, 120));
+      const tabsAfterChatClick2 = state.sidePanelV2.conversationPanes[cid].tabs.length;
+
+      reduxStore.dispatch({
+        type: 'sidePanelV2/setContent',
+        payload: { keepOpen: true, content: { type: 'fileView', fileView: { fileUri: mdUri } } },
+      });
+      document.getElementById('native-body').innerHTML = '<a id="rel-posix" href="../assets/banner.png">banner</a>';
+      await new Promise((r) => setTimeout(r, 200));
+      document.getElementById('rel-posix').click();
+      await new Promise((r) => setTimeout(r, 150));
+      const posixRelResolved = window.__agAnchorWheel.getDebugState().activeFilePath;
+
+      return {
+        movPosixPath,
+        movAutoTookOverCompanion,
+        initialPreviewPromoted,
+        mp4YieldedToCompanion,
+        mp4OpenedManually,
+        mp4StayedOpenAfterSync,
+        tabsBeforeChatClicks,
+        tabsAfterChatClick1,
+        tabsAfterChatClick2,
+        posixRelResolved,
+      };
+    })()`);
+
+    assert.deepEqual(cdp.errors, []);
+    assert.equal(res.movPosixPath, '/Users/alice/project/prores_alpha.mov');
+    assert.equal(res.movAutoTookOverCompanion, true);
+    assert.equal(res.initialPreviewPromoted, true);
+    assert.equal(res.mp4YieldedToCompanion, true);
+    assert.equal(res.mp4OpenedManually, true);
+    assert.equal(res.mp4StayedOpenAfterSync, true);
+    assert.equal(res.tabsBeforeChatClicks, 2);
+    assert.equal(res.tabsAfterChatClick1, 3);
+    assert.equal(res.tabsAfterChatClick2, 4);
+    assert.equal(res.posixRelResolved, '/Users/alice/project/assets/banner.png');
+  } finally {
+    try { ws?.close(); } catch {}
+    if (browserProc) {
+      await new Promise((resolve) => {
+        const timer = setTimeout(resolve, 1500);
+        browserProc.once('exit', () => { clearTimeout(timer); resolve(); });
+        try { browserProc.kill(); } catch { resolve(); }
+      });
+    }
+    try {
+      fs.rmSync(tmpRoot, { recursive: true, force: true, maxRetries: 6, retryDelay: 120 });
+    } catch {}
+  }
+});

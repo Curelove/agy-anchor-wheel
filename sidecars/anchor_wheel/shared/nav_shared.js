@@ -242,12 +242,17 @@
     const ancestors = [];
     const seen = new Set([actKey]);
     const parentByKey = session?.lineage?.parentByKey || {};
+    const parentByLowKey = new Map();
+    for (const [k, v] of Object.entries(parentByKey)) {
+      const low = String(k || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+      if (low && !parentByLowKey.has(low)) parentByLowKey.set(low, v);
+    }
     let curK = actKey;
     for (let i = 0; i < 4 && curK; i++) {
-      const rec = parentByKey[curK];
+      const rec = parentByKey[curK] || parentByLowKey.get(curK);
       let pPath = rec?.parentPath || '';
       let pTitle = rec?.parentTitle || '';
-      let pKey = rec?.parentKey || (pPath ? normKey(pPath) : '');
+      let pKey = rec?.parentKey ? normKey(rec.parentKey) : (pPath ? normKey(pPath) : '');
       let pIsDir = Boolean(rec?.parentIsDirectory);
       if (!pKey) {
         const g = (session?.groups || []).find(
@@ -534,8 +539,11 @@
         const metaLine = data.statsLabel
           ? `<div class="aw-preview-doc-meta">${esc(data.formatLabel || '文档')} · ${esc(data.statsLabel)}</div>`
           : '';
+        const thumbHtml = data.dataUrl
+          ? `<img class="aw-preview-img" style="max-height:140px;margin-bottom:6px" src="${data.dataUrl}" alt="${title}" />`
+          : '';
         const text = data.snippetText || '(无可提取文本片段，点击打开查看完整预览)';
-        bodyHtml = `${metaLine}<pre class="aw-preview-code">${esc(text)}</pre><div class="aw-preview-more">点击在侧边栏直接打开预览</div>`;
+        bodyHtml = `${metaLine}${thumbHtml}<pre class="aw-preview-code">${esc(text)}</pre><div class="aw-preview-more">点击在侧边栏直接打开预览</div>`;
       } else if (data.kind === 'binary') {
         bodyHtml = `<div class="aw-preview-empty">二进制资源 (${esc(badge)})</div>`;
       } else {

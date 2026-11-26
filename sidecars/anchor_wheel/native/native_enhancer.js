@@ -40,11 +40,16 @@
   let encodingOverlayVisible = false;
   let docOverlayVisible = false;
   let docOverlayDismissedKey = '';
+  let docOverlayManualForceKey = '';
   let docRenderSeq = 0;
   let docViewerInstance = null;
   let lastRenderedDocKey = '';
   let lastRenderedDocData = null;
+  let activeVideoCompatKey = '';
+  let activeVideoCompat = null;
   let lastHostPreviewState = 'unknown';
+  let promotingPreviewTabs = false;
+  let previewPromoteQueued = false;
   let docProbeTimer = null;
   let docProbeCount = 0;
   let activePopoverName = '';
@@ -95,7 +100,39 @@
   }
 
   function normKey(p) {
-    return String(p || '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+    const slash = String(p || '').replace(/\\/g, '/');
+    const trimmed = slash.length > 1 ? slash.replace(/\/+$/, '') : slash;
+    return trimmed.toLowerCase();
+  }
+
+  function exactSlashKey(p) {
+    const slash = String(p || '').replace(/\\/g, '/');
+    return slash.length > 1 ? slash.replace(/\/+$/, '') : slash;
+  }
+
+  function isSameFilePath(a, b) {
+    if (!a && !b) return true;
+    if (!a || !b) return false;
+    const ka = exactSlashKey(a);
+    const kb = exactSlashKey(b);
+    if (ka === kb) return true;
+    // Windows drive paths or macOS /Users/ paths are case-insensitive
+    if (/^[A-Za-z]:\//.test(ka) || /^\/Users\//i.test(ka)) {
+      return ka.toLowerCase() === kb.toLowerCase();
+    }
+    return false;
+  }
+
+  function lookupParentLineage(parentByKey, filePath) {
+    if (!parentByKey || !filePath) return null;
+    const exact = exactSlashKey(filePath);
+    if (parentByKey[exact]) return parentByKey[exact];
+    const low = exact.toLowerCase();
+    if (parentByKey[low]) return parentByKey[low];
+    for (const [k, v] of Object.entries(parentByKey)) {
+      if (String(k || '').toLowerCase() === low) return v;
+    }
+    return null;
   }
 
   function baseName(p) {
@@ -107,7 +144,8 @@
   function parentDirPath(p) {
     const clean = String(p || '').replace(/[\\/]+$/, '');
     const idx = Math.max(clean.lastIndexOf('\\'), clean.lastIndexOf('/'));
-    if (idx <= 0) return '';
+    if (idx < 0) return '';
+    if (idx === 0) return clean.startsWith('/') ? '/' : '';
     return clean.slice(0, idx);
   }
 
@@ -142,14 +180,21 @@
     let s = rawFileUrl.replace(/^file:\/\//i, '');
     if (/^localhost\//i.test(s)) s = s.slice('localhost'.length);
     s = safeDecodeUri(s);
-    if (/^\/[A-Za-z]:[\\/]/.test(s)) s = s.slice(1);
-    return s.replace(/\//g, '\\');
+    if (/^\/[A-Za-z]:[\\/]/.test(s)) {
+      s = s.slice(1);
+    }
+    if (/^[A-Za-z]:[\\/]/.test(s) || /^\\\\/.test(s)) {
+      return s.replace(/\//g, '\\');
+    }
+    return s;
   }
 
   function pathToHostFileUri(absPath) {
-    const s = String(absPath || '').trim().replace(/\\/g, '/').replace(/\/+$/, '');
-    if (!s) return '';
-    if (/^file:\/\//i.test(s)) return s;
+    const raw = String(absPath || '').trim().replace(/\\/g, '/');
+    if (!raw) return '';
+    if (/^file:\/\//i.test(raw)) return raw;
+    if (raw === '/') return 'file:///';
+    const s = raw.replace(/\/+$/, '');
     const winMatch = /^([A-Za-z]):\/?(.*)$/.exec(s);
     if (winMatch) {
       const drive = winMatch[1].toLowerCase();
@@ -158,7 +203,8 @@
         : '';
       return `file:///${drive}%3A/${rest}`;
     }
-    return `file://${encodeURI(s)}`;
+    const posixEncoded = s.split('/').map((seg) => encodeURIComponent(seg)).join('/');
+    return `file://${posixEncoded.startsWith('/') ? posixEncoded : `/${posixEncoded}`}`;
   }
 
   // ── RPC Bridge ──────────────────────────────────────────────────────────
@@ -192,7 +238,20 @@
   }
 
   // ── Host React Fiber, Redux & TanStack Router Discovery ─────────────────
-  function discoverHostBridge() {
+  let cachedHostBridge = null;
+  let cachedHostBridgeAt = 0;
+
+  function discoverHostBridge({ force = false } = {}) {
+    const now = Date.now();
+    if (
+      !force &&
+      cachedHostBridge &&
+      cachedHostBridge.reduxStore &&
+      cachedHostBridge.browserCtx &&
+      now - cachedHostBridgeAt < 5000
+    ) {
+      return cachedHostBridge;
+    }
     let browserCtx = null;
     let reduxStore = null;
     let router = null;
@@ -207,9 +266,10 @@
         }
       }
       const seen = new Set();
+      let head = 0;
       let steps = 0;
-      while (q.length && steps++ < 2600 && (!browserCtx || !reduxStore || !router)) {
-        const n = q.shift();
+      while (head < q.length && steps++ < 5000 && (!browserCtx || !reduxStore || !router)) {
+        const n = q[head++];
         if (!n || seen.has(n)) continue;
         seen.add(n);
         const mp = n.memoizedProps;
@@ -232,7 +292,12 @@
         if (n.sibling) q.push(n.sibling);
       }
     } catch {}
-    return { browserCtx, reduxStore, router };
+    const res = { browserCtx, reduxStore, router };
+    if (reduxStore || browserCtx) {
+      cachedHostBridge = res;
+      cachedHostBridgeAt = now;
+    }
+    return res;
   }
 
   function setHostRouterTab(router, tabId) {
@@ -359,8 +424,8 @@
     for (const g of session?.groups || []) {
       if (normKey(g.anchorPath) === k && g.anchorIsDirectory) return true;
     }
-    const linRec = session?.lineage?.parentByKey?.[normKey(activeFilePath)];
-    if (linRec && linRec.parentKey === k && linRec.parentIsDirectory) return true;
+    const linRec = lookupParentLineage(session?.lineage?.parentByKey, activeFilePath);
+    if (linRec && normKey(linRec.parentKey || linRec.parentPath) === k && linRec.parentIsDirectory) return true;
     return false;
   }
 
@@ -400,6 +465,30 @@
       }
     }
     return null;
+  }
+
+  function promotePreviewTabsInPane(explicitStore = null, explicitBrowserCtx = null) {
+    if (destroyed || promotingPreviewTabs) return 0;
+    if (settings.preventPreviewTabOverwrite === false) return 0;
+    const bridge = explicitStore ? { reduxStore: explicitStore, browserCtx: explicitBrowserCtx } : discoverHostBridge();
+    const { hasV2, treeId, pane } = getPaneSlice(bridge.reduxStore, bridge.browserCtx);
+    if (!hasV2 || !bridge.reduxStore || !treeId || !Array.isArray(pane?.tabs)) return 0;
+    const previewTabs = pane.tabs.filter((t) => t && t.isPreview === true && t.id);
+    if (!previewTabs.length) return 0;
+    promotingPreviewTabs = true;
+    let promoted = 0;
+    try {
+      for (const tab of previewTabs) {
+        bridge.reduxStore.dispatch({
+          type: 'sidePanelV2/promoteTab',
+          payload: { panelScope: treeId, tabId: tab.id },
+        });
+        promoted++;
+      }
+    } catch {} finally {
+      promotingPreviewTabs = false;
+    }
+    return promoted;
   }
 
   function openPathInNativeTab(targetPath, { background = false, lineStart = null, isDirectory = false } = {}) {
@@ -684,8 +773,10 @@
     const part = lm ? lm[1] : clean;
     const lineStart = lm?.[2] ? Number(lm[2]) : null;
     if (/^(?:file:\/|[A-Za-z]:[\\/])/i.test(part)) return { path: uriToPath(part), lineStart };
+    if (part.startsWith('/') && activeFilePath.startsWith('/')) return { path: uriToPath(part), lineStart };
     if (!activeFilePath) return null;
-    const dir = activeFilePath.slice(0, Math.max(activeFilePath.lastIndexOf('\\'), activeFilePath.lastIndexOf('/')));
+    const isPosix = activeFilePath.startsWith('/') && !/^[A-Za-z]:/.test(activeFilePath);
+    const dir = parentDirPath(activeFilePath);
     if (!dir) return null;
     const stack = [];
     for (const s of (dir.replace(/\\/g, '/') + '/' + part).split('/')) {
@@ -693,7 +784,7 @@
       if (s === '..') stack.pop();
       else stack.push(s);
     }
-    return { path: stack.join('\\'), lineStart };
+    return { path: isPosix ? '/' + stack.join('/') : stack.join('\\'), lineStart };
   }
 
   // ── NavContext, Previews & Navigator Controllers ────────────────────────
@@ -1833,6 +1924,51 @@
       }
     });
     overlay.querySelector('#aw-ov-close')?.addEventListener('click', () => void toggleEncodingRepairOverlay(''));
+    overlay.addEventListener('click', (ev) => {
+      const copyBtn = ev.target?.closest?.('[data-aw-copy-code="1"]');
+      if (copyBtn) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        const codeText = copyBtn.closest('.aw-code-block')?.querySelector('pre code, pre')?.textContent || '';
+        if (codeText) {
+          void (async () => {
+            try {
+              if (W.navigator?.clipboard?.writeText) await W.navigator.clipboard.writeText(codeText);
+            } catch {}
+            const prevTxt = copyBtn.textContent;
+            copyBtn.textContent = '已复制';
+            showToast('代码已复制');
+            setTimeout(() => {
+              if (copyBtn.isConnected) copyBtn.textContent = prevTxt || '复制';
+            }, 1400);
+          })();
+        }
+        return;
+      }
+      const linkEl = ev.target?.closest?.('[data-aw-link]');
+      if (linkEl) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        const rawHref = linkEl.getAttribute('data-aw-link') || '';
+        if (!rawHref) return;
+        if (/^https?:\/\//i.test(rawHref)) {
+          void callRpc('openExternal', { path: rawHref });
+          return;
+        }
+        const resolved = resolvePathRelativeToActive(rawHref);
+        if (resolved?.path) {
+          void handleLinkActivation(
+            {
+              path: resolved.path,
+              title: baseName(resolved.path),
+              lineStart: resolved.lineStart || null,
+              isDirectory: Boolean(resolved.isDirectory),
+            },
+            { background: Boolean(ev.ctrlKey || ev.metaKey) }
+          );
+        }
+      }
+    });
     renderStrip();
   }
 
@@ -1883,6 +2019,23 @@
 
   function inspectHostFileViewState(contentWrap) {
     if (!contentWrap) return 'missing';
+    // Check for broken companion/native <video> elements BEFORE yielding to companion_mounted
+    const isBrokenVid = (v) =>
+      Boolean(v) &&
+      (Boolean(v.error) || v.networkState === 3 || (v.readyState >= 1 && v.videoWidth === 0 && v.videoHeight === 0));
+    const directVids = contentWrap.querySelectorAll?.('video') || [];
+    for (const v of directVids) {
+      if (v.closest?.('[data-aw-owned="1"]')) continue;
+      if (isBrokenVid(v)) return 'unsupported';
+    }
+    const directIframes = contentWrap.querySelectorAll?.('iframe') || [];
+    for (const ifr of directIframes) {
+      if (ifr.closest?.('[data-aw-owned="1"]')) continue;
+      try {
+        const iv = ifr.contentDocument?.querySelector?.('video');
+        if (isBrokenVid(iv)) return 'unsupported';
+      } catch {}
+    }
     if (
       contentWrap.querySelector?.(
         '[data-omni-aux-mounted="1"]:not([data-omni-aux-error]), [data-testid="ag-omni-aux-switcher"]'
@@ -1928,11 +2081,24 @@
               el.dataset.awVidWatch = '1';
               el.addEventListener('error', () => scheduleSync(), { once: true });
               el.addEventListener('loadedmetadata', () => scheduleSync(), { once: true });
+              el.addEventListener('loadeddata', () => scheduleSync(), { once: true });
             } catch {}
           }
         }
+      } else if (tag === 'IFRAME') {
+        let iframeBrokenVideo = false;
+        try {
+          const iDoc = el.contentDocument;
+          if (iDoc) {
+            const iv = iDoc.querySelector('video');
+            if (iv && (Boolean(iv.error) || iv.networkState === 3 || (iv.readyState >= 1 && iv.videoWidth === 0 && iv.videoHeight === 0))) {
+              iframeBrokenVideo = true;
+              hasBrokenVideo = true;
+            }
+          }
+        } catch {}
+        if (!iframeBrokenVideo) hasRichVisual = true;
       } else if (
-        tag === 'IFRAME' ||
         tag === 'EMBED' ||
         tag === 'OBJECT' ||
         tag === 'AUDIO' ||
@@ -1992,12 +2158,19 @@
     return 'native_rich';
   }
 
-  function shouldAutoOpenDocOverlay(meta, hostState) {
+  function shouldAutoOpenDocOverlay(meta, hostState, videoCompat = null) {
     if (!meta || !meta.autoRender || meta.optionalTable) return false;
     if (settings.richDocPreviewEnabled === false) return false;
     const strategy = settings.richDocAutoStrategy || 'auto_yield';
     if (strategy === 'manual_only') return false;
-    if (hostState === 'companion_mounted') return false;
+    if (hostState === 'companion_mounted') {
+      // Companion raw viewers (e.g. obsidian-prism omni-viewer) cannot decode non-Chromium codecs like
+      // ProRes 4444 / 10-bit / 12-bit / Alpha MOV / HEVC / MKV / AVI — automatically take over with ffmpeg transcode!
+      if (meta.isVideo && videoCompat?.ok && videoCompat.needsTranscode) {
+        return true;
+      }
+      return false;
+    }
     if (strategy === 'always_plugin') return true;
     // Default 'auto_yield': auto-preview when Antigravity cannot preview, yield when official rich view exists!
     if (hostState === 'unsupported') return true;
@@ -2044,6 +2217,7 @@
     docOverlayVisible = false;
     if (dismiss && activeFilePath) {
       docOverlayDismissedKey = normKey(activeFilePath);
+      docOverlayManualForceKey = '';
     }
     if (!encodingOverlayVisible) {
       restoreNativeContentSiblings(getContentContainer(getRightPaneColumn()));
@@ -2059,7 +2233,10 @@
     const targetPath = activeFilePath;
     const targetKey = normKey(targetPath);
     if (!force && docOverlayDismissedKey === targetKey) return false;
-    if (force) docOverlayDismissedKey = '';
+    if (force) {
+      docOverlayDismissedKey = '';
+      docOverlayManualForceKey = targetKey;
+    }
 
     // Ensure encoding overlay isn't simultaneously active
     if (encodingOverlayVisible) {
@@ -2314,17 +2491,20 @@
           const contentWrap = getContentContainer(getRightPaneColumn());
           const hostState = inspectHostFileViewState(contentWrap);
           const meta = getActiveRichDocMeta();
-          if (settings.richDocAutoStrategy === 'auto_yield' && hostState === 'native_rich' && !meta?.preferWhenRawCode) {
+          const manuallyForced = Boolean(activeFilePath && docOverlayManualForceKey === normKey(activeFilePath));
+          if (!manuallyForced && settings.richDocAutoStrategy === 'auto_yield' && hostState === 'native_rich' && !meta?.preferWhenRawCode) {
             closeDocOverlay({ dismiss: false });
           }
         } else if (!docOverlayVisible && settings.richDocPreviewEnabled !== false) {
           const meta = getActiveRichDocMeta();
           const contentWrap = getContentContainer(getRightPaneColumn());
           const hostState = inspectHostFileViewState(contentWrap);
-          if (shouldAutoOpenDocOverlay(meta, hostState) && docOverlayDismissedKey !== normKey(activeFilePath)) {
+          const curCompat = activeVideoCompatKey === normKey(activeFilePath) ? activeVideoCompat : null;
+          if (shouldAutoOpenDocOverlay(meta, hostState, curCompat) && docOverlayDismissedKey !== normKey(activeFilePath)) {
             void openDocOverlay({ force: false });
           }
         }
+        promotePreviewTabsInPane();
         cachedNavContext = await fetchNavContext();
         renderStrip();
         showToast('锚点轮盘设置已生效');
@@ -2599,8 +2779,11 @@
       // Isolate session state cleanly when user switches Antigravity conversations
       closeDocOverlay({ dismiss: false });
       docOverlayDismissedKey = '';
+      docOverlayManualForceKey = '';
       lastRenderedDocKey = '';
       lastRenderedDocData = null;
+      activeVideoCompatKey = '';
+      activeVideoCompat = null;
       session = null;
       cachedNavContext = null;
       activeFilePath = '';
@@ -2614,6 +2797,7 @@
     lastConversationId = curCid;
 
     const { browserCtx, reduxStore } = discoverHostBridge();
+    promotePreviewTabsInPane(reduxStore, browserCtx);
     const { pane } = getPaneSlice(reduxStore, browserCtx);
     const activeInfo = getActiveNativeTabInfo(pane);
     const curFile = activeInfo.path;
@@ -2655,14 +2839,17 @@
 
     const prevPath = activeFilePath;
     const prevIsDir = activeIsDirectory;
-    const changedFile = curFile !== activeFilePath || curIsDir !== activeIsDirectory;
+    const changedFile = !isSameFilePath(curFile, activeFilePath) || curIsDir !== activeIsDirectory;
     if (changedFile) {
       const oldOv = D.getElementById(OVERLAY_ID);
       if (oldOv) void toggleEncodingRepairOverlay('');
       closeDocOverlay({ dismiss: false });
       docOverlayDismissedKey = '';
+      docOverlayManualForceKey = '';
       lastRenderedDocKey = '';
       lastRenderedDocData = null;
+      activeVideoCompatKey = '';
+      activeVideoCompat = null;
       lastHostPreviewState = 'unknown';
       docProbeCount = 0;
       clearTimeout(docProbeTimer);
@@ -2683,7 +2870,7 @@
         prevIsDir &&
         !curIsDir &&
         normKey(parentDirPath(curFile)) === normKey(prevPath) &&
-        !session?.lineage?.parentByKey?.[normKey(curFile)]
+        !lookupParentLineage(session?.lineage?.parentByKey, curFile)
       ) {
         recordLocalLineageMirror(prevPath, baseName(prevPath), curFile, baseName(curFile), {
           parentIsDirectory: true,
@@ -2724,16 +2911,47 @@
 
     // Native-First Auto-Yield rich document preview:
     // Auto-render when Antigravity shows an unsupported placeholder (or raw source for .ipynb/.eml/.obj/.stl);
-    // automatically yield when Antigravity natively renders a real rich preview!
+    // automatically yield when Antigravity natively renders a real rich preview, unless a companion video player
+    // cannot decode the file's codec/container (e.g. ProRes 4444 / 12-bit / Alpha MOV / HEVC / MKV / AVI)!
     const contentWrap = getContentContainer(getRightPaneColumn());
     lastHostPreviewState = activeDocMeta && contentWrap ? inspectHostFileViewState(contentWrap) : 'none';
+    const curFileKey = normKey(activeFilePath);
+    let curVideoCompat = activeVideoCompatKey === curFileKey ? activeVideoCompat : null;
+    if (
+      activeDocMeta?.isVideo &&
+      lastHostPreviewState === 'companion_mounted' &&
+      settings.richDocPreviewEnabled !== false &&
+      (settings.richDocAutoStrategy || 'auto_yield') !== 'manual_only' &&
+      !curVideoCompat &&
+      activeFilePath
+    ) {
+      let probeRes = await callRpc('probeVideo', { path: activeFilePath }, 5000);
+      if (destroyed || normKey(activeFilePath) !== curFileKey) return;
+      if (probeRes && !probeRes.ok && /Unknown action/i.test(String(probeRes.error || ''))) {
+        // Graceful hot-reload fallback when older backend has not been re-enabled yet
+        const extLow = String(activeDocMeta.ext || '').toLowerCase();
+        const likelyNeedsTranscode = !['mp4', 'm4v', 'webm', 'ogv'].includes(extLow);
+        probeRes = { ok: true, strategy: likelyNeedsTranscode ? 'transcode_cached' : 'direct', needsTranscode: likelyNeedsTranscode };
+      }
+      if (probeRes && probeRes.ok) {
+        activeVideoCompatKey = curFileKey;
+        activeVideoCompat = probeRes;
+        curVideoCompat = probeRes;
+      }
+    }
+
+    const isManuallyForced = Boolean(curFileKey && docOverlayManualForceKey === curFileKey);
+    const companionNeedsVideoTakeover = Boolean(
+      activeDocMeta?.isVideo && lastHostPreviewState === 'companion_mounted' && curVideoCompat?.ok && curVideoCompat.needsTranscode
+    );
+
     if (
       activeDocMeta &&
       activeDocMeta.autoRender &&
       settings.richDocPreviewEnabled !== false &&
-      docOverlayDismissedKey !== normKey(activeFilePath)
+      docOverlayDismissedKey !== curFileKey
     ) {
-      if (shouldAutoOpenDocOverlay(activeDocMeta, lastHostPreviewState)) {
+      if (shouldAutoOpenDocOverlay(activeDocMeta, lastHostPreviewState, curVideoCompat)) {
         clearTimeout(docProbeTimer);
         docProbeTimer = null;
         const { mountParent } = resolveDocMountLayout(contentWrap);
@@ -2752,6 +2970,8 @@
         }, 130);
       } else if (
         docOverlayVisible &&
+        !isManuallyForced &&
+        !companionNeedsVideoTakeover &&
         (settings.richDocAutoStrategy || 'auto_yield') === 'auto_yield' &&
         (lastHostPreviewState === 'native_rich' || lastHostPreviewState === 'companion_mounted') &&
         !(lastHostPreviewState === 'raw_code_only' && activeDocMeta.preferWhenRawCode)
@@ -2904,7 +3124,11 @@
       }
       return;
     }
-    if (!isInsideRightContent(ev.target)) return;
+    if (!isInsideRightContent(ev.target)) {
+      // Promote any transient preview tab in the right sidebar before Antigravity's chat/tree click handler runs
+      promotePreviewTabsInPane();
+      return;
+    }
     let meta = extractLinkMetaFromTarget(ev.target);
     if (!meta && activeIsDirectory) {
       const rowMeta = extractDirectoryRowMetaFromTarget(ev.target);
@@ -2948,7 +3172,10 @@
 
   function onCaptureMouseDown(ev) {
     if (destroyed) return;
-    if (!isInsideRightContent(ev.target)) return;
+    if (!isInsideRightContent(ev.target)) {
+      if (ev.button === 0) promotePreviewTabsInPane();
+      return;
+    }
     const midMode = settings.middleMode || 'bilateral_wheel';
     const trig = getWheelTriggerMeta();
     if (ev.button === 1) {
@@ -3227,10 +3454,10 @@
       }
     }
 
-    if (ev.altKey && ev.key === 'ArrowLeft') {
+    if ((ev.altKey && ev.key === 'ArrowLeft') || (ev.metaKey && !ev.ctrlKey && !ev.altKey && ev.key === '[')) {
       ev.preventDefault();
       void stepHistory('back');
-    } else if (ev.altKey && ev.key === 'ArrowRight') {
+    } else if ((ev.altKey && ev.key === 'ArrowRight') || (ev.metaKey && !ev.ctrlKey && !ev.altKey && ev.key === ']')) {
       ev.preventDefault();
       void stepHistory('forward');
     } else if (ev.altKey && ev.key.toLowerCase() === 'q' && (settings.tabCustomHotkey || 'Tab') !== 'Alt+Q') {
@@ -3263,6 +3490,20 @@
         storeUnsubscribe = reduxStore.subscribe(() => {
           if (destroyed) return;
           const { pane } = getPaneSlice(reduxStore, browserCtx);
+          if (
+            settings.preventPreviewTabOverwrite !== false &&
+            !promotingPreviewTabs &&
+            Array.isArray(pane?.tabs) &&
+            pane.tabs.some((t) => t?.isPreview === true)
+          ) {
+            if (!previewPromoteQueued) {
+              previewPromoteQueued = true;
+              queueMicrotask(() => {
+                previewPromoteQueued = false;
+                if (!destroyed) promotePreviewTabsInPane(reduxStore, browserCtx);
+              });
+            }
+          }
           const curTab = Array.isArray(pane?.tabs) ? pane.tabs.find((t) => t.id === pane.activeTabId) : null;
           const snap = `${pane?.activeTabId || ''}|${pane?.tabs?.length || 0}|${curTab?.content?.type || ''}|${extractUriFromTab(curTab)}`;
           if (snap !== lastPaneSnap) {
@@ -3369,6 +3610,7 @@
         docOutlineCount: lastRenderedDocData?.outline?.length || 0,
         hostPreviewState: contentWrap ? inspectHostFileViewState(contentWrap) : 'missing',
         richDocAutoStrategy: settings.richDocAutoStrategy || 'auto_yield',
+        preventPreviewTabOverwrite: settings.preventPreviewTabOverwrite !== false,
         wheelTriggerButton: settings.wheelTriggerButton || 'middle',
         updateShouldNotify: updState.shouldNotify,
         updateIgnored: updState.isIgnored,

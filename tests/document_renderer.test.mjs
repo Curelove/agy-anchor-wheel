@@ -12,6 +12,7 @@ import {
   parseRtfToTextAndHtml,
   renderDocument,
 } from '../sidecars/anchor_wheel/backend/document_renderer.mjs';
+import { parseTarListingLine } from '../sidecars/anchor_wheel/backend/extra_formats_renderer.mjs';
 import {
   detectLocalPresentationEngine,
   renderSlidesWithLocalEngine,
@@ -664,6 +665,41 @@ test('DOCX AlternateContent deduplication + themeColor, XLSX phonetic exclusion 
     assert.ok(nbRes.bodyHtml.includes('loss=0.024'));
     assert.equal(nbRes.bodyHtml.includes('\u001b[32m'), false);
     assert.ok(nbRes.bodyHtml.includes('data:image/png;base64,'));
+
+    // P0-1 regression: .ipynb image/png XSS payload must be strictly rejected
+    const xssNbPath = path.join(tmpDir, 'xss_probe.ipynb');
+    fs.writeFileSync(
+      xssNbPath,
+      JSON.stringify({
+        nbformat: 4,
+        cells: [
+          {
+            cell_type: 'code',
+            execution_count: 1,
+            source: ['print(1)'],
+            outputs: [
+              {
+                output_type: 'display_data',
+                data: {
+                  'image/png': 'x"onerror="window.__agAnchorWheelCall()"data-x="',
+                },
+              },
+            ],
+          },
+        ],
+      }),
+      'utf8'
+    );
+    const xssNbRes = renderDocument(xssNbPath);
+    assert.equal(xssNbRes.ok, true);
+    assert.equal(xssNbRes.bodyHtml.includes('onerror'), false);
+    assert.equal(xssNbRes.bodyHtml.includes('__agAnchorWheelCall'), false);
+
+    // P1-5 regression: parseTarListingLine handles both Linux GNU tar and BSD tar formats
+    const gnuEntry = parseTarListingLine('-rw-r--r-- root/root 1248 2026-11-27 02:15 docs/README.md');
+    assert.deepEqual(gnuEntry, { name: 'docs/README.md', isDirectory: false, size: 1248 });
+    const bsdEntry = parseTarListingLine('-rw-r--r--  0 user group 2048 Nov 27 02:15 assets/logo.svg');
+    assert.deepEqual(bsdEntry, { name: 'assets/logo.svg', isDirectory: false, size: 2048 });
 
     // 5. SQLite 3 Database (.sqlite)
     let sqliteMod = null;

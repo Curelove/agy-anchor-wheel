@@ -157,6 +157,7 @@
 
       if (g('#aw-sm-max')) draft.maxChildrenPerGroup = Math.max(1, Math.min(30, Number(g('#aw-sm-max').value || 6)));
       if (g('#aw-sm-fold')) draft.foldChildTabsInNativeBar = Boolean(g('#aw-sm-fold').checked);
+      if (g('#aw-sm-preserve-tabs')) draft.preventPreviewTabOverwrite = Boolean(g('#aw-sm-preserve-tabs').checked);
       if (g('#aw-sm-auto')) draft.autoAnchorSummaryMd = Boolean(g('#aw-sm-auto').checked);
       if (g('#aw-sm-auto-update')) draft.autoCheckUpdates = Boolean(g('#aw-sm-auto-update').checked);
       if (g('#aw-sm-sectors')) draft.wheelSectors = Number(g('#aw-sm-sectors').value || 8);
@@ -706,6 +707,10 @@
               <input type="checkbox" id="aw-sm-fold" ${s.foldChildTabsInNativeBar !== false ? 'checked' : ''} />
             </div>
             <div class="aw-form-row">
+              <div class="aw-form-label"><strong>点击对话文件时不覆盖当前标签页</strong><span>自动固化右侧栏临时预览标签，连续打开多个文件时逐个保留</span></div>
+              <input type="checkbox" id="aw-sm-preserve-tabs" ${s.preventPreviewTabOverwrite !== false ? 'checked' : ''} />
+            </div>
+            <div class="aw-form-row">
               <div class="aw-form-label"><strong>汇总型 MD 自动设为优先母页</strong><span>含 3 个以上本地链接时自动立组</span></div>
               <input type="checkbox" id="aw-sm-auto" ${s.autoAnchorSummaryMd ? 'checked' : ''} />
             </div>
@@ -729,7 +734,7 @@
             </div>
             <div class="aw-form-row" style="flex-direction:column;align-items:stretch;gap:6px">
               <div class="aw-form-label"><strong>额外扫描目录（逗号分隔）</strong><span>纳入工作区外的 Obsidian 库等双向链接索引</span></div>
-              <input type="text" id="aw-sm-extra" class="aw-input" value="${S.esc((s.extraScanDirs || []).join(', '))}" placeholder="例如 C:\\Users\\...\\Obsidian" />
+              <input type="text" id="aw-sm-extra" class="aw-input" value="${S.esc((s.extraScanDirs || []).join(', '))}" placeholder="例如 C:\\Users\\...\\Obsidian 或 /Users/.../Obsidian" />
             </div>
           </div>
 
@@ -740,7 +745,7 @@
               const fallbackRel = currentCallbacks?.versionInfo?.releasesUrl || 'https://github.com/Curelove/agy-anchor-wheel/releases';
               const compat = currentCallbacks?.compatInfo || {};
               const localAgy = compat?.localAntigravity || currentCallbacks?.updateInfo?.localAntigravity || null;
-              const agyVerText = localAgy?.installedVersion ? `Antigravity ${localAgy.installedVersion}` : '未自动识别（非 Windows 或便携版）';
+              const agyVerText = localAgy?.installedVersion ? `Antigravity ${localAgy.installedVersion}` : '未自动识别（便携版或自定义路径）';
               const testedRange = compat?.testedRange || 'Antigravity 2.34.x';
               const level = localAgy?.compatLevel || 'unknown';
               const levelLabel =

@@ -6,7 +6,7 @@
 
 **专为 Google Antigravity 右侧文档栏打造的零侵入导航与阅读增强插件**
 
-不覆盖原 MD 与文件夹打开子文件 · **侧边栏直览 `.mov`/`.mkv`/ProRes 全格式视频与真实版式 PPTX / Word / Excel / PDF / Notebook / SQLite / 3D 白模 / 字体 / 归档包（宿主原生支持时自动避让）** · 按住中键/右键/侧键呼出双侧分类轮盘 · 按 `Tab` 呼出竖向层级树 · 0.25s 悬停快览 · Obsidian 双向反链 · 多编码自动防乱码
+不覆盖原 MD、文件夹与聊天区点开的标签页 · **侧边栏直览 12-bit 透明 `.mov`/ProRes/MKV 全格式视频、Adobe 工程（`.psd`/`.psb`/`.aep`/`.prproj`/`.ai`/`.mogrt`/`.cube`）与 Office / PDF / Notebook / SQLite / 3D 白模 / 字体 / 归档包** · 按住中键/右键/侧键呼出双侧分类轮盘 · 按 `Tab` 呼出竖向层级树 · 0.25s 悬停快览 · Obsidian 双向反链 · 多编码自动防乱码
 
 </div>
 
@@ -62,9 +62,13 @@ AI 对话总结出一份含十几个参考文件的 Markdown 报告时，在 Ant
 
 ## 更多实用能力
 
-- **全格式视频侧边栏直览（v0.10.0 新增）**：
-  - 完整兼容 `.mov` / `.qt` / `.mp4` / `.m4v` / `.webm` / `.mkv` / `.avi` / `.flv` / `.f4v` / `.wmv` / `.ts` / `.mts` / `.m2ts` / `.mpg` / `.mpeg` / `.3gp` / `.ogv` / `.rmvb` / `.vob` / `.mxf` / `.divx` 等 25 种视频格式（含 ProRes 4444 Alpha 透明通道与 HEVC 10-bit）。
-  - 自动按编码选择 HTTP `206` 字节区间直推、亚秒级无损重封装（`-c:v copy`）、后台转码缓存或长片实时流转码，内置倍速循环切换、单曲循环与防黑屏自动兜底；仅在宿主原生无法播放或有声无画时自动接管。
+- **全格式视频侧边栏直览与 12-bit 透明 `.mov` 棋盘格支持（v0.11.0 升级）**：
+  - 完整兼容 `.mov` / `.qt` / `.mp4` / `.m4v` / `.webm` / `.mkv` / `.avi` / `.flv` / `.f4v` / `.wmv` / `.ts` / `.mts` / `.m2ts` / `.mpg` / `.mpeg` / `.3gp` / `.ogv` / `.rmvb` / `.vob` / `.mxf` / `.divx` 等 25 种视频格式；针对 10~12-bit ProRes 4444 Alpha 透明视频自动在转码流、播放前海报帧与悬停动态快览中叠合棋盘格底纹，并能在伴生插件无法解码时自动接管。
+  - 自动按编码选择 HTTP `206` 字节区间直推、亚秒级无损重封装（`-c:v copy`）、后台转码缓存或长片实时流转码，内置倍速循环切换、单曲循环与防黑屏自动兜底；标准 H.264 MP4/WebM 下继续尊重宿主与伴生插件避让。
+- **防聊天区域链接覆盖右侧边栏标签页（v0.11.0 新增）**：
+  - 自动将右侧边栏中的临时预览态（`isPreview`）标签转为持久标签，从对话气泡、Artifact 卡片或文件列表点击新文件时不再覆盖当前打开的标签页（可在设置中按需关闭）。
+- **Adobe 工程与创作素材轻量化侧边栏预览（v0.11.0 新增 · 零外部依赖）**：
+  - 基于分段有界读取，安全快速预览 `.psd` / `.psb`（内嵌合成图 + 8/16/32-bit 图层表）、`.aep` / `.aepx`（合成参数、素材路径与脚本表达式）、`.prproj`（版本、时间线序列画幅帧率与素材清单）、`.ai`（PDF 兼容直接矢量直览 + PostScript 概要）、`.mogrt`（封面图、画幅帧率、字体与可编辑控件表）、`.prtextstyle`、`.sesx`、`.indd` 与 `.cube`（1D/3D LUT 标准色卡前后对比）。
 - **对齐官方视觉的全场景文件直览与原生优先避让（v0.9.0 重磅升级 · 零外部 npm 依赖）**：
   - **去 AI 味的 Antigravity 原生界面语言**：复用宿主 `Google Sans Flex` / `Google Sans Code` 字体与原生边框表面变量，无彩色胶囊角标与套娃外框；Mode 1 自动保留宿主顶部路径面包屑与 `⋮` 菜单，窄屏自动收敛为纯图标按钮。
   - **宿主升级自动避让（Native-First Auto-Yield）**：实时检测宿主侧边栏是否已渲染有效富视图；仅在宿主提示不可预览（或仅显示底层源码）时自动接管。若未来新版 Antigravity 原生支持某类文档预览，插件会自动退让不抢占画面，仅保留顶部按需切换入口。
@@ -108,7 +112,10 @@ AI 对话总结出一份含十几个参考文件的 Markdown 报告时，在 Ant
 ### 方式二：下载 GitHub Release 压缩包（零命令行）
 
 1. 前往 [GitHub Releases](https://github.com/Curelove/agy-anchor-wheel/releases) 下载最新版本的 `agy-anchor-wheel-v*.zip`。
-2. 解压到本地任意中文或英文目录后，直接**双击根目录下的 `install-plugin.cmd`**，脚本会自动备份旧版本（保留 `data/` 内已有分组与设置）并部署到本机 Antigravity 插件目录。
+2. 解压到本地任意中文或英文目录后：
+   - **Windows**：直接**双击根目录下的 `install-plugin.cmd`**；
+   - **macOS / Linux**：在终端进入解压目录运行 `bash install-plugin.sh`；
+   脚本会自动备份旧版本（完整保留 `data/` 内已有分组与设置）并部署到本机 Antigravity 插件目录。
 
 ### 方式三：Git 克隆安装与命令行升级
 

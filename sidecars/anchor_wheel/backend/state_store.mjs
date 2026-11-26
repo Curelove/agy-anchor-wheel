@@ -54,6 +54,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
   extraScanDirs: [],
   encodingAutoDetect: true,
   foldChildTabsInNativeBar: true,
+  preventPreviewTabOverwrite: true,
   autoCheckUpdates: true,
   ignoredUpdateVersion: '',
   theme: 'auto', // 'auto' | 'obsidian' | 'warm' | 'crystal' | 'alabaster'
@@ -166,6 +167,7 @@ export function sanitizeSettings(raw, base = DEFAULT_SETTINGS) {
   }
   if (typeof src.encodingAutoDetect === 'boolean') next.encodingAutoDetect = src.encodingAutoDetect;
   if (typeof src.foldChildTabsInNativeBar === 'boolean') next.foldChildTabsInNativeBar = src.foldChildTabsInNativeBar;
+  if (typeof src.preventPreviewTabOverwrite === 'boolean') next.preventPreviewTabOverwrite = src.preventPreviewTabOverwrite;
   if (typeof src.autoCheckUpdates === 'boolean') next.autoCheckUpdates = src.autoCheckUpdates;
   if (typeof src.ignoredUpdateVersion === 'string') {
     const cleanVer = src.ignoredUpdateVersion.trim().replace(/^v/i, '').slice(0, 32);

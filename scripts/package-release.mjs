@@ -56,6 +56,7 @@ function buildReleaseBundles() {
     'README.md',
     'LICENSE',
     'install-plugin.cmd',
+    'install-plugin.sh',
     'assets',
     'sidecars',
     path.join('scripts', 'install-plugin.mjs'),

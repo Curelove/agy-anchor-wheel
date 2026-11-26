@@ -50,6 +50,8 @@
   const S = window.AnchorWheelNavShared;
   const ICONS = window.AnchorWheelUI.ICONS;
   let lastHostPrismTheme = '';
+  const buildRawFileUrl = (p) =>
+    `/api/file/raw?path=${encodeURIComponent(p)}&token=${encodeURIComponent(state.mediaToken || '')}`;
   const previewOpts = {
     document,
     mountRoot: document.body,
@@ -59,7 +61,7 @@
     getAnimated: () => state.settings?.videoPreviewAnimated !== false,
     isPreviewEnabled: () => state.settings?.hoverPreviewEnabled !== false,
     getHotkey: () => state.settings?.tabCustomHotkey || 'Tab',
-    standaloneRawUrl: (p) => `/api/file/raw?path=${encodeURIComponent(p)}`,
+    standaloneRawUrl: buildRawFileUrl,
   };
   const wheel = window.AnchorWheelUI.createRadialWheel({ document, mountRoot: document.body });
   const bilateral = window.AnchorWheelBilateral.createBilateralWheel(previewOpts);
@@ -886,7 +888,7 @@
         Boolean(doc.preferWhenRawCode);
       state.docViewerInstance = window.AnchorWheelDocViewer.mountDocumentViewer(els.reader, doc, {
         paperMode: Boolean(state.settings?.richDocPaperMode),
-        pdfRawUrl: doc.format === 'pdf' ? `/api/file/raw?path=${encodeURIComponent(doc.path)}` : '',
+        pdfRawUrl: doc.format === 'pdf' ? buildRawFileUrl(doc.path) : '',
         rawLabel: isRawSwitchable ? '源码视图' : '',
         onTogglePaperMode: (nextPaper) => {
           state.settings = { ...(state.settings || {}), richDocPaperMode: Boolean(nextPaper) };
@@ -1050,7 +1052,7 @@
     }
 
     if (doc.isMedia) {
-      const rawUrl = `/api/file/raw?path=${encodeURIComponent(doc.path)}`;
+      const rawUrl = buildRawFileUrl(doc.path);
       if (doc.mediaKind === 'image') {
         els.reader.innerHTML = `<div class="aw-media-frame"><img src="${rawUrl}" alt="${window.AnchorWheelMarkdown.esc(baseName(doc.path))}" /></div>`;
       } else if (doc.mediaKind === 'video') {
@@ -1177,7 +1179,7 @@
             </div>
           </div>
           <div class="aw-open-bar">
-            <input type="text" id="aw-quick-path" class="aw-input" placeholder="输入或粘贴本地文件或文件夹绝对路径（如 C:\\...\\report.md）后按回车打开" />
+            <input type="text" id="aw-quick-path" class="aw-input" placeholder="输入或粘贴本地文件或文件夹绝对路径（如 C:\\...\\report.md 或 /Users/.../report.md）后按回车打开" />
             <button type="button" id="aw-quick-open-btn" class="aw-primary-btn">打开</button>
           </div>
         </section>
@@ -1801,10 +1803,10 @@
           return;
         }
 
-        if (ev.altKey && ev.key === 'ArrowLeft') {
+        if ((ev.altKey && ev.key === 'ArrowLeft') || (ev.metaKey && !ev.ctrlKey && !ev.altKey && ev.key === '[')) {
           ev.preventDefault();
           void stepHistoryNav('back');
-        } else if (ev.altKey && ev.key === 'ArrowRight') {
+        } else if ((ev.altKey && ev.key === 'ArrowRight') || (ev.metaKey && !ev.ctrlKey && !ev.altKey && ev.key === ']')) {
           ev.preventDefault();
           void stepHistoryNav('forward');
         }
@@ -1983,11 +1985,21 @@
         window.sidecar?.getWorkspaceUris?.() || Promise.resolve([]),
         new Promise((r) => setTimeout(() => r([]), 500)),
       ]);
+      const parseWorkspaceUri = (u) => {
+        let s = String(u || '').trim();
+        if (/^file:\/\//i.test(s)) {
+          s = s.replace(/^file:\/\//i, '');
+          if (/^localhost\//i.test(s)) s = s.slice('localhost'.length);
+          try { s = decodeURIComponent(s); } catch {}
+          if (/^\/[A-Za-z]:[\\/]/.test(s)) s = s.slice(1);
+        }
+        return s;
+      };
       if (Array.isArray(uris) && uris.length) {
-        state.workspaceRoots = uris.map((u) => u.replace(/^file:\/+/i, '').replace(/^\/([A-Za-z]:)/, '$1'));
+        state.workspaceRoots = uris.map(parseWorkspaceUri).filter(Boolean);
       }
       window.sidecar?.onWorkspaceChange?.((nextUris) => {
-        state.workspaceRoots = (nextUris || []).map((u) => u.replace(/^file:\/+/i, '').replace(/^\/([A-Za-z]:)/, '$1'));
+        state.workspaceRoots = (nextUris || []).map(parseWorkspaceUri).filter(Boolean);
         void apiPost('/api/index/rescan', { workspaceRoots: state.workspaceRoots });
       });
     } catch {}
@@ -1998,6 +2010,7 @@
     ]);
     if (stRes.ok) {
       state.status = stRes;
+      state.mediaToken = stRes.mediaToken || '';
       state.settings = stRes.settings;
       if (stRes.update) state.updateInfo = stRes.update;
       syncUpdateBadge();

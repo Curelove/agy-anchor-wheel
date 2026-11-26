@@ -1,6 +1,8 @@
 import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import zlib from 'node:zlib';
 import { decodeBuffer } from './encoding.mjs';
 import { escapeHtml } from './security.mjs';
@@ -882,9 +884,10 @@ export function parseIpynb(buf, filePath, stat, { snippetOnly = false } = {}) {
           for (const mime of ['image/png', 'image/jpeg', 'image/webp']) {
             if (data[mime]) {
               const b64 = joinSource(data[mime]).replace(/\s+/g, '');
+              if (!b64 || !/^[A-Za-z0-9+/=]+$/.test(b64)) continue;
               if (b64.length * 0.75 <= 4 * 1024 * 1024 && usedImgBytes + b64.length * 0.75 <= 14 * 1024 * 1024) {
                 usedImgBytes += b64.length * 0.75;
-                outBlocks.push(`<div class="aw-nb-out-img"><img src="data:${mime};base64,${b64}" alt="Notebook 输出图表" loading="lazy" /></div>`);
+                outBlocks.push(`<div class="aw-nb-out-img"><img src="data:${escapeHtml(mime)};base64,${escapeHtml(b64)}" alt="Notebook 输出图表" loading="lazy" /></div>`);
                 renderedRich = true;
                 break;
               }
@@ -945,7 +948,18 @@ function quoteSqlIdent(name) {
 }
 
 export function parseSqliteDb(buf, filePath, stat, { snippetOnly = false } = {}) {
-  if (buf.length < 100 || buf.subarray(0, 16).toString('latin1') !== SQLITE_MAGIC) {
+  let hdr = buf;
+  if (!hdr) {
+    const fd = fs.openSync(filePath, 'r');
+    try {
+      const slice = Buffer.allocUnsafe(100);
+      const n = fs.readSync(fd, slice, 0, 100, 0);
+      hdr = slice.subarray(0, n);
+    } finally {
+      try { fs.closeSync(fd); } catch {}
+    }
+  }
+  if (!hdr || hdr.length < 100 || hdr.subarray(0, 16).toString('latin1') !== SQLITE_MAGIC) {
     throw new Error('该文件不是标准 SQLite 3 数据库格式');
   }
 
@@ -959,7 +973,17 @@ export function parseSqliteDb(buf, filePath, stat, { snippetOnly = false } = {})
   const { DatabaseSync } = sqliteMod;
   let db = null;
   try {
-    db = new DatabaseSync(filePath, { open: true, readOnly: true });
+    try {
+      db = new DatabaseSync(filePath, { open: true, readOnly: true });
+    } catch (openErr) {
+      // Fallback for WAL databases located in read-only directories
+      const roUri = `${pathToFileURL(path.resolve(filePath)).href}?mode=ro&immutable=1`;
+      try {
+        db = new DatabaseSync(roUri, { open: true, readOnly: true });
+      } catch {
+        throw openErr;
+      }
+    }
     const objects = db
       .prepare(
         `SELECT name, type FROM sqlite_master WHERE type IN ('table','view') AND name NOT LIKE 'sqlite_%' ORDER BY CASE type WHEN 'table' THEN 0 ELSE 1 END, name LIMIT 40`
@@ -1138,26 +1162,120 @@ function parseTarBufferEntries(tarBuf, maxItems = 400) {
   return entries;
 }
 
-function listArchiveViaSystemTar(filePath, maxItems = 400) {
-  const out = execFileSync('tar', ['-tvf', filePath], {
-    encoding: 'utf8',
-    timeout: 4000,
-    windowsHide: true,
-    maxBuffer: 4 * 1024 * 1024,
-  });
+export function parseTarListingLine(rawLine) {
+  const line = String(rawLine || '').trim();
+  if (!line) return null;
+  const isDir = line.startsWith('d') || line.endsWith('/');
+  // GNU tar -tvf: -rw-r--r-- root/root 1248 2026-11-27 02:15 path/to/file
+  const gnu = /^[dlbcps-][rwxstST-]{9}[.+@]?\s+\S+\s+(\d+)\s+\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}(?::\d{2})?\s+(.+)$/.exec(line);
+  if (gnu) {
+    const name = gnu[2].trim();
+    return { name, isDirectory: isDir || name.endsWith('/'), size: Number(gnu[1] || 0) };
+  }
+  // BSD tar -tvf: -rw-r--r--  0 user group 1248 Nov 27 02:15 path/to/file
+  const bsd = /^[dlbcps-][rwxstST-]{9}[.+@]?\s+\d+\s+\S+\s+\S+\s+(\d+)\s+\S+\s+\S+\s+\S+\s+(.+)$/.exec(line);
+  if (bsd) {
+    const name = bsd[2].trim();
+    return { name, isDirectory: isDir || name.endsWith('/'), size: Number(bsd[1] || 0) };
+  }
+  return { name: line, isDirectory: isDir, size: 0 };
+}
+
+function parse7zSltOutput(rawOut, maxItems = 400) {
   const entries = [];
-  for (const line of String(out || '').split(/\r?\n/)) {
-    if (!line.trim() || entries.length >= maxItems) continue;
-    // Match typical bsdtar / GNU tar `-tvf` output: drwxr-xr-x 0 uid gid 1234 Date Name
-    const isDir = line.startsWith('d') || line.trimEnd().endsWith('/');
-    const m = /^\S+\s+\d+\s+\S+\s+\S+\s+(\d+)\s+\S+\s+(?:\S+\s+)?(?:\S+\s+)?(.+)$/.exec(line.trim());
-    if (m) {
-      entries.push({ name: m[2].trim(), isDirectory: isDir, size: Number(m[1] || 0) });
-    } else {
-      entries.push({ name: line.trim(), isDirectory: isDir, size: 0 });
+  let cur = null;
+  const flush = () => {
+    if (!cur || !cur.name || entries.length >= maxItems) return;
+    entries.push({
+      name: cur.name.replace(/\\/g, '/'),
+      isDirectory: Boolean(cur.isDirectory || cur.name.endsWith('/')),
+      size: Number(cur.size || 0),
+    });
+  };
+  let inList = false;
+  for (const rawLine of String(rawOut || '').split(/\r?\n/)) {
+    const line = rawLine.trimEnd();
+    if (line === '----------') {
+      inList = true;
+      cur = null;
+      continue;
+    }
+    if (!inList) continue;
+    if (!line.trim()) {
+      flush();
+      cur = null;
+      continue;
+    }
+    if (!cur) cur = { name: '', size: 0, isDirectory: false };
+    if (line.startsWith('Path = ')) cur.name = line.slice(7).trim();
+    else if (line.startsWith('Size = ')) cur.size = Number(line.slice(7).trim() || 0);
+    else if (line.startsWith('Folder = ')) cur.isDirectory = line.slice(9).trim() === '+';
+    else if (line.startsWith('Attributes = ')) {
+      if (/\bD\b|^D/i.test(line.slice(13).trim())) cur.isDirectory = true;
     }
   }
+  flush();
   return entries;
+}
+
+function listArchiveViaExternalTools(filePath, maxItems = 400) {
+  const lower = path.basename(filePath).toLowerCase();
+  const is7zOrRar = lower.endsWith('.7z') || lower.endsWith('.rar');
+  const execOpts = {
+    encoding: 'utf8',
+    timeout: 4500,
+    windowsHide: true,
+    maxBuffer: 4 * 1024 * 1024,
+  };
+
+  if (is7zOrRar) {
+    for (const bin of ['7z', '7zz', '7za']) {
+      try {
+        const out = execFileSync(bin, ['l', '-slt', '-sccUTF-8', filePath], execOpts);
+        const parsed = parse7zSltOutput(out, maxItems);
+        if (parsed.length) return parsed;
+      } catch {}
+    }
+    if (lower.endsWith('.rar')) {
+      for (const bin of ['unrar', 'rar']) {
+        try {
+          const out = execFileSync(bin, ['lb', filePath], execOpts);
+          const entries = String(out || '')
+            .split(/\r?\n/)
+            .map((l) => l.trim())
+            .filter(Boolean)
+            .slice(0, maxItems)
+            .map((name) => ({ name: name.replace(/\\/g, '/'), isDirectory: name.endsWith('/') || name.endsWith('\\'), size: 0 }));
+          if (entries.length) return entries;
+        } catch {}
+      }
+    }
+  }
+
+  const tarBins = process.platform === 'win32' ? ['tar'] : ['bsdtar', 'tar'];
+  let lastErr = null;
+  for (const bin of tarBins) {
+    const argVariants = [];
+    if (bin === 'tar' && process.platform !== 'win32' && filePath.includes(':')) {
+      argVariants.push(['--force-local', '-tvf', filePath]);
+    }
+    argVariants.push(['-tvf', filePath]);
+    for (const args of argVariants) {
+      try {
+        const out = execFileSync(bin, args, execOpts);
+        const entries = [];
+        for (const line of String(out || '').split(/\r?\n/)) {
+          if (!line.trim() || entries.length >= maxItems) continue;
+          const item = parseTarListingLine(line);
+          if (item) entries.push(item);
+        }
+        return entries;
+      } catch (err) {
+        lastErr = err;
+      }
+    }
+  }
+  throw lastErr || new Error('当前系统缺少可用归档列表工具（可安装 7z / bsdtar / unrar）');
 }
 
 export function parseArchiveInventory(buf, filePath, stat, { snippetOnly = false } = {}) {
@@ -1177,7 +1295,7 @@ export function parseArchiveInventory(buf, filePath, stat, { snippetOnly = false
     const inflated = zlib.gunzipSync(buf, { maxOutputLength: MAX_ARCHIVE_UNZIP_BYTES });
     entries = parseTarBufferEntries(inflated, maxItems);
   } else {
-    entries = listArchiveViaSystemTar(filePath, maxItems);
+    entries = listArchiveViaExternalTools(filePath, maxItems);
   }
 
   const files = entries.filter((e) => !e.isDirectory);

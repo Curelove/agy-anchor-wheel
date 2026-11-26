@@ -291,11 +291,23 @@ test('standalone HTTP API serves UI assets, session ops, backlinks, and encoding
     assert.equal(ignRes.update.isIgnored, true);
     assert.equal(ignRes.update.shouldNotify, false);
 
-    // /api/file/raw supports RFC 7233 Range streaming
-    const rawRange = await fetch(`${base}/api/file/raw?path=${encodeURIComponent(mdFile)}`, {
-      headers: { Range: 'bytes=0-3' },
+    // /api/file/raw rejects missing/invalid token & Origin: null cross-origin requests (P0-2)
+    const rawNoToken = await fetch(`${base}/api/file/raw?path=${encodeURIComponent(mdFile)}`, {
+      headers: { Origin: 'null' },
     });
+    assert.equal(rawNoToken.status, 403);
+    assert.equal(rawNoToken.headers.get('access-control-allow-origin'), null);
+
+    // /api/file/raw supports RFC 7233 Range streaming when authenticated with mediaToken
+    assert.ok(stBeforeIgn.mediaToken && stBeforeIgn.mediaToken.length >= 16);
+    const rawRange = await fetch(
+      `${base}/api/file/raw?path=${encodeURIComponent(mdFile)}&token=${encodeURIComponent(stBeforeIgn.mediaToken)}`,
+      { headers: { Range: 'bytes=0-3' } }
+    );
     assert.equal(rawRange.status, 206);
+    assert.equal(rawRange.headers.get('content-security-policy'), "default-src 'none'; sandbox");
+    assert.equal(rawRange.headers.get('x-content-type-options'), 'nosniff');
+    assert.equal(rawRange.headers.get('cross-origin-resource-policy'), 'same-origin');
     assert.equal(await rawRange.text(), '# Ov');
   } finally {
     await inst.stop();

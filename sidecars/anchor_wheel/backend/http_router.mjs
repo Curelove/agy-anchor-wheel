@@ -125,6 +125,7 @@ export function createRouterHandlers({
       repoUrl: meta.repoUrl,
       releasesUrl: meta.releasesUrl,
       update: effectiveUpdateService.getCachedResult(),
+      mediaToken: videoService?.mediaToken || '',
     };
   });
 
@@ -350,13 +351,19 @@ export function createRouterHandlers({
     });
   });
 
+  routes.set('POST /api/media/probe', async (data) => {
+    return effectiveVideoService.inspectVideoCompatibility(data?.path || '');
+  });
+
   routes.set('POST /api/media/prepare', async (data) => {
     const targetPath = data?.path || '';
+    const probed = await effectiveVideoService.probeMedia(targetPath).catch(() => null);
+    const hasAlpha = Boolean(probed?.probe?.hasAlpha);
     let posterDataUrl = '';
     try {
       posterDataUrl = await Promise.race([
-        effectivePreviewService.getVideoPosterDataUrl(targetPath),
-        new Promise((r) => setTimeout(() => r(''), 1600)),
+        effectivePreviewService.getVideoPosterDataUrl(targetPath, { hasAlpha }),
+        new Promise((r) => setTimeout(() => r(''), 2200)),
       ]);
     } catch {}
     return effectiveVideoService.prepareVideo(targetPath, {
@@ -403,7 +410,7 @@ export function createRouterHandlers({
         'exe2 = base & "\\Programs\\Antigravity\\Antigravity.exe"',
         'target = exe1',
         'If Not fso.FileExists(exe1) And fso.FileExists(exe2) Then target = exe2',
-        'sh.Run """" & target & """ --remote-debugging-port=0", 1, False',
+        'sh.Run """" & target & """ --remote-debugging-port=0 --remote-debugging-address=127.0.0.1", 1, False',
         '',
       ].join('\r\n');
       const cmd = [
@@ -418,13 +425,16 @@ export function createRouterHandlers({
     }
     const shPath = path.join(dataDir, 'launch_antigravity_cdp.sh');
     const sh = process.platform === 'darwin'
-      ? '#!/usr/bin/env bash\nopen -a "/Applications/Antigravity.app" --args --remote-debugging-port=0\n'
-      : '#!/usr/bin/env bash\nantigravity --remote-debugging-port=0 &\n';
+      ? '#!/usr/bin/env bash\nopen -a "/Applications/Antigravity.app" --args --remote-debugging-port=0 --remote-debugging-address=127.0.0.1\n'
+      : '#!/usr/bin/env bash\nantigravity --remote-debugging-port=0 --remote-debugging-address=127.0.0.1 &\n';
     fs.writeFileSync(shPath, sh, { encoding: 'utf8', mode: 0o755 });
     return { ok: true, platform: process.platform, launcherPath: shPath };
   });
 
   routes.set('GET /api/file/raw', (data) => {
+    if (videoService && !videoService.verifyMediaToken(data?.token || '')) {
+      return makeResp('Invalid media token', 'text/plain; charset=utf-8', 403);
+    }
     const safe = resolveSafeReadPath(data?.path);
     if (!safe.ok) return makeResp(safe.error, 'text/plain; charset=utf-8', 404);
     if (safe.stat.size > MAX_RAW_SERVE_BYTES) {
@@ -434,7 +444,16 @@ export function createRouterHandlers({
     const contentType = getMediaMimeForExt(ext);
     try {
       const buf = fs.readFileSync(safe.filePath);
-      return makeResp(buf, contentType, 200, { 'Cache-Control': 'private, max-age=60' });
+      const secHeaders = {
+        'Cache-Control': 'private, max-age=60',
+        'Content-Security-Policy': "default-src 'none'; sandbox",
+        'X-Content-Type-Options': 'nosniff',
+        'Cross-Origin-Resource-Policy': 'same-origin',
+      };
+      if (ext === '.svg') {
+        secHeaders['Content-Disposition'] = 'attachment';
+      }
+      return makeResp(buf, contentType, 200, secHeaders);
     } catch (err) {
       return makeResp(String(err?.message || err), 'text/plain; charset=utf-8', 500);
     }
