@@ -125,6 +125,9 @@ npm test
 # 构建本地 Release 压缩包至 dist/
 npm run package:release
 
+# 本地一键发布或更新 GitHub Release（亦可直接推送 v* 标签，由 GitHub Actions 自动测试、打包并发布）
+npm run release:publish
+
 # 完全卸载插件
 npm run remove:plugin
 

@@ -1,0 +1,112 @@
+name: Release AnchorWheel
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag name to publish or update (e.g. v0.8.0). Defaults to v<plugin.json version>.'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish-release:
+    name: Test, Package & Publish GitHub Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Resolve version and verify tag consistency
+        id: meta
+        shell: bash
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          VERSION=$(node -e "const p = JSON.parse(require('fs').readFileSync('plugin.json','utf8')); const pkg = JSON.parse(require('fs').readFileSync('package.json','utf8')); if (p.version !== pkg.version) throw new Error('plugin.json/package.json mismatch'); console.log(p.version);")
+          if [ -n "$INPUT_TAG" ]; then
+            TAG="$INPUT_TAG"
+          elif [ "$REF_TYPE" = "tag" ]; then
+            TAG="$REF_NAME"
+          else
+            TAG="v${VERSION}"
+          fi
+          EXPECTED="v${VERSION}"
+          if [ "$TAG" != "$EXPECTED" ]; then
+            echo "::error::Tag (${TAG}) does not match plugin.json version (${EXPECTED})."
+            exit 1
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "Resolved release tag: ${TAG} (version ${VERSION})"
+
+      - name: Run automated test suite
+        run: npm test
+
+      - name: Build release bundles (.zip, .tar.gz, .sha256)
+        run: npm run package:release
+
+      - name: Prepare release title and notes
+        id: notes
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          node scripts/publish-release.mjs --prepare-only --tag "$RELEASE_TAG" --out-title /tmp/release_title.txt --out-body /tmp/release_body.md
+          TITLE=$(cat /tmp/release_title.txt)
+          echo "title=${TITLE}" >> "$GITHUB_OUTPUT"
+          echo "Prepared title: ${TITLE}"
+
+      - name: Create or update GitHub Release and upload assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.meta.outputs.tag }}
+          RELEASE_VERSION: ${{ steps.meta.outputs.version }}
+          RELEASE_TITLE: ${{ steps.notes.outputs.title }}
+        run: |
+          ZIP_FILE="dist/agy-anchor-wheel-v${RELEASE_VERSION}.zip"
+          TAR_FILE="dist/agy-anchor-wheel-v${RELEASE_VERSION}.tar.gz"
+          SHA_FILE="dist/agy-anchor-wheel-v${RELEASE_VERSION}.tar.gz.sha256"
+
+          for f in "$ZIP_FILE" "$TAR_FILE" "$SHA_FILE"; do
+            if [ ! -f "$f" ]; then
+              echo "::error::Missing expected release artifact: $f"
+              exit 1
+            fi
+          done
+
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "Release ${RELEASE_TAG} already exists; updating notes and assets..."
+            gh release edit "$RELEASE_TAG" \
+              --title "$RELEASE_TITLE" \
+              --notes-file /tmp/release_body.md \
+              --draft=false
+            gh release upload "$RELEASE_TAG" \
+              "$ZIP_FILE" "$TAR_FILE" "$SHA_FILE" \
+              --clobber
+          else
+            echo "Creating new GitHub Release ${RELEASE_TAG}..."
+            gh release create "$RELEASE_TAG" \
+              "$ZIP_FILE" "$TAR_FILE" "$SHA_FILE" \
+              --title "$RELEASE_TITLE" \
+              --notes-file /tmp/release_body.md \
+              --verify-tag
+          fi
