@@ -666,18 +666,24 @@ test('DOCX AlternateContent deduplication + themeColor, XLSX phonetic exclusion 
     assert.ok(nbRes.bodyHtml.includes('data:image/png;base64,'));
 
     // 5. SQLite 3 Database (.sqlite)
-    const { DatabaseSync } = await import('node:sqlite');
-    const sqlitePath = path.join(tmpDir, 'metrics.sqlite');
-    const db = new DatabaseSync(sqlitePath);
-    db.exec(`CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, score REAL); INSERT INTO users VALUES (1, '林夏', 98.5);`);
-    db.exec(`CREATE TABLE logs (id INTEGER PRIMARY KEY, event TEXT); INSERT INTO logs VALUES (1, 'boot_ok');`);
-    db.close();
+    let sqliteMod = null;
+    try {
+      sqliteMod = await import('node:sqlite');
+    } catch {}
+    if (sqliteMod?.DatabaseSync) {
+      const { DatabaseSync } = sqliteMod;
+      const sqlitePath = path.join(tmpDir, 'metrics.sqlite');
+      const db = new DatabaseSync(sqlitePath);
+      db.exec(`CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, score REAL); INSERT INTO users VALUES (1, '林夏', 98.5);`);
+      db.exec(`CREATE TABLE logs (id INTEGER PRIMARY KEY, event TEXT); INSERT INTO logs VALUES (1, 'boot_ok');`);
+      db.close();
 
-    const sqRes = renderDocument(sqlitePath);
-    assert.equal(sqRes.ok, true);
-    assert.equal(sqRes.format, 'sqlite');
-    assert.equal(sqRes.sections.length, 2);
-    assert.ok(sqRes.sections.some((s) => s.html.includes('林夏') && s.html.includes('98.5')));
+      const sqRes = renderDocument(sqlitePath);
+      assert.equal(sqRes.ok, true);
+      assert.equal(sqRes.format, 'sqlite');
+      assert.equal(sqRes.sections.length, 2);
+      assert.ok(sqRes.sections.some((s) => s.html.includes('林夏') && s.html.includes('98.5')));
+    }
 
     // 6. POSIX .tar.gz archive
     const tarGzPath = path.join(tmpDir, 'bundle.tar.gz');

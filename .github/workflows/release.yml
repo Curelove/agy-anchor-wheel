@@ -28,10 +28,11 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Setup Node.js 22
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '22'
+          check-latest: true
 
       - name: Resolve version and verify tag consistency
         id: meta
