@@ -2,7 +2,66 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import { startServer } from '../sidecars/anchor_wheel/main.mjs';
+
+const AUDIT_CRC_TABLE = (() => {
+  const tbl = new Uint32Array(256);
+  for (let i = 0; i < 256; i++) {
+    let c = i;
+    for (let k = 0; k < 8; k++) c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+    tbl[i] = c >>> 0;
+  }
+  return tbl;
+})();
+
+function makeAuditZip(entries) {
+  const localParts = [];
+  const cdParts = [];
+  let offset = 0;
+  for (const item of entries) {
+    const nameBuf = Buffer.from(item.name, 'utf8');
+    const rawBuf = Buffer.isBuffer(item.data) ? item.data : Buffer.from(String(item.data || ''), 'utf8');
+    const compBuf = rawBuf.length ? zlib.deflateRawSync(rawBuf) : rawBuf;
+    const method = rawBuf.length ? 8 : 0;
+    let crc = 0xffffffff;
+    for (let i = 0; i < rawBuf.length; i++) crc = AUDIT_CRC_TABLE[(crc ^ rawBuf[i]) & 0xff] ^ (crc >>> 8);
+    crc = (crc ^ 0xffffffff) >>> 0;
+
+    const lh = Buffer.alloc(30);
+    lh.writeUInt32LE(0x04034b50, 0);
+    lh.writeUInt16LE(20, 4);
+    lh.writeUInt16LE(0x0800, 6);
+    lh.writeUInt16LE(method, 8);
+    lh.writeUInt32LE(crc, 14);
+    lh.writeUInt32LE(compBuf.length, 18);
+    lh.writeUInt32LE(rawBuf.length, 22);
+    lh.writeUInt16LE(nameBuf.length, 26);
+    localParts.push(lh, nameBuf, compBuf);
+
+    const cd = Buffer.alloc(46);
+    cd.writeUInt32LE(0x02014b50, 0);
+    cd.writeUInt16LE(20, 4);
+    cd.writeUInt16LE(20, 6);
+    cd.writeUInt16LE(0x0800, 8);
+    cd.writeUInt16LE(method, 10);
+    cd.writeUInt32LE(crc, 16);
+    cd.writeUInt32LE(compBuf.length, 20);
+    cd.writeUInt32LE(rawBuf.length, 24);
+    cd.writeUInt16LE(nameBuf.length, 28);
+    cd.writeUInt32LE(offset, 42);
+    cdParts.push(cd, nameBuf);
+    offset += lh.length + nameBuf.length + compBuf.length;
+  }
+  const cdBuf = Buffer.concat(cdParts);
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0);
+  eocd.writeUInt16LE(entries.length, 8);
+  eocd.writeUInt16LE(entries.length, 10);
+  eocd.writeUInt32LE(cdBuf.length, 12);
+  eocd.writeUInt32LE(offset, 16);
+  return Buffer.concat([...localParts, cdBuf, eocd]);
+}
 
 function findBrowserExe() {
   const candidates = [
@@ -132,6 +191,106 @@ async function runAudit() {
     fs.writeFileSync(p, `<svg xmlns="http://www.w3.org/2000/svg" width="120" height="80"><rect width="120" height="80" fill="#234"/></svg>`, 'utf8');
     return p;
   });
+
+  // Rich Office fixtures (DOCX, XLSX, PPTX) for visual audit
+  const sampleDocx = path.join(wsDir, '调查问卷与阶段报告样本.docx');
+  fs.writeFileSync(
+    sampleDocx,
+    makeAuditZip([
+      {
+        name: 'docProps/core.xml',
+        data: `<cp:coreProperties xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>短视频用户碎片化观看行为调查报告</dc:title><dc:creator>研究小组</dc:creator></cp:coreProperties>`,
+      },
+      {
+        name: 'word/styles.xml',
+        data: `<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:pPr><w:outlineLvl w:val="0"/></w:pPr><w:rPr><w:b/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="Heading2"><w:name w:val="heading 2"/><w:pPr><w:outlineLvl w:val="1"/></w:pPr><w:rPr><w:b/></w:rPr></w:style></w:styles>`,
+      },
+      {
+        name: 'word/numbering.xml',
+        data: `<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:abstractNum w:abstractNumId="1"><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="chineseCounting"/><w:lvlText w:val="%1、"/></w:lvl></w:abstractNum><w:num w:numId="2"><w:abstractNumId w:val="1"/></w:num></w:numbering>`,
+      },
+      {
+        name: 'word/footnotes.xml',
+        data: `<w:footnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:footnote w:id="1"><w:p><w:r><w:t>有效问卷回收率 92.4%，覆盖 18-29 岁青年群体。</w:t></w:r></w:p></w:footnote></w:footnotes>`,
+      },
+      {
+        name: 'word/document.xml',
+        data: `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>
+          <w:p><w:pPr><w:pStyle w:val="Heading1"/><w:jc w:val="center"/></w:pPr><w:r><w:t>短视频用户碎片化观看行为调查报告</w:t></w:r></w:p>
+          <w:p><w:pPr><w:ind w:firstLineChars="200"/></w:pPr><w:r><w:rPr><w:color w:val="000000"/></w:rPr><w:t>本报告聚焦青年群体在日常通勤与睡前场景中的碎片化观看习惯，重点分析倍速播放、跳转进度条与完播率变化。</w:t></w:r><w:r><w:footnoteReference w:id="1"/></w:r></w:p>
+          <w:p><w:pPr><w:pStyle w:val="Heading2"/></w:pPr><w:r><w:t>一、核心样本分布</w:t></w:r></w:p>
+          <w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="2"/></w:numPr></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t>高频场景：</w:t></w:r><w:r><w:t>通勤途中与睡前 30 分钟占比合计达到 68.5%。</w:t></w:r></w:p>
+          <w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="2"/></w:numPr></w:pPr><w:r><w:rPr><w:b/><w:color w:val="C00000"/></w:rPr><w:t>关键发现：</w:t></w:r><w:r><w:t>超过六成受访者在观看 3 分钟以上内容时会开启 1.5x 倍速。</w:t></w:r></w:p>
+          <w:tbl>
+            <w:tblGrid><w:gridCol w:w="2600"/><w:gridCol w:w="2200"/><w:gridCol w:w="2200"/></w:tblGrid>
+            <w:tr><w:trPr><w:tblHeader/></w:trPr><w:tc><w:tcPr><w:shd w:fill="E8EEF5"/></w:tcPr><w:p><w:r><w:rPr><w:b/></w:rPr><w:t>维度</w:t></w:r></w:p></w:tc><w:tc><w:tcPr><w:shd w:fill="E8EEF5"/></w:tcPr><w:p><w:r><w:rPr><w:b/></w:rPr><w:t>B站样本</w:t></w:r></w:p></w:tc><w:tc><w:tcPr><w:shd w:fill="E8EEF5"/></w:tcPr><w:p><w:r><w:rPr><w:b/></w:rPr><w:t>抖音样本</w:t></w:r></w:p></w:tc></w:tr>
+            <w:tr><w:tc><w:p><w:r><w:t>日均观看时长</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>74 分钟</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>89 分钟</w:t></w:r></w:p></w:tc></w:tr>
+            <w:tr><w:tc><w:p><w:r><w:t>常用倍速比例</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>64.2%</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>41.8%</w:t></w:r></w:p></w:tc></w:tr>
+          </w:tbl>
+          <w:p><w:pPr><w:pStyle w:val="Heading2"/></w:pPr><w:r><w:t>二、后续跟进建议</w:t></w:r></w:p>
+          <w:p><w:r><w:t>建议结合深度访谈对「信息过载疲劳」现象作进一步质性补充。</w:t></w:r></w:p>
+        </w:body></w:document>`,
+      },
+    ])
+  );
+
+  const sampleXlsx = path.join(wsDir, '阅读书单汇总.xlsx');
+  fs.writeFileSync(
+    sampleXlsx,
+    makeAuditZip([
+      {
+        name: 'xl/workbook.xml',
+        data: `<workbook xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="传播学书单" sheetId="1" r:id="rId1"/><sheet name="方法论参考" sheetId="2" r:id="rId2"/></sheets></workbook>`,
+      },
+      {
+        name: 'xl/_rels/workbook.xml.rels',
+        data: `<Relationships><Relationship Id="rId1" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Target="worksheets/sheet2.xml"/></Relationships>`,
+      },
+      {
+        name: 'xl/sharedStrings.xml',
+        data: `<sst><si><t>书名</t></si><si><t>作者</t></si><si><t>推荐年级</t></si><si><t>理解媒介</t></si><si><t>麦克卢汉</t></si><si><t>大二</t></si><si><t>传播学教程</t></si><si><t>郭庆光</t></si><si><t>大一</t></si></sst>`,
+      },
+      {
+        name: 'xl/worksheets/sheet1.xml',
+        data: `<worksheet><sheetData><row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c><c r="C1" t="s"><v>2</v></c></row><row r="2"><c r="A2" t="s"><v>3</v></c><c r="B2" t="s"><v>4</v></c><c r="C2" t="s"><v>5</v></c></row><row r="3"><c r="A3" t="s"><v>6</v></c><c r="B3" t="s"><v>7</v></c><c r="C3" t="s"><v>8</v></c></row></sheetData></worksheet>`,
+      },
+      {
+        name: 'xl/worksheets/sheet2.xml',
+        data: `<worksheet><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>研究方法书目</t></is></c></row></sheetData></worksheet>`,
+      },
+    ])
+  );
+
+  const samplePptx = path.join(wsDir, '课堂汇报演示.pptx');
+  fs.writeFileSync(
+    samplePptx,
+    makeAuditZip([
+      {
+        name: 'ppt/presentation.xml',
+        data: `<p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><p:sldIdLst><p:sldId id="256" r:id="rId1"/><p:sldId id="257" r:id="rId2"/></p:sldIdLst></p:presentation>`,
+      },
+      {
+        name: 'ppt/_rels/presentation.xml.rels',
+        data: `<Relationships><Relationship Id="rId1" Target="slides/slide1.xml"/><Relationship Id="rId2" Target="slides/slide2.xml"/></Relationships>`,
+      },
+      {
+        name: 'ppt/slides/_rels/slide1.xml.rels',
+        data: `<Relationships><Relationship Id="rNote1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesSlide" Target="../notesSlides/notesSlide1.xml"/></Relationships>`,
+      },
+      {
+        name: 'ppt/slides/slide1.xml',
+        data: `<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><p:cSld><p:spTree><p:sp><p:nvSpPr><p:nvPr><p:ph type="ctrTitle"/></p:nvPr></p:nvSpPr><p:txBody><a:p><a:r><a:t>新媒体调查方法 · 阶段汇报</a:t></a:r></a:p></p:txBody></p:sp><p:sp><p:nvSpPr><p:nvPr><p:ph type="subTitle"/></p:nvPr></p:nvSpPr><p:txBody><a:p><a:r><a:t>短视频平台青年用户碎片化观看机制研究</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sld>`,
+      },
+      {
+        name: 'ppt/slides/slide2.xml',
+        data: `<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><p:cSld><p:spTree><p:sp><p:nvSpPr><p:nvPr><p:ph type="title"/></p:nvPr></p:nvSpPr><p:txBody><a:p><a:r><a:t>关键发现与数据对比</a:t></a:r></a:p></p:txBody></p:sp><p:sp><p:nvSpPr><p:nvPr/></p:nvSpPr><p:txBody><a:p><a:pPr lvl="0"/><a:r><a:t>日均使用时长与碎片化频次显著正相关</a:t></a:r></a:p><a:p><a:pPr lvl="1"/><a:r><a:t>倍速观看已成为长视频消费常态</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sld>`,
+      },
+      {
+        name: 'ppt/notesSlides/notesSlide1.xml',
+        data: `<p:notes xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><p:cSld><p:spTree><p:sp><p:txBody><a:p><a:r><a:t>开场 30 秒：简要介绍选题来源与样本覆盖范围。</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:notes>`,
+      },
+    ])
+  );
 
   const grandparentMd = path.join(convBrain, '00_总纲入口.md');
   const summaryMd = path.join(convBrain, 'V2_验收汇总报告.md');
@@ -368,6 +527,41 @@ async function runAudit() {
     const overflowDirView = await cdp.evalAsync(`document.documentElement.scrollWidth - document.documentElement.clientWidth`);
     await cdp.screenshot(path.join(outDir, '11_390_crystal_dir_view.png'));
 
+    // 10. Rich Document Viewer Audit (DOCX Theme + Outline, DOCX Paper Mode, Narrow 390px DOCX, XLSX, PPTX)
+    await cdp.setViewport(1440, 900);
+    await cdp.evalAsync(`document.documentElement.setAttribute('data-aw-theme', 'obsidian')`);
+    await cdp.evalAsync(`window.__awWorkbench.openFile(${JSON.stringify(sampleDocx)}, { inNewTab: true })`);
+    await new Promise((r) => setTimeout(r, 320));
+    await cdp.evalAsync(`document.querySelector('[data-aw-doc-act="outline"]')?.click()`);
+    await new Promise((r) => setTimeout(r, 140));
+    await cdp.screenshot(path.join(outDir, '12_1440_obsidian_docx_outline.png'));
+
+    await cdp.evalAsync(`document.querySelector('[data-aw-doc-act="paper"]')?.click()`);
+    await new Promise((r) => setTimeout(r, 160));
+    await cdp.screenshot(path.join(outDir, '13_1440_obsidian_docx_paper.png'));
+
+    await cdp.setViewport(390, 844);
+    await cdp.evalAsync(`document.documentElement.setAttribute('data-aw-theme', 'crystal')`);
+    await cdp.evalAsync(`document.querySelector('[data-aw-outline-close]')?.click(); document.querySelector('[data-aw-doc-act="paper"]')?.click();`);
+    await new Promise((r) => setTimeout(r, 200));
+    const overflowDocxNarrow = await cdp.evalAsync(`document.documentElement.scrollWidth - document.documentElement.clientWidth`);
+    await cdp.screenshot(path.join(outDir, '14_390_crystal_docx.png'));
+
+    await cdp.setViewport(1100, 860);
+    await cdp.evalAsync(`document.documentElement.setAttribute('data-aw-theme', 'alabaster')`);
+    await cdp.evalAsync(`window.__awWorkbench.openFile(${JSON.stringify(sampleXlsx)}, { inNewTab: true })`);
+    await new Promise((r) => setTimeout(r, 260));
+    const overflowXlsx = await cdp.evalAsync(`document.documentElement.scrollWidth - document.documentElement.clientWidth`);
+    await cdp.screenshot(path.join(outDir, '15_1100_alabaster_xlsx.png'));
+
+    await cdp.evalAsync(`document.documentElement.setAttribute('data-aw-theme', 'warm')`);
+    await cdp.evalAsync(`window.__awWorkbench.openFile(${JSON.stringify(samplePptx)}, { inNewTab: true })`);
+    await new Promise((r) => setTimeout(r, 260));
+    await cdp.evalAsync(`document.querySelector('.aw-slide-notes')?.setAttribute('open', 'open')`);
+    await new Promise((r) => setTimeout(r, 120));
+    const overflowPptx = await cdp.evalAsync(`document.documentElement.scrollWidth - document.documentElement.clientWidth`);
+    await cdp.screenshot(path.join(outDir, '16_1100_warm_pptx.png'));
+
     console.log(JSON.stringify({
       ok: true,
       outDir,
@@ -377,6 +571,9 @@ async function runAudit() {
       overflowSettings,
       overflowSettingsCompat,
       overflowDirView,
+      overflowDocxNarrow,
+      overflowXlsx,
+      overflowPptx,
       consoleErrors: cdp.errors,
     }, null, 2));
   } finally {

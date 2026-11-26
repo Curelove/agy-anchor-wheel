@@ -19,6 +19,7 @@
   const STRIP_ID = 'aw-companion-strip';
   const PORTAL_ID = 'aw-native-portal';
   const OVERLAY_ID = 'aw-native-encoding-overlay';
+  const DOC_OVERLAY_ID = 'aw-native-doc-overlay';
   const GUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 
   let destroyed = false;
@@ -36,6 +37,12 @@
   let navScopeOverride = '';
   let activeTabTriggerMode = false;
   let encodingOverlayVisible = false;
+  let docOverlayVisible = false;
+  let docOverlayDismissedKey = '';
+  let docRenderSeq = 0;
+  let docViewerInstance = null;
+  let lastRenderedDocKey = '';
+  let lastRenderedDocData = null;
   let activePopoverName = '';
   let dragPayload = null;
   let domObserver = null;
@@ -72,6 +79,7 @@
     applyThemeAttr(D.getElementById(STRIP_ID));
     applyThemeAttr(D.getElementById(PORTAL_ID));
     applyThemeAttr(D.getElementById(OVERLAY_ID));
+    applyThemeAttr(D.getElementById(DOC_OVERLAY_ID));
   }
 
   function markOwned(el) {
@@ -375,6 +383,8 @@
   function findScrollContainer(col) {
     const contentWrap = getContentContainer(col);
     if (!contentWrap) return null;
+    const awScroll = contentWrap.querySelector('[data-aw-scroll-host="1"]');
+    if (awScroll) return awScroll;
     for (const el of contentWrap.querySelectorAll('div')) {
       if (el.scrollHeight > el.clientHeight + 20) {
         const cls = String(el.className || '');
@@ -1383,6 +1393,144 @@
     renderStrip();
   }
 
+  function getActiveRichDocMeta() {
+    if (!activeFilePath || activeIsDirectory) return null;
+    const meta = W.AnchorWheelDocViewer?.classifyDocPathClient?.(activeFilePath) || null;
+    if (!meta || meta.mode2Only) return null;
+    return meta;
+  }
+
+  function hideNativeContentSiblings(contentWrap, keepIds) {
+    if (!contentWrap) return;
+    for (const ch of Array.from(contentWrap.children)) {
+      if (keepIds.has(ch.id)) continue;
+      if (!ch.hasAttribute('data-aw-orig-hidden')) {
+        ch.setAttribute('data-aw-orig-hidden', '1');
+        ch.setAttribute('data-aw-orig-disp', ch.style.display || '');
+        ch.style.display = 'none';
+      } else if (ch.style.display !== 'none') {
+        ch.style.display = 'none';
+      }
+    }
+  }
+
+  function restoreNativeContentSiblings(contentWrap) {
+    if (!contentWrap) return;
+    for (const ch of Array.from(contentWrap.children)) {
+      if (ch.hasAttribute('data-aw-orig-hidden')) {
+        ch.style.display = ch.getAttribute('data-aw-orig-disp') || '';
+        ch.removeAttribute('data-aw-orig-hidden');
+        ch.removeAttribute('data-aw-orig-disp');
+      }
+    }
+  }
+
+  function closeDocOverlay({ dismiss = false } = {}) {
+    docRenderSeq++;
+    try { docViewerInstance?.destroy?.(); } catch {}
+    docViewerInstance = null;
+    const existing = D.getElementById(DOC_OVERLAY_ID);
+    if (existing) {
+      try { existing.remove(); } catch {}
+    }
+    docOverlayVisible = false;
+    if (dismiss && activeFilePath) {
+      docOverlayDismissedKey = normKey(activeFilePath);
+    }
+    if (!encodingOverlayVisible) {
+      restoreNativeContentSiblings(getContentContainer(getRightPaneColumn()));
+    }
+  }
+
+  async function openDocOverlay({ force = false } = {}) {
+    const meta = getActiveRichDocMeta();
+    const col = getRightPaneColumn();
+    const contentWrap = getContentContainer(col);
+    if (!meta || !contentWrap || !W.AnchorWheelDocViewer) return false;
+
+    const targetPath = activeFilePath;
+    const targetKey = normKey(targetPath);
+    if (!force && docOverlayDismissedKey === targetKey) return false;
+    if (force) docOverlayDismissedKey = '';
+
+    // Ensure encoding overlay isn't simultaneously active
+    if (encodingOverlayVisible) {
+      D.getElementById(OVERLAY_ID)?.remove();
+      encodingOverlayVisible = false;
+    }
+
+    const mySeq = ++docRenderSeq;
+    let host = D.getElementById(DOC_OVERLAY_ID);
+    if (!host || host.parentElement !== contentWrap) {
+      if (host) {
+        try { host.remove(); } catch {}
+      }
+      host = markOwned(D.createElement('div'));
+      host.id = DOC_OVERLAY_ID;
+      host.className = 'aw-doc-overlay-host';
+      contentWrap.appendChild(host);
+    }
+    applyThemeAttr(host);
+    hideNativeContentSiblings(contentWrap, new Set([DOC_OVERLAY_ID]));
+    docOverlayVisible = true;
+
+    let docData = lastRenderedDocKey === targetKey && lastRenderedDocData ? lastRenderedDocData : null;
+    if (!docData) {
+      host.innerHTML = `<div class="aw-doc-loading-card">正在解析 ${S?.esc ? S.esc(baseName(targetPath)) : baseName(targetPath)} ...</div>`;
+      const res = await callRpc('renderDocument', { path: targetPath }, 15000);
+      if (destroyed || mySeq !== docRenderSeq || normKey(activeFilePath) !== targetKey) {
+        return false;
+      }
+      if (!res || !res.ok) {
+        host.innerHTML = `
+          <div class="aw-doc-loading-card">
+            <div style="margin-bottom:10px;color:var(--aw-fg);font-weight:600">无法在侧边栏直接渲染此文件</div>
+            <div style="margin-bottom:12px">${S?.esc ? S.esc(res?.error || '格式暂不支持或文件受加密保护') : String(res?.error || '')}</div>
+            <div style="display:flex;justify-content:center;gap:8px;flex-wrap:wrap">
+              <button type="button" class="aw-primary-btn" id="aw-doc-err-ext">用系统软件打开</button>
+              <button type="button" class="aw-ghost-btn" id="aw-doc-err-native">切回原生视图</button>
+            </div>
+          </div>
+        `;
+        host.querySelector('#aw-doc-err-ext')?.addEventListener('click', () => {
+          void callRpc('openExternal', { path: targetPath }).then((r) => {
+            if (!r?.ok) showToast(`外部打开失败：${r?.error || '未知错误'}`);
+          });
+        });
+        host.querySelector('#aw-doc-err-native')?.addEventListener('click', () => {
+          closeDocOverlay({ dismiss: true });
+          renderStrip();
+        });
+        renderStrip();
+        return false;
+      }
+      docData = res;
+      lastRenderedDocKey = targetKey;
+      lastRenderedDocData = res;
+    }
+
+    try { docViewerInstance?.destroy?.(); } catch {}
+    docViewerInstance = W.AnchorWheelDocViewer.mountDocumentViewer(host, docData, {
+      paperMode: Boolean(settings.richDocPaperMode),
+      rawLabel: meta.optionalTable ? '源码视图' : '原生视图',
+      onTogglePaperMode: (nextPaper) => {
+        settings = { ...settings, richDocPaperMode: Boolean(nextPaper) };
+        void callRpc('updateSettings', { settings: { richDocPaperMode: Boolean(nextPaper) } });
+      },
+      onOpenExternal: async (p) => {
+        const res = await callRpc('openExternal', { path: p || targetPath });
+        if (res?.ok) showToast('已调用系统默认应用打开');
+        else showToast(`外部打开失败：${res?.error || '未知错误'}`);
+      },
+      onSwitchToRaw: () => {
+        closeDocOverlay({ dismiss: true });
+        renderStrip();
+      },
+    });
+    renderStrip();
+    return true;
+  }
+
   function getHostCompatibilityDiag() {
     const { browserCtx, reduxStore, router } = discoverHostBridge();
     const col = getRightPaneColumn();
@@ -1429,6 +1577,16 @@
         navScopeOverride = '';
         applyThemeToNativeNodes();
         applyNonDestructiveTabFolding();
+        if (docOverlayVisible && settings.richDocPreviewEnabled === false) {
+          closeDocOverlay({ dismiss: false });
+        } else if (docOverlayVisible && docViewerInstance?.setPaperMode) {
+          docViewerInstance.setPaperMode(Boolean(settings.richDocPaperMode));
+        } else if (!docOverlayVisible && settings.richDocPreviewEnabled !== false) {
+          const meta = getActiveRichDocMeta();
+          if (meta?.autoRender && docOverlayDismissedKey !== normKey(activeFilePath)) {
+            void openDocOverlay({ force: false });
+          }
+        }
         cachedNavContext = await fetchNavContext();
         renderStrip();
         showToast('锚点轮盘设置已生效');
@@ -1601,11 +1759,33 @@
       strip.appendChild(linksBtn);
     }
 
+    const activeRichMeta = getActiveRichDocMeta();
+    if (activeRichMeta && !docOverlayVisible) {
+      const docBtn = markOwned(D.createElement('button'));
+      docBtn.className = 'aw-status-pill';
+      docBtn.setAttribute('data-aw-role', 'doc-preview-btn');
+      docBtn.setAttribute('data-has-links', '1');
+      docBtn.textContent = activeRichMeta.optionalTable ? '表格预览' : `${activeRichMeta.badge} 预览`;
+      docBtn.title = activeRichMeta.optionalTable
+        ? '以交互表格方式查看此 CSV / TSV 文件'
+        : `在侧边栏直接渲染此 ${activeRichMeta.badge} 文档`;
+      docBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        void openDocOverlay({ force: true });
+      });
+      strip.appendChild(docBtn);
+    }
+
     const domHasMojibake = (() => {
-      if (!contentEl || activeIsDirectory) return false;
+      if (!contentEl || activeIsDirectory || docOverlayVisible || activeRichMeta?.isBinaryDoc) return false;
       return (contentEl.textContent || '').slice(0, 2000).includes('\uFFFD');
     })();
-    if (activeFilePath && !activeIsDirectory && (activeEncodingInfo?.isNonUtf8 || activeEncodingInfo?.mojibakeHint || domHasMojibake || encodingOverlayVisible)) {
+    if (
+      activeFilePath &&
+      !activeIsDirectory &&
+      !activeRichMeta?.isBinaryDoc &&
+      (activeEncodingInfo?.isNonUtf8 || activeEncodingInfo?.mojibakeHint || domHasMojibake || encodingOverlayVisible)
+    ) {
       const encBtn = markOwned(D.createElement('button'));
       encBtn.className = 'aw-status-pill';
       encBtn.setAttribute('data-warn', '1');
@@ -1637,6 +1817,10 @@
     const switchedConv = Boolean(lastConversationId && curCid !== lastConversationId);
     if (switchedConv) {
       // Isolate session state cleanly when user switches Antigravity conversations
+      closeDocOverlay({ dismiss: false });
+      docOverlayDismissedKey = '';
+      lastRenderedDocKey = '';
+      lastRenderedDocData = null;
       session = null;
       cachedNavContext = null;
       activeFilePath = '';
@@ -1691,6 +1875,10 @@
     if (changedFile) {
       const oldOv = D.getElementById(OVERLAY_ID);
       if (oldOv) void toggleEncodingRepairOverlay('');
+      closeDocOverlay({ dismiss: false });
+      docOverlayDismissedKey = '';
+      lastRenderedDocKey = '';
+      lastRenderedDocData = null;
       activeFilePath = curFile;
       activeIsDirectory = curIsDir;
     }
@@ -1726,10 +1914,11 @@
       }
     }
 
+    const activeDocMeta = getActiveRichDocMeta();
     if (activeFilePath && (changedFile || !activeFileLinks.path)) {
       const [linksRes, encRes] = await Promise.all([
         callRpc('getBacklinks', { path: activeFilePath, workspaceRoots: wsRoots }),
-        !activeIsDirectory && settings.encodingAutoDetect !== false
+        !activeIsDirectory && !activeDocMeta?.isBinaryDoc && settings.encodingAutoDetect !== false
           ? callRpc('inspectEncoding', { path: activeFilePath })
           : Promise.resolve({ ok: false }),
       ]);
@@ -1743,6 +1932,24 @@
 
     if (activeFilePath) {
       cachedNavContext = await fetchNavContext(navScopeOverride);
+    }
+
+    // Automatically render rich documents (DOCX, XLSX, PPTX, ODT, RTF, EPUB, DOC, ZIP) when Antigravity cannot preview them
+    if (
+      activeDocMeta &&
+      activeDocMeta.autoRender &&
+      settings.richDocPreviewEnabled !== false &&
+      docOverlayDismissedKey !== normKey(activeFilePath)
+    ) {
+      const contentWrap = getContentContainer(getRightPaneColumn());
+      const curOverlay = D.getElementById(DOC_OVERLAY_ID);
+      if (!docOverlayVisible || !curOverlay || curOverlay.parentElement !== contentWrap) {
+        void openDocOverlay({ force: false });
+      } else {
+        hideNativeContentSiblings(contentWrap, new Set([DOC_OVERLAY_ID]));
+      }
+    } else if (!activeDocMeta && docOverlayVisible) {
+      closeDocOverlay({ dismiss: false });
     }
 
     applyNonDestructiveTabFolding();
@@ -2015,7 +2222,13 @@
 
   function onPointerDown(ev) {
     if (destroyed || !isInsideRightContent(ev.target)) return;
-    if (ev.target?.closest?.('[data-aw-owned="1"]')) return;
+    if (ev.target?.closest?.('[data-aw-owned="1"]')) {
+      const allowPassthrough = Boolean(
+        ev.target?.closest?.('[data-aw-wheel-passthrough="1"]') &&
+        !ev.target?.closest?.('button, a, input, select, textarea, summary, label, .aw-doc-toolbar, .aw-doc-findbar, .aw-doc-sheetbar, .aw-doc-outline')
+      );
+      if (!allowPassthrough) return;
+    }
     if (extractLinkMetaFromTarget(ev.target)) return;
     const midMode = settings.middleMode || 'bilateral_wheel';
     if (midMode === 'off' || ev.button !== 1) return;
@@ -2188,6 +2401,15 @@
         }
         if (col && contentEl && (!strip || strip.parentElement !== col)) {
           scheduleSync();
+          return;
+        }
+        if (docOverlayVisible && contentEl) {
+          const docOv = D.getElementById(DOC_OVERLAY_ID);
+          if (!docOv || docOv.parentElement !== contentEl) {
+            scheduleSync();
+          } else {
+            hideNativeContentSiblings(contentEl, new Set([DOC_OVERLAY_ID]));
+          }
         }
       }, 150);
     });
@@ -2208,6 +2430,9 @@
         activeFilePath,
         activeIsDirectory,
         dirChildCount: activeIsDirectory ? (cachedNavContext?.current?.children?.length || 0) : 0,
+        docOverlayVisible,
+        activeDocFormat: lastRenderedDocData?.format || '',
+        docOutlineCount: lastRenderedDocData?.outline?.length || 0,
         activePopoverName,
         outlinkCount: activeFileLinks.outlinks?.length || 0,
         backlinkCount: activeFileLinks.backlinks?.length || 0,
@@ -2224,6 +2449,11 @@
       if (payload.settings) {
         settings = payload.settings;
         applyThemeToNativeNodes();
+        if (docOverlayVisible && settings.richDocPreviewEnabled === false) {
+          closeDocOverlay({ dismiss: false });
+        } else if (docOverlayVisible && docViewerInstance?.setPaperMode) {
+          docViewerInstance.setPaperMode(Boolean(settings.richDocPaperMode));
+        }
       }
       if (payload.session && (!payload.conversationId || payload.conversationId === resolveConversationId())) {
         session = payload.session;
@@ -2256,6 +2486,7 @@
       try { storeUnsubscribe?.(); } catch {}
       storeUnsubscribe = null;
       domObserver?.disconnect?.();
+      closeDocOverlay({ dismiss: false });
       closeAllNavigators();
       settingsModalInstance?.close?.();
       closePopover();

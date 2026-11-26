@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { openExternalDocument, renderDocument } from './document_renderer.mjs';
 import { convertFileToUtf8, inspectFileEncoding } from './encoding.mjs';
 import { buildNavContext, classifyFile, listDirectoryDirectFiles } from './nav_context.mjs';
 import { PreviewService } from './preview_service.mjs';
@@ -92,6 +93,7 @@ export function createRouterHandlers({
     ['/ae_tree.js', 'shared/ae_tree.js', 'application/javascript; charset=utf-8'],
     ['/settings_modal.js', 'shared/settings_modal.js', 'application/javascript; charset=utf-8'],
     ['/markdown.js', 'shared/markdown_render.js', 'application/javascript; charset=utf-8'],
+    ['/doc_viewer.js', 'shared/doc_viewer.js', 'application/javascript; charset=utf-8'],
   ];
 
   const routes = new Map();
@@ -333,6 +335,14 @@ export function createRouterHandlers({
       return { ok: false, error: 'Explicit user confirmation required' };
     }
     return convertFileToUtf8(data?.path, data?.encoding || '');
+  });
+
+  routes.set('POST /api/doc/render', (data) => {
+    return renderDocument(data?.path || '', { snippetOnly: Boolean(data?.snippetOnly) });
+  });
+
+  routes.set('POST /api/file/open-external', (data) => {
+    return openExternalDocument(data?.path || '', { dryRun: Boolean(data?.dryRun) });
   });
 
   routes.set('POST /api/launcher/generate', () => {

@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { openExternalDocument, renderDocument } from './document_renderer.mjs';
 import { convertFileToUtf8, inspectFileEncoding } from './encoding.mjs';
 import { buildNavContext, classifyFile, listDirectoryDirectFiles } from './nav_context.mjs';
 import { PreviewService } from './preview_service.mjs';
@@ -178,6 +179,7 @@ const BUNDLE_SOURCE_FILES = Object.freeze([
   ['shared', 'ae_tree.js'],
   ['shared', 'settings_modal.js'],
   ['shared', 'markdown_render.js'],
+  ['shared', 'doc_viewer.js'],
   ['native', 'native_enhancer.js'],
 ]);
 
@@ -236,6 +238,7 @@ export class CdpBridge {
     const aeTreeJs = fs.readFileSync(path.join(SIDECAR_ROOT, 'shared', 'ae_tree.js'), 'utf8');
     const settingsModalJs = fs.readFileSync(path.join(SIDECAR_ROOT, 'shared', 'settings_modal.js'), 'utf8');
     const mdJs = fs.readFileSync(path.join(SIDECAR_ROOT, 'shared', 'markdown_render.js'), 'utf8');
+    const docViewerJs = fs.readFileSync(path.join(SIDECAR_ROOT, 'shared', 'doc_viewer.js'), 'utf8');
     const nativeJs = fs.readFileSync(path.join(SIDECAR_ROOT, 'native', 'native_enhancer.js'), 'utf8');
     const meta = this.updateService?.getPluginMeta?.() || null;
 
@@ -256,6 +259,7 @@ export class CdpBridge {
       aeTreeJs,
       settingsModalJs,
       mdJs,
+      docViewerJs,
       nativeJs,
     ].join('\n;\n');
   }
@@ -464,6 +468,10 @@ export class CdpBridge {
       case 'convertUtf8':
         if (!req.confirm) return { ok: false, error: 'Explicit confirm required' };
         return convertFileToUtf8(req.path, req.encoding || '');
+      case 'renderDocument':
+        return renderDocument(req.path || '', { snippetOnly: Boolean(req.snippetOnly) });
+      case 'openExternal':
+        return openExternalDocument(req.path || '', { dryRun: Boolean(req.dryRun) });
       default:
         return { ok: false, error: `Unknown action: ${action}` };
     }

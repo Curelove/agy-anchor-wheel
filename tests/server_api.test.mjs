@@ -190,7 +190,30 @@ test('standalone HTTP API serves UI assets, session ops, backlinks, and encoding
     assert.equal(dirPrevRes.subdirCount, 1);
     assert.equal(dirPrevRes.entries.some((e) => e.name === '.env'), false);
 
-    for (const staticPath of ['/nav_shared.js', '/bilateral_wheel.js', '/ae_tree.js', '/settings_modal.js']) {
+    const rtfFile = path.join(wsDir, 'sample.rtf');
+    fs.writeFileSync(rtfFile, '{\\rtf1\\ansi\\ansicpg936 \\\'d6\\\'d0\\\'ce\\\'c4\\par Hello RTF}', 'latin1');
+    const docRenderRes = await (
+      await fetch(`${base}/api/doc/render`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: rtfFile }),
+      })
+    ).json();
+    assert.equal(docRenderRes.ok, true);
+    assert.equal(docRenderRes.format, 'rtf');
+    assert.ok(docRenderRes.bodyHtml.includes('中文'));
+
+    const openExtRes = await (
+      await fetch(`${base}/api/file/open-external`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: rtfFile, dryRun: true }),
+      })
+    ).json();
+    assert.equal(openExtRes.ok, true);
+    assert.equal(openExtRes.dryRun, true);
+
+    for (const staticPath of ['/nav_shared.js', '/bilateral_wheel.js', '/ae_tree.js', '/settings_modal.js', '/doc_viewer.js']) {
       const sr = await fetch(`${base}${staticPath}`);
       assert.equal(sr.status, 200);
     }

@@ -48,6 +48,22 @@ test('PreviewService handles text head truncation, GBK decoding, directories, sm
     assert.equal(pDir.kind, 'directory');
     assert.equal(pDir.itemCount, 3);
 
+    const rtfFile = path.join(wsDir, 'memo.rtf');
+    fs.writeFileSync(rtfFile, '{\\rtf1\\ansi\\ansicpg936 \\\'d6\\\'d0\\\'ce\\\'c4\\par Second line}', 'latin1');
+    const pRtf = await svc.getPreview(rtfFile);
+    assert.equal(pRtf.ok, true);
+    assert.equal(pRtf.kind, 'document');
+    assert.equal(pRtf.format, 'rtf');
+    assert.ok(pRtf.snippetText.includes('中文'));
+
+    const csvFile = path.join(wsDir, 'sheet.csv');
+    fs.writeFileSync(csvFile, 'Name,Score\nAlice,95\nBob,88\n', 'utf8');
+    const pCsv = await svc.getPreview(csvFile);
+    assert.equal(pCsv.ok, true);
+    assert.equal(pCsv.kind, 'document');
+    assert.equal(pCsv.format, 'csv');
+    assert.ok(pCsv.snippetText.includes('Alice'));
+
     const pUnc = await svc.getPreview('\\\\evil-host\\share\\secret.md');
     assert.equal(pUnc.ok, false);
 

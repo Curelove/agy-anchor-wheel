@@ -7,7 +7,7 @@
   'use strict';
 
   const KNOWN_EXT_RE =
-    /\.(?:md|mdx|txt|log|rst|json|jsonc|yaml|yml|toml|ini|js|mjs|cjs|jsx|ts|mts|cts|tsx|py|rb|go|rs|java|kt|c|h|cpp|hpp|cs|php|lua|sh|bash|ps1|bat|cmd|sql|css|scss|less|html|htm|xml|svg|png|jpg|jpeg|webp|gif|mp4|webm|mov|mkv|mp3|wav|ogg|flac|m4a|srt|ass|pdf|csv|tsv)$/i;
+    /\.(?:md|mdx|txt|log|rst|json|jsonc|yaml|yml|toml|ini|js|mjs|cjs|jsx|ts|mts|cts|tsx|py|rb|go|rs|java|kt|c|h|cpp|hpp|cs|php|lua|sh|bash|ps1|bat|cmd|sql|css|scss|less|html|htm|xml|svg|png|jpg|jpeg|webp|gif|mp4|webm|mov|mkv|mp3|wav|ogg|flac|m4a|srt|ass|pdf|csv|tsv|docx|doc|xlsx|xlsm|xls|pptx|ppt|odt|ods|odp|rtf|epub|zip)$/i;
 
   function esc(str) {
     return String(str ?? '')

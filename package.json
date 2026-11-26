@@ -1,11 +1,11 @@
 {
   "name": "agy-anchor-wheel",
-  "version": "0.7.1",
-  "description": "Dual-mode Antigravity side-pane enhancer & workbench: Priority Anchor tab groups, StarPie-style radial wheel, folder view navigation, Obsidian backlinks, non-overwriting MD links, and auto-encoding repair.",
+  "version": "0.8.0",
+  "description": "Dual-mode Antigravity side-pane enhancer & workbench: zero-dependency DOCX/XLSX/PPTX/ODF/RTF/EPUB/CSV document preview, Priority Anchor tab groups, Bilateral Wheel, folder view navigation, Obsidian backlinks, non-overwriting MD links, and auto-encoding repair.",
   "type": "module",
   "main": "sidecars/anchor_wheel/main.mjs",
   "scripts": {
-    "test": "node --test tests/encoding.test.mjs tests/backlink_index.test.mjs tests/group_lru.test.mjs tests/preview_service.test.mjs tests/update_service.test.mjs tests/directory_nav.test.mjs tests/server_api.test.mjs tests/native_logic.test.mjs",
+    "test": "node --test tests/encoding.test.mjs tests/backlink_index.test.mjs tests/group_lru.test.mjs tests/preview_service.test.mjs tests/update_service.test.mjs tests/directory_nav.test.mjs tests/document_renderer.test.mjs tests/server_api.test.mjs tests/native_logic.test.mjs",
     "install:plugin": "node scripts/install-plugin.mjs",
     "remove:plugin": "node scripts/remove-plugin.mjs",
     "package:release": "node scripts/package-release.mjs",

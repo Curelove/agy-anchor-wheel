@@ -2,6 +2,7 @@ import { execFile, execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { getSupportedDocumentMeta, renderDocument } from './document_renderer.mjs';
 import { decodeBuffer } from './encoding.mjs';
 import { isSensitiveFilePath, resolveSafeDirPath, resolveSafeReadPath } from './security.mjs';
 
@@ -535,6 +536,33 @@ export class PreviewService {
       };
       this.#setMem(memKey, res);
       return res;
+    }
+
+    // 3.5 Rich Office / E-Book / Table / Archive / PDF quick snippet preview
+    const richDocMeta = getSupportedDocumentMeta(filePath);
+    if (richDocMeta) {
+      const parsed = renderDocument(filePath, { snippetOnly: true });
+      if (parsed && parsed.ok) {
+        const lines = Array.isArray(parsed.snippetLines) ? parsed.snippetLines.slice(0, 14) : [];
+        const snippetText = lines.join('\n').trimEnd();
+        const res = {
+          ok: true,
+          kind: 'document',
+          format: parsed.format,
+          formatLabel: parsed.formatLabel,
+          badge: parsed.badge,
+          statsLabel: parsed.meta?.statsLabel || '',
+          path: filePath,
+          title: path.basename(filePath),
+          ext: ext.slice(1),
+          sizeBytes: stat.size,
+          lines,
+          snippetText,
+          truncated: true,
+        };
+        this.#setMem(memKey, res);
+        return res;
+      }
     }
 
     // 4. Text / Markdown / Code: strictly read only first 8192 bytes!

@@ -136,6 +136,8 @@
       if (g('#aw-sm-prev-en')) draft.hoverPreviewEnabled = Boolean(g('#aw-sm-prev-en').checked);
       if (g('#aw-sm-prev-delay')) draft.hoverPreviewDelayMs = Number(g('#aw-sm-prev-delay').value);
       if (g('#aw-sm-prev-anim')) draft.videoPreviewAnimated = Boolean(g('#aw-sm-prev-anim').checked);
+      if (g('#aw-sm-rich-doc')) draft.richDocPreviewEnabled = Boolean(g('#aw-sm-rich-doc').checked);
+      if (g('#aw-sm-rich-paper')) draft.richDocPaperMode = Boolean(g('#aw-sm-rich-paper').checked);
 
       const ruleRows = modalEl.querySelectorAll('[data-aw-rule-idx]');
       if (ruleRows.length) {
@@ -204,6 +206,7 @@
       for (const id of ['#aw-sm-row-prev-delay', '#aw-sm-row-prev-anim']) {
         modalEl.querySelector(id)?.setAttribute('data-dim', prevOff ? '1' : '0');
       }
+      modalEl.querySelector('#aw-sm-row-rich-paper')?.setAttribute('data-dim', draft.richDocPreviewEnabled === false ? '1' : '0');
 
       modalEl.querySelectorAll('[data-aw-guide-card]').forEach((card) => {
         const key = card.getAttribute('data-aw-guide-card');
@@ -548,6 +551,20 @@
                 <span>先秒出非黑帧截图，后台异步缓存压缩动态图</span>
               </div>
               <input type="checkbox" id="aw-sm-prev-anim" class="aw-reactive-ctrl" ${s.videoPreviewAnimated !== false ? 'checked' : ''} />
+            </div>
+            <div class="aw-form-row">
+              <div class="aw-form-label">
+                <strong>右侧栏自动预览 Word / Excel / PPT 等文档</strong>
+                <span>支持 docx、xlsx、pptx、odt、rtf、epub、zip 直览，随时可切回原生</span>
+              </div>
+              <input type="checkbox" id="aw-sm-rich-doc" class="aw-reactive-ctrl" ${s.richDocPreviewEnabled !== false ? 'checked' : ''} />
+            </div>
+            <div class="aw-form-row" id="aw-sm-row-rich-paper">
+              <div class="aw-form-label">
+                <strong>Word 等文档默认采用纸面原稿外观</strong>
+                <span>开启为白纸黑字保留原稿色阶；关闭则自动跟随明暗主题</span>
+              </div>
+              <input type="checkbox" id="aw-sm-rich-paper" class="aw-reactive-ctrl" ${s.richDocPaperMode ? 'checked' : ''} />
             </div>
           </div>
 

@@ -164,6 +164,13 @@ body {
   box-sizing: border-box;
 }
 
+.aw-reader[data-aw-doc-mode="1"] {
+  padding: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
 /* Editorial Markdown Typography */
 .aw-md-doc {
   max-width: 780px;

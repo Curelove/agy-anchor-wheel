@@ -20,6 +20,7 @@
     activeTabNavMode: false,
     activePopover: null,
     dragPayload: null,
+    docViewerInstance: null,
   };
 
   const els = {
@@ -640,7 +641,7 @@
     else els.btnLinks.removeAttribute('data-has-links');
 
     const enc = state.currentDoc.encoding || 'utf-8';
-    els.btnEncoding.hidden = Boolean(state.currentDoc.isBinary || isDir);
+    els.btnEncoding.hidden = Boolean(state.currentDoc.isBinary || isDir || state.currentDoc.isRichDoc);
     els.encodingLabel.textContent = enc.toUpperCase();
     if (state.currentDoc.isNonUtf8 || state.currentDoc.mojibakeHint) {
       els.btnEncoding.setAttribute('data-warn', '1');
@@ -705,11 +706,12 @@
 
     // Save current scrollTop before leaving
     if (prevPath && !opts.skipHistory) {
+      const curScrollTop = state.docViewerInstance?.getScrollEl?.()?.scrollTop ?? els.reader.scrollTop;
       await apiPost('/api/session', {
         conversationId,
         op: 'history',
         action: 'updateScroll',
-        scrollTop: els.reader.scrollTop,
+        scrollTop: curScrollTop,
       });
     }
 
@@ -718,12 +720,27 @@
     const isImage = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'svg', 'bmp', 'ico', 'avif'].includes(ext);
     const isAudio = ['mp3', 'wav', 'ogg', 'm4a', 'flac'].includes(ext);
     const isVideo = ['mp4', 'webm', 'mov'].includes(ext);
+    const richDocMeta = !wantDir ? window.AnchorWheelDocViewer?.classifyDocPathClient?.(rawPath) : null;
+    const wantRichDoc = Boolean(
+      richDocMeta &&
+      !opts.forceRawText &&
+      (richDocMeta.autoRender || richDocMeta.mode2Only || (richDocMeta.optionalTable && !opts.overrideEncoding))
+    );
 
     let doc;
     if (wantDir) {
       doc = await apiPost('/api/dir/list', { path: rawPath });
     } else if (isImage || isAudio || isVideo) {
       doc = { ok: true, path: rawPath, isMedia: true, mediaKind: isImage ? 'image' : isAudio ? 'audio' : 'video', isBinary: true };
+    } else if (wantRichDoc) {
+      const rendered = await apiPost('/api/doc/render', { path: rawPath });
+      if (rendered?.ok) {
+        doc = { ...rendered, isRichDoc: true, isBinary: Boolean(richDocMeta.isBinaryDoc) };
+      } else if (richDocMeta.optionalTable) {
+        doc = await apiPost('/api/file/read', { path: rawPath, encoding: opts.overrideEncoding || '' });
+      } else {
+        doc = rendered;
+      }
     } else {
       doc = await apiPost('/api/file/read', {
         path: rawPath,
@@ -736,6 +753,9 @@
     }
 
     if (!doc || !doc.ok) {
+      try { state.docViewerInstance?.destroy?.(); } catch {}
+      state.docViewerInstance = null;
+      els.reader.removeAttribute('data-aw-doc-mode');
       els.reader.innerHTML = `<div class="aw-hero-card"><h3>无法打开文件</h3><p class="aw-hero-sub">${window.AnchorWheelMarkdown.esc(doc?.error || rawPath)}</p></div>`;
       return;
     }
@@ -829,6 +849,39 @@
   }
 
   function renderDocumentBody(doc, opts = {}) {
+    try { state.docViewerInstance?.destroy?.(); } catch {}
+    state.docViewerInstance = null;
+    els.reader.removeAttribute('data-aw-doc-mode');
+
+    if (doc.isRichDoc && window.AnchorWheelDocViewer) {
+      els.reader.setAttribute('data-aw-doc-mode', '1');
+      const isCsvLike = doc.format === 'csv' || doc.format === 'tsv';
+      state.docViewerInstance = window.AnchorWheelDocViewer.mountDocumentViewer(els.reader, doc, {
+        paperMode: Boolean(state.settings?.richDocPaperMode),
+        pdfRawUrl: doc.format === 'pdf' ? `/api/file/raw?path=${encodeURIComponent(doc.path)}` : '',
+        rawLabel: isCsvLike ? '源码视图' : '',
+        onTogglePaperMode: (nextPaper) => {
+          state.settings = { ...(state.settings || {}), richDocPaperMode: Boolean(nextPaper) };
+          void apiPost('/api/settings', { settings: { richDocPaperMode: Boolean(nextPaper) } });
+        },
+        onOpenExternal: async (p) => {
+          const r = await apiPost('/api/file/open-external', { path: p || doc.path });
+          if (r?.ok) showToast('已调用系统默认应用打开');
+          else showToast(`外部打开失败：${r?.error || '未知错误'}`);
+        },
+        onSwitchToRaw: isCsvLike
+          ? () => void openFile(doc.path, { skipHistory: true, forceRawText: true })
+          : null,
+      });
+      if (opts.restoreScrollTop) {
+        requestAnimationFrame(() => {
+          const sc = state.docViewerInstance?.getScrollEl?.();
+          if (sc) sc.scrollTop = opts.restoreScrollTop;
+        });
+      }
+      return;
+    }
+
     if (doc.isDirectory) {
       const files = Array.isArray(doc.files) ? doc.files : [];
       const esc = window.AnchorWheelMarkdown.esc;
@@ -1049,6 +1102,9 @@
   }
 
   async function renderHomeDesk() {
+    try { state.docViewerInstance?.destroy?.(); } catch {}
+    state.docViewerInstance = null;
+    els.reader.removeAttribute('data-aw-doc-mode');
     updateSubbar();
     renderEncodingBanner(null);
     const wsQuery = state.workspaceRoots.join('|');
@@ -1457,6 +1513,9 @@
           state.settings = res.settings;
           state.navScopeOverride = '';
           applyThemeFromSettings();
+          if (state.docViewerInstance?.setPaperMode) {
+            state.docViewerInstance.setPaperMode(Boolean(state.settings?.richDocPaperMode));
+          }
           await refreshNavContext();
           showToast('设置已保存并刷新索引');
         }
@@ -1481,7 +1540,7 @@
       conversationId,
       op: 'history',
       action: 'updateScroll',
-      scrollTop: els.reader.scrollTop,
+      scrollTop: state.docViewerInstance?.getScrollEl?.()?.scrollTop ?? els.reader.scrollTop,
     });
     const res = await apiPost('/api/session', {
       conversationId,
@@ -1640,7 +1699,7 @@
     );
 
     els.reader.addEventListener('pointerdown', (ev) => {
-      if (ev.target.closest('[data-aw-link], a, input, button:not([data-aw-dir-file])')) return;
+      if (ev.target.closest('[data-aw-link], a, input, select, textarea, summary, label, button:not([data-aw-dir-file]), .aw-doc-toolbar, .aw-doc-findbar, .aw-doc-sheetbar, .aw-doc-outline')) return;
       const midMode = state.settings?.middleMode || 'bilateral_wheel';
       if (midMode === 'off' || ev.button !== 1) return;
       ev.preventDefault();

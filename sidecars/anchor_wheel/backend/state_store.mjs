@@ -17,7 +17,10 @@ export const DEFAULT_CATEGORY_RULES = Object.freeze([
   Object.freeze({
     id: 'doc',
     label: '文档',
-    extensions: Object.freeze(['md', 'mdx', 'txt', 'pdf', 'docx', 'doc', 'srt', 'ass', 'ssa', 'json', 'yaml', 'yml', 'csv']),
+    extensions: Object.freeze([
+      'md', 'mdx', 'txt', 'pdf', 'docx', 'doc', 'xlsx', 'xlsm', 'xls', 'pptx', 'ppt',
+      'odt', 'ods', 'odp', 'rtf', 'epub', 'srt', 'ass', 'ssa', 'json', 'yaml', 'yml', 'csv', 'tsv',
+    ]),
   }),
 ]);
 
@@ -37,6 +40,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
   hoverPreviewEnabled: true,
   hoverPreviewDelayMs: 250,
   videoPreviewAnimated: true,
+  richDocPreviewEnabled: true,
+  richDocPaperMode: false,
   categoryRules: DEFAULT_CATEGORY_RULES,
   scanWorkspace: true,
   scanArtifacts: true,
@@ -128,6 +133,8 @@ export function sanitizeSettings(raw, base = DEFAULT_SETTINGS) {
     if (Number.isFinite(ms) && ms >= 0 && ms <= 1500) next.hoverPreviewDelayMs = ms;
   }
   if (typeof src.videoPreviewAnimated === 'boolean') next.videoPreviewAnimated = src.videoPreviewAnimated;
+  if (typeof src.richDocPreviewEnabled === 'boolean') next.richDocPreviewEnabled = src.richDocPreviewEnabled;
+  if (typeof src.richDocPaperMode === 'boolean') next.richDocPaperMode = src.richDocPaperMode;
   if (Array.isArray(src.categoryRules)) {
     next.categoryRules = sanitizeCategoryRules(src.categoryRules, next.categoryRules);
   }

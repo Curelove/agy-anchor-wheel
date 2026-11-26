@@ -1251,3 +1251,336 @@ test('Mode 1 native_enhancer: directoryView in-place transition, YYc file-row no
     } catch {}
   }
 });
+
+test('Mode 1 native_enhancer: auto-renders DOCX overlay over dead native preview, supports outline/find/paper/wheel, and optional CSV table toggle', async (t) => {
+  const exe = findBrowserExe();
+  if (!exe) {
+    t.skip('No headless Chromium binary available');
+    return;
+  }
+
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'aw-native-doc-test-'));
+  const profileDir = path.join(tmpRoot, 'profile');
+  fs.mkdirSync(profileDir, { recursive: true });
+
+  const wheelCss = fs.readFileSync(path.join(ROOT, 'sidecars', 'anchor_wheel', 'shared', 'wheel_styles.css'), 'utf8');
+  const navSharedJs = fs.readFileSync(path.join(ROOT, 'sidecars', 'anchor_wheel', 'shared', 'nav_shared.js'), 'utf8');
+  const wheelJs = fs.readFileSync(path.join(ROOT, 'sidecars', 'anchor_wheel', 'shared', 'radial_wheel.js'), 'utf8');
+  const bilateralJs = fs.readFileSync(path.join(ROOT, 'sidecars', 'anchor_wheel', 'shared', 'bilateral_wheel.js'), 'utf8');
+  const aeTreeJs = fs.readFileSync(path.join(ROOT, 'sidecars', 'anchor_wheel', 'shared', 'ae_tree.js'), 'utf8');
+  const settingsModalJs = fs.readFileSync(path.join(ROOT, 'sidecars', 'anchor_wheel', 'shared', 'settings_modal.js'), 'utf8');
+  const mdJs = fs.readFileSync(path.join(ROOT, 'sidecars', 'anchor_wheel', 'shared', 'markdown_render.js'), 'utf8');
+  const docViewerJs = fs.readFileSync(path.join(ROOT, 'sidecars', 'anchor_wheel', 'shared', 'doc_viewer.js'), 'utf8');
+  const nativeJs = fs.readFileSync(path.join(ROOT, 'sidecars', 'anchor_wheel', 'native', 'native_enhancer.js'), 'utf8');
+
+  let browserProc = null;
+  let ws = null;
+
+  try {
+    browserProc = spawn(
+      exe,
+      [
+        '--headless=new',
+        '--disable-gpu',
+        '--no-first-run',
+        '--no-default-browser-check',
+        '--remote-debugging-port=0',
+        `--user-data-dir=${profileDir}`,
+        'about:blank',
+      ],
+      { stdio: 'ignore', windowsHide: true }
+    );
+
+    const port = await waitForPortFile(profileDir);
+    const pages = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
+    const page = pages.find((p) => p.type === 'page') || pages[0];
+    ws = new WebSocket(page.webSocketDebuggerUrl);
+    await new Promise((r) => ws.addEventListener('open', r));
+    const cdp = new MiniCdp(ws);
+    await cdp.send('Runtime.enable');
+
+    const res = await cdp.evalAsync(`(async () => {
+      const root = document.createElement('div');
+      root.id = 'root';
+      document.body.appendChild(root);
+
+      const cid = '33333333-4444-5555-6666-777777777777';
+      const docxUri = 'file:///c%3A/Users/demo/%E8%B0%83%E6%9F%A5%E9%97%AE%E5%8D%B7.docx';
+      const csvUri = 'file:///c%3A/Users/demo/metrics.csv';
+      const mdUri = 'file:///c%3A/Users/demo/readme.md';
+
+      const storeState = {
+        sidePanelV2: {
+          conversationPanes: {
+            [cid]: {
+              activeTabId: 'file__' + docxUri,
+              tabs: [
+                { id: 'file__' + docxUri, content: { type: 'fileView', fileView: { fileUri: docxUri, cascadeId: cid } } },
+                { id: 'file__' + csvUri, content: { type: 'fileView', fileView: { fileUri: csvUri, cascadeId: cid } } },
+                { id: 'file__' + mdUri, content: { type: 'fileView', fileView: { fileUri: mdUri, cascadeId: cid } } },
+              ],
+            },
+          },
+          overviewPanelOpen: {},
+        },
+      };
+      const listeners = new Set();
+      const reduxStore = {
+        getState: () => storeState,
+        subscribe: (fn) => { listeners.add(fn); return () => listeners.delete(fn); },
+        dispatch: (action) => {
+          const pane = storeState.sidePanelV2.conversationPanes[cid];
+          if (action.type === 'sidePanelV2/setActiveTab') {
+            pane.activeTabId = action.payload.tabId;
+          }
+          for (const fn of listeners) fn();
+        },
+      };
+      const browserCtx = { openUrlInBrowserPane: () => {}, getTargetTreeId: () => ({ kind: 'cascadeId', cascadeId: cid }) };
+      const mockRouter = { navigate: () => Promise.resolve(), buildLocation: () => ({}) };
+      root.__reactContainer$test = { memoizedProps: { store: reduxStore, value: browserCtx, router: mockRouter }, child: null, sibling: null };
+
+      const aux = document.createElement('div');
+      aux.setAttribute('data-testid', 'aux-pane-split');
+      const left = document.createElement('div');
+      const right = document.createElement('div');
+      right.style.cssText = 'width:520px;height:740px;';
+      const col = document.createElement('div');
+      col.className = 'flex flex-col browser-hole-ancestor';
+      col.style.cssText = 'width:520px;height:740px;display:flex;flex-direction:column;';
+
+      const tabBar = document.createElement('div');
+      tabBar.className = 'agy-layout-vars';
+      const tabEl = document.createElement('div');
+      tabEl.className = 'agy-aux-tab';
+      tabEl.__reactFiber$test = { memoizedProps: { tab: storeState.sidePanelV2.conversationPanes[cid].tabs[0] } };
+      tabBar.appendChild(tabEl);
+
+      const contentWrap = document.createElement('div');
+      contentWrap.className = 'flex-grow basis-0 overflow-hidden';
+      contentWrap.style.cssText = 'flex:1;height:660px;overflow:hidden;display:flex;flex-direction:column;';
+      const deadPlaceholder = document.createElement('div');
+      deadPlaceholder.id = 'native-dead-preview';
+      deadPlaceholder.textContent = 'Preview is not available for this file type.';
+      contentWrap.appendChild(deadPlaceholder);
+
+      col.append(tabBar, contentWrap);
+      right.appendChild(col);
+      aux.append(left, right);
+      root.appendChild(aux);
+
+      let inspectEncodingCalledForDocx = false;
+      let externalOpenedPath = '';
+      let mockSettings = {
+        middleMode: 'bilateral_wheel',
+        tabTriggerEnabled: true,
+        tabMode: 'ae_tree',
+        tabCustomHotkey: 'Tab',
+        richDocPreviewEnabled: true,
+        richDocPaperMode: false,
+        autoCheckUpdates: false,
+      };
+      const mockSession = { groups: [], activeGroupId: null, history: { entries: [], index: -1 }, recentlyEvicted: [], lineage: { parentByKey: {} } };
+
+      window.__agAnchorWheelCall = (raw) => {
+        const req = JSON.parse(raw);
+        let res = { ok: true, session: mockSession };
+        if (req.action === 'getBoot') {
+          res = { ok: true, version: ${JSON.stringify(PLUGIN_VERSION)}, settings: mockSettings, session: mockSession };
+        } else if (req.action === 'inspectEncoding') {
+          if (String(req.path || '').endsWith('.docx')) inspectEncodingCalledForDocx = true;
+          res = { ok: true, encoding: 'utf-8', isNonUtf8: false, mojibakeHint: false };
+        } else if (req.action === 'getBacklinks') {
+          res = { ok: true, path: req.path, title: 'doc', backlinks: [], outlinks: [] };
+        } else if (req.action === 'getNavContext') {
+          res = {
+            ok: true,
+            activePath: req.path,
+            childSourceScope: 'opened_and_outlinks',
+            parentDirection: 'left',
+            current: { path: req.path, key: String(req.path).toLowerCase(), title: '调查问卷.docx', children: [] },
+            ancestors: [{ path: 'C:\\\\Users\\\\demo\\\\readme.md', key: 'c:\\\\users\\\\demo\\\\readme.md', title: 'readme.md', siblings: [] }],
+            parent: { path: 'C:\\\\Users\\\\demo\\\\readme.md', title: 'readme.md' },
+            categories: [{ id: 'doc', label: '文档', items: [] }, { id: 'other', label: '其他', items: [] }],
+            totalCurrentChildren: 0,
+          };
+        } else if (req.action === 'renderDocument') {
+          if (String(req.path || '').endsWith('.csv')) {
+            res = {
+              ok: true,
+              format: 'csv',
+              formatLabel: 'CSV 数据表',
+              badge: 'CSV',
+              path: req.path,
+              title: 'metrics.csv',
+              autoRender: false,
+              supportsPaperMode: false,
+              meta: { statsLabel: '2 条记录 · 2 列' },
+              outline: [],
+              bodyHtml: '<div class="aw-sheet-wrap"><table class="aw-sheet-table"><tbody><tr data-aw-row="1"><td>1</td><td>指标A</td></tr></tbody></table></div>',
+              plainText: '指标A',
+              warnings: [],
+            };
+          } else {
+            res = {
+              ok: true,
+              format: 'docx',
+              formatLabel: 'Word 文档',
+              badge: 'DOCX',
+              path: req.path,
+              title: '短视频调查问卷',
+              autoRender: true,
+              supportsPaperMode: true,
+              meta: { statsLabel: '约 1,200 字 · 2 表格' },
+              outline: [
+                { id: 'aw-h-1', level: 1, title: '问卷说明' },
+                { id: 'aw-h-2', level: 2, title: '基础信息' },
+              ],
+              bodyHtml: '<h1 id="aw-h-1" class="aw-doc-h aw-doc-h1">问卷说明</h1><p id="docx-p1" class="aw-doc-p">这是调查问卷的核心正文，包含关键词：碎片化观看。</p><h2 id="aw-h-2" class="aw-doc-h aw-doc-h2">基础信息</h2>',
+              plainText: '问卷说明\\n这是调查问卷的核心正文，包含关键词：碎片化观看。',
+              warnings: [],
+            };
+          }
+        } else if (req.action === 'openExternal') {
+          externalOpenedPath = req.path;
+          res = { ok: true, path: req.path };
+        } else if (req.action === 'updateSettings') {
+          mockSettings = { ...mockSettings, ...(req.settings || {}) };
+          res = { ok: true, settings: mockSettings };
+        }
+        setTimeout(() => window.__agAnchorWheelResolve?.(req.id, res), 0);
+      };
+
+      window.__agAnchorWheelBoot = { version: ${JSON.stringify(PLUGIN_VERSION)}, settings: mockSettings, wheelCss: ${JSON.stringify(wheelCss)} };
+      eval(${JSON.stringify(navSharedJs)});
+      eval(${JSON.stringify(wheelJs)});
+      eval(${JSON.stringify(bilateralJs)});
+      eval(${JSON.stringify(aeTreeJs)});
+      eval(${JSON.stringify(settingsModalJs)});
+      eval(${JSON.stringify(mdJs)});
+      eval(${JSON.stringify(docViewerJs)});
+      eval(${JSON.stringify(nativeJs)});
+
+      // Wait for auto-render of DOCX overlay
+      const deadline = Date.now() + 900;
+      while (Date.now() < deadline) {
+        if (document.querySelector('#aw-native-doc-overlay .aw-doc-viewer')) break;
+        await new Promise((r) => setTimeout(r, 25));
+      }
+
+      const autoMounted = Boolean(document.querySelector('#aw-native-doc-overlay .aw-doc-viewer'));
+      const deadHidden = deadPlaceholder.style.display === 'none';
+      const dbgDocx = window.__agAnchorWheel.getDebugState();
+
+      // 1. Toggle Outline drawer
+      document.querySelector('[data-aw-doc-act="outline"]')?.click();
+      const outlineVisible = !document.querySelector('.aw-doc-outline')?.hidden;
+      const outlineItems = document.querySelectorAll('.aw-doc-outline-item').length;
+
+      // 2. Open Find bar and search "碎片化"
+      document.querySelector('[data-aw-doc-act="find"]')?.click();
+      const findInput = document.querySelector('.aw-doc-find-input');
+      findInput.value = '碎片化';
+      findInput.dispatchEvent(new Event('input', { bubbles: true }));
+      await new Promise((r) => setTimeout(r, 160));
+      const findHitsCount = document.querySelectorAll('mark.aw-doc-hit').length;
+
+      // 3. Toggle Paper mode
+      document.querySelector('[data-aw-doc-act="paper"]')?.click();
+      const paperAttrAfterToggle = document.querySelector('.aw-doc-viewer')?.getAttribute('data-aw-paper');
+
+      // 4. Click external open button
+      document.querySelector('[data-aw-doc-act="external"]')?.click();
+      await new Promise((r) => setTimeout(r, 40));
+
+      // 5. Hold Middle Mouse inside DOCX reading paragraph -> Bilateral Wheel still works!
+      const p1 = document.getElementById('docx-p1');
+      p1.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 1, clientX: 260, clientY: 280 }));
+      await new Promise((r) => setTimeout(r, 150));
+      const wheelOpenedInsideDocx = Boolean(document.querySelector('.aw-bi-stage'));
+      document.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientX: 10, clientY: 10 }));
+      document.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, button: 1, clientX: 10, clientY: 10 }));
+      await new Promise((r) => setTimeout(r, 40));
+
+      // 6. Click 原生视图 -> restores native placeholder & shows DOCX 预览 pill on strip
+      document.querySelector('[data-aw-doc-act="raw"]')?.click();
+      await new Promise((r) => setTimeout(r, 30));
+      const overlayRemovedOnRaw = !document.getElementById('aw-native-doc-overlay');
+      const deadRestoredOnRaw = deadPlaceholder.style.display !== 'none';
+      const reopenBtnText = document.querySelector('#aw-companion-strip [data-aw-role="doc-preview-btn"]')?.textContent || '';
+
+      // 7. Click DOCX 预览 pill to reopen
+      document.querySelector('#aw-companion-strip [data-aw-role="doc-preview-btn"]')?.click();
+      await new Promise((r) => setTimeout(r, 60));
+      const reopenedOverlay = Boolean(document.querySelector('#aw-native-doc-overlay .aw-doc-viewer'));
+
+      // 8. Switch to CSV tab -> does NOT auto-hijack native view, offers 表格预览 pill instead!
+      reduxStore.dispatch({ type: 'sidePanelV2/setActiveTab', payload: { tabId: 'file__' + csvUri } });
+      await new Promise((r) => setTimeout(r, 160));
+      const csvAutoHijacked = Boolean(document.getElementById('aw-native-doc-overlay'));
+      const csvPillText = document.querySelector('#aw-companion-strip [data-aw-role="doc-preview-btn"]')?.textContent || '';
+      document.querySelector('#aw-companion-strip [data-aw-role="doc-preview-btn"]')?.click();
+      await new Promise((r) => setTimeout(r, 80));
+      const csvOpenedOnClick = Boolean(document.querySelector('#aw-native-doc-overlay .aw-sheet-table'));
+
+      // 9. Switch to MD tab -> clean full teardown
+      reduxStore.dispatch({ type: 'sidePanelV2/setActiveTab', payload: { tabId: 'file__' + mdUri } });
+      await new Promise((r) => setTimeout(r, 160));
+      const cleanedOnMd = !document.getElementById('aw-native-doc-overlay') && deadPlaceholder.style.display !== 'none';
+
+      return {
+        autoMounted,
+        deadHidden,
+        inspectEncodingCalledForDocx,
+        dbgDocx,
+        outlineVisible,
+        outlineItems,
+        findHitsCount,
+        paperAttrAfterToggle,
+        externalOpenedPath,
+        wheelOpenedInsideDocx,
+        overlayRemovedOnRaw,
+        deadRestoredOnRaw,
+        reopenBtnText,
+        reopenedOverlay,
+        csvAutoHijacked,
+        csvPillText,
+        csvOpenedOnClick,
+        cleanedOnMd,
+      };
+    })()`);
+
+    assert.deepEqual(cdp.errors, []);
+    assert.equal(res.autoMounted, true);
+    assert.equal(res.deadHidden, true);
+    assert.equal(res.inspectEncodingCalledForDocx, false);
+    assert.equal(res.dbgDocx.docOverlayVisible, true);
+    assert.equal(res.dbgDocx.activeDocFormat, 'docx');
+    assert.equal(res.outlineVisible, true);
+    assert.equal(res.outlineItems, 2);
+    assert.equal(res.findHitsCount, 1);
+    assert.equal(res.paperAttrAfterToggle, '1');
+    assert.ok(res.externalOpenedPath.endsWith('调查问卷.docx'));
+    assert.equal(res.wheelOpenedInsideDocx, true);
+    assert.equal(res.overlayRemovedOnRaw, true);
+    assert.equal(res.deadRestoredOnRaw, true);
+    assert.equal(res.reopenBtnText, 'DOCX 预览');
+    assert.equal(res.reopenedOverlay, true);
+    assert.equal(res.csvAutoHijacked, false);
+    assert.equal(res.csvPillText, '表格预览');
+    assert.equal(res.csvOpenedOnClick, true);
+    assert.equal(res.cleanedOnMd, true);
+  } finally {
+    try { ws?.close(); } catch {}
+    if (browserProc) {
+      await new Promise((resolve) => {
+        const timer = setTimeout(resolve, 1500);
+        browserProc.once('exit', () => { clearTimeout(timer); resolve(); });
+        try { browserProc.kill(); } catch { resolve(); }
+      });
+    }
+    try {
+      fs.rmSync(tmpRoot, { recursive: true, force: true, maxRetries: 6, retryDelay: 150 });
+    } catch {}
+  }
+});

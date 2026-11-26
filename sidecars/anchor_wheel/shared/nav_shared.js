@@ -31,7 +31,7 @@
   const DEFAULT_CATEGORY_RULES = Object.freeze([
     { id: 'image', label: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'svg', 'bmp', 'avif', 'ico'] },
     { id: 'video', label: '视频', extensions: ['mp4', 'mkv', 'mov', 'webm', 'avi', 'm4v'] },
-    { id: 'doc', label: '文档', extensions: ['md', 'mdx', 'txt', 'pdf', 'docx', 'doc', 'srt', 'ass', 'ssa', 'json', 'yaml', 'yml', 'csv'] },
+    { id: 'doc', label: '文档', extensions: ['md', 'mdx', 'txt', 'pdf', 'docx', 'doc', 'xlsx', 'xlsm', 'xls', 'pptx', 'ppt', 'odt', 'ods', 'odp', 'rtf', 'epub', 'srt', 'ass', 'ssa', 'json', 'yaml', 'yml', 'csv', 'tsv'] },
   ]);
 
   function esc(str) {
@@ -447,6 +447,12 @@
         bodyHtml = rows
           ? `<div class="aw-preview-dir">${rows}</div>`
           : `<div class="aw-preview-empty">${data.subdirCount ? `暂无直属文件（含 ${data.subdirCount} 个子文件夹）` : '空文件夹'}</div>`;
+      } else if (data.kind === 'document') {
+        const metaLine = data.statsLabel
+          ? `<div class="aw-preview-doc-meta">${esc(data.formatLabel || '文档')} · ${esc(data.statsLabel)}</div>`
+          : '';
+        const text = data.snippetText || '(无可提取文本片段，点击打开查看完整预览)';
+        bodyHtml = `${metaLine}<pre class="aw-preview-code">${esc(text)}</pre><div class="aw-preview-more">点击在侧边栏直接打开预览</div>`;
       } else if (data.kind === 'binary') {
         bodyHtml = `<div class="aw-preview-empty">二进制资源 (${esc(badge)})</div>`;
       } else {
