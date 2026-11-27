@@ -3224,3 +3224,551 @@ test('Mode 1 native_enhancer: Quicker anti-conflict modifier+mouse triggers, sen
     } catch {}
   }
 });
+
+test('Mode 1 native_enhancer: opt-in main-chat 5-direction layout wheel (default off, input/control guards, left/right/overview control, and modifier reuse)', async (t) => {
+  const exe = findBrowserExe();
+  if (!exe) {
+    t.skip('No headless Chromium binary available');
+    return;
+  }
+
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'aw-layoutwheel-test-'));
+  const profileDir = path.join(tmpRoot, 'profile');
+  fs.mkdirSync(profileDir, { recursive: true });
+
+  const wheelCss = fs.readFileSync(path.join(ROOT, 'sidecars', 'anchor_wheel', 'shared', 'wheel_styles.css'), 'utf8');
+  const navSharedJs = fs.readFileSync(path.join(ROOT, 'sidecars', 'anchor_wheel', 'shared', 'nav_shared.js'), 'utf8');
+  const wheelJs = fs.readFileSync(path.join(ROOT, 'sidecars', 'anchor_wheel', 'shared', 'radial_wheel.js'), 'utf8');
+  const bilateralJs = fs.readFileSync(path.join(ROOT, 'sidecars', 'anchor_wheel', 'shared', 'bilateral_wheel.js'), 'utf8');
+  const layoutWheelJs = fs.readFileSync(path.join(ROOT, 'sidecars', 'anchor_wheel', 'shared', 'layout_wheel.js'), 'utf8');
+  const aeTreeJs = fs.readFileSync(path.join(ROOT, 'sidecars', 'anchor_wheel', 'shared', 'ae_tree.js'), 'utf8');
+  const settingsModalJs = fs.readFileSync(path.join(ROOT, 'sidecars', 'anchor_wheel', 'shared', 'settings_modal.js'), 'utf8');
+  const mdJs = fs.readFileSync(path.join(ROOT, 'sidecars', 'anchor_wheel', 'shared', 'markdown_render.js'), 'utf8');
+  const docViewerJs = fs.readFileSync(path.join(ROOT, 'sidecars', 'anchor_wheel', 'shared', 'doc_viewer.js'), 'utf8');
+  const nativeJs = fs.readFileSync(path.join(ROOT, 'sidecars', 'anchor_wheel', 'native', 'native_enhancer.js'), 'utf8');
+
+  let browserProc = null;
+  let ws = null;
+
+  try {
+    browserProc = spawn(
+      exe,
+      [
+        '--headless=new',
+        '--disable-gpu',
+        '--no-first-run',
+        '--no-default-browser-check',
+        '--no-sandbox',
+        '--disable-dev-shm-usage',
+        '--window-size=1280,820',
+        '--remote-debugging-port=0',
+        `--user-data-dir=${profileDir}`,
+        'about:blank',
+      ],
+      { stdio: 'ignore', windowsHide: true }
+    );
+
+    const port = await waitForPortFile(profileDir);
+    const pages = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
+    const page = pages.find((p) => p.type === 'page') || pages[0];
+    ws = new WebSocket(page.webSocketDebuggerUrl);
+    await new Promise((r) => ws.addEventListener('open', r));
+    const cdp = new MiniCdp(ws);
+    await cdp.send('Runtime.enable');
+
+    const res = await cdp.evalAsync(`(async () => {
+      document.body.style.cssText = 'margin:0;padding:0;width:1280px;height:820px;overflow:hidden;';
+      const cid = '11111111-1111-4111-8111-111111111111';
+      const cid2 = '22222222-2222-4222-8222-222222222222';
+      const curUri = 'file:///c%3A/Users/demo/note.md';
+
+      document.body.innerHTML = \`
+        <div id="root" style="width:1280px;height:820px;position:relative;">
+          <button id="top-left-sb-btn" data-testid="sidebar-toggle" style="position:fixed;left:310px;top:36px;width:28px;height:28px;">L</button>
+          <button id="fallback-aux-btn" data-testid="toggle-aux-sidebar" style="position:fixed;left:400px;top:36px;width:28px;height:28px;">R</button>
+          <button id="fallback-ov-btn" data-testid="toggle-overview-panel" style="position:fixed;left:440px;top:36px;width:28px;height:28px;">O</button>
+          <div id="left-sidebar-col" style="position:fixed;left:0;top:72px;width:220px;height:740px;">
+            <div data-testid="conversation-row-sidebar" style="height:36px;">对话行</div>
+            <div id="left-sidebar-blank" style="height:240px;">左栏下方空白</div>
+          </div>
+          <div data-testid="aux-pane-split" style="display:flex;width:1280px;height:820px;">
+            <div style="width:760px;height:820px;display:flex;flex-direction:column;">
+              <div data-testid="conversation-view" data-cascade-id="\${cid}" style="width:760px;height:740px;margin-top:75px;position:relative;">
+                <div id="chat-blank" style="width:740px;height:300px;padding:40px;overflow-y:scroll;box-sizing:border-box;">
+                  <div style="height:900px;">
+                    <span id="chat-selectable-text">主对话可划选文本</span>
+                  </div>
+                </div>
+                <div id="chat-pane-2" data-cascade-id="\${cid2}" style="margin-left:260px;width:300px;height:60px;">分屏副会话</div>
+                <div id="chat-xterm" class="xterm" style="width:160px;height:36px;">终端区域</div>
+                <iframe id="chat-iframe" style="width:160px;height:36px;border:0;"></iframe>
+                <div id="chat-resizer" role="separator" style="width:12px;height:36px;"></div>
+                <button id="chat-action-btn" type="button" style="width:80px;height:28px;">消息按钮</button>
+                <div data-testid="overview-panel" id="ov-panel" style="width:200px;height:40px;">概览浮层内容</div>
+                <div data-testid="agent-input-box" id="chat-input-wrap" style="width:680px;height:80px;">
+                  <textarea id="chat-textarea">输入测试</textarea>
+                </div>
+              </div>
+            </div>
+            <div style="width:520px;height:820px;">
+              <div class="flex flex-col browser-hole-ancestor" style="width:520px;height:820px;">
+                <div class="agy-layout-vars shrink-0 flex items-center" style="height:36px;">
+                  <div class="agy-aux-tab">note.md</div>
+                  <button id="right-decoy-sb-btn" data-testid="sidebar-toggle" style="width:28px;height:28px;">Decoy</button>
+                </div>
+                <div class="flex-grow basis-0 overflow-hidden" style="height:760px;position:relative;">
+                  <div id="right-blank" data-uri="\${curUri}" style="width:500px;height:500px;">右侧文档正文</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      \`;
+
+      const state = {
+        sideBar: { isOpen: true },
+        layout: { isSidePanelMaximized: false },
+        sidePanel: {
+          conversationPanes: {
+            [cid]: { isPaneOpen: true, activeTabId: 'file__' + curUri, tabs: [] },
+            [cid2]: { isPaneOpen: false, activeTabId: '', tabs: [] },
+          },
+        },
+        sidePanelV2: {
+          conversationPanes: {
+            [cid]: {
+              activeTabId: 'file__' + curUri,
+              tabs: [{ id: 'file__' + curUri, isPreview: false, content: { type: 'fileView', fileView: { fileUri: curUri, cascadeId: cid } } }],
+            },
+            [cid2]: { activeTabId: '', tabs: [] },
+          },
+          overviewPanelOpen: { [cid]: false, [cid2]: false },
+        },
+      };
+      let topLeftClicks = 0;
+      let decoyClicks = 0;
+      let fallbackAuxClicks = 0;
+      let fallbackOvClicks = 0;
+      let ignoreReduxActions = false;
+
+      document.getElementById('top-left-sb-btn').addEventListener('click', () => {
+        topLeftClicks++;
+        state.sideBar.isOpen = !state.sideBar.isOpen;
+      });
+      document.getElementById('right-decoy-sb-btn').addEventListener('click', () => {
+        decoyClicks++;
+      });
+      document.getElementById('fallback-aux-btn').addEventListener('click', () => {
+        fallbackAuxClicks++;
+        state.sidePanel.conversationPanes[cid].isPaneOpen = !state.sidePanel.conversationPanes[cid].isPaneOpen;
+      });
+      document.getElementById('fallback-ov-btn').addEventListener('click', () => {
+        fallbackOvClicks++;
+        state.sidePanelV2.overviewPanelOpen[cid] = !state.sidePanelV2.overviewPanelOpen[cid];
+      });
+
+      const listeners = new Set();
+      const reduxStore = {
+        getState: () => state,
+        subscribe: (fn) => { listeners.add(fn); return () => listeners.delete(fn); },
+        dispatch: (action) => {
+          if (ignoreReduxActions) return;
+          if (action.type === 'sidePanel/setSidePanelOpen') {
+            const targetCid = action.payload?.treeId?.cascadeId || cid;
+            if (state.sidePanel.conversationPanes[targetCid]) {
+              state.sidePanel.conversationPanes[targetCid].isPaneOpen = Boolean(action.payload?.isOpen);
+            }
+          } else if (action.type === 'sidePanelV2/setOverviewPanelOpen') {
+            state.sidePanelV2.overviewPanelOpen[action.payload.cascadeId] = Boolean(action.payload.open);
+          } else if (action.type === 'layout/setSidePanelMaximized') {
+            state.layout.isSidePanelMaximized = Boolean(action.payload);
+          }
+          for (const fn of listeners) fn();
+        },
+      };
+      document.getElementById('root').__reactFiber$mock = {
+        memoizedProps: { store: reduxStore },
+        child: { memoizedProps: { openUrlInBrowserPane: () => {}, getTargetTreeId: () => ({ kind: 'cascadeId', cascadeId: cid }) }, child: null, sibling: null },
+        sibling: null,
+      };
+
+      let mockSettings = {
+        middleMode: 'bilateral_wheel',
+        wheelTriggerButton: 'middle',
+        wheelTriggerModifier: 'none',
+        wheelHoldSensitivity: 'fast',
+        mainChatLayoutWheelEnabled: false, // default OFF
+        tabTriggerEnabled: true,
+        tabMode: 'ae_tree',
+        tabCustomHotkey: 'Tab',
+        autoCheckUpdates: false,
+      };
+      const mockSession = { groups: [], history: { entries: [], index: -1 }, recentlyEvicted: [], lineage: { parentByKey: {} } };
+
+      window.__agAnchorWheelCall = (raw) => {
+        const req = JSON.parse(raw);
+        let resp = { ok: true };
+        if (req.action === 'getBoot') resp = { ok: true, version: ${JSON.stringify(PLUGIN_VERSION)}, settings: mockSettings, session: mockSession };
+        else if (req.action === 'updateSettings') {
+          mockSettings = { ...mockSettings, ...(req.settings || {}) };
+          resp = { ok: true, settings: mockSettings };
+        } else if (req.action === 'getBacklinks') resp = { ok: true, path: req.path, backlinks: [], outlinks: [] };
+        else if (req.action === 'getNavContext') {
+          resp = { ok: true, activePath: req.path, current: { path: req.path, title: 'note.md', children: [] }, ancestors: [], parent: null, categories: [], totalCurrentChildren: 0 };
+        }
+        setTimeout(() => window.__agAnchorWheelResolve?.(req.id, resp), 0);
+      };
+
+      window.__agAnchorWheelBoot = { version: ${JSON.stringify(PLUGIN_VERSION)}, settings: mockSettings, wheelCss: ${JSON.stringify(wheelCss)} };
+      eval(${JSON.stringify(navSharedJs)});
+      eval(${JSON.stringify(wheelJs)});
+      eval(${JSON.stringify(bilateralJs)});
+      eval(${JSON.stringify(layoutWheelJs)});
+      eval(${JSON.stringify(aeTreeJs)});
+      eval(${JSON.stringify(settingsModalJs)});
+      eval(${JSON.stringify(mdJs)});
+      eval(${JSON.stringify(docViewerJs)});
+      eval(${JSON.stringify(nativeJs)});
+
+      await new Promise((r) => setTimeout(r, 180));
+      const chatBlank = document.getElementById('chat-blank');
+      const cx = 360;
+      const cy = 320;
+
+      // 1. Default OFF: middle hold in main chat MUST NOT open layout wheel
+      chatBlank.dispatchEvent(new PointerEvent('pointerdown', { button: 1, buttons: 4, clientX: cx, clientY: cy, bubbles: true, cancelable: true }));
+      await new Promise((r) => setTimeout(r, 100));
+      const offDidNotOpen = !window.__agAnchorWheel.getDebugState().layoutWheelOpen;
+      document.dispatchEvent(new PointerEvent('pointerup', { button: 1, buttons: 0, clientX: cx, clientY: cy, bubbles: true, cancelable: true }));
+
+      // 2. Enable via Settings modal fold, verify direction legend appears AND trigger row stays un-dimmed when middleMode === 'off'
+      document.querySelector('#aw-companion-strip [data-aw-role="settings-btn"]')?.click();
+      await new Promise((r) => setTimeout(r, 60));
+      document.getElementById('aw-sm-adv-trigger').open = true;
+      const mapHiddenBefore = Boolean(document.getElementById('aw-sm-main-layout-map')?.hidden);
+      const chk = document.getElementById('aw-sm-main-layout-wheel');
+      chk.checked = true;
+      chk.dispatchEvent(new Event('change', { bubbles: true }));
+      const mapVisibleAfter = !document.getElementById('aw-sm-main-layout-map')?.hidden;
+      const midSel = document.getElementById('aw-sm-middle');
+      midSel.value = 'off';
+      midSel.dispatchEvent(new Event('change', { bubbles: true }));
+      const triggerRowUndimmedWhenOnlyMainLayout = document.getElementById('aw-sm-row-trigger-btn')?.getAttribute('data-dim') === '0';
+      midSel.value = 'bilateral_wheel';
+      midSel.dispatchEvent(new Event('change', { bubbles: true }));
+      document.getElementById('aw-sm-save').click();
+      await new Promise((r) => setTimeout(r, 80));
+
+      // 3. Guards: input box, chat button, overview panel, xterm, iframe, resizer, left-sidebar blank & scrollbar MUST NOT trigger layout wheel
+      const tryBlocked = async (el, customPos = null) => {
+        const r = el.getBoundingClientRect();
+        const x = customPos ? customPos.x : Math.round(r.left + Math.min(12, Math.max(2, r.width / 2)));
+        const y = customPos ? customPos.y : Math.round(r.top + Math.min(12, Math.max(2, r.height / 2)));
+        el.dispatchEvent(new PointerEvent('pointerdown', { button: 1, buttons: 4, clientX: x, clientY: y, bubbles: true, cancelable: true }));
+        await new Promise((res2) => setTimeout(res2, 95));
+        const opened = window.__agAnchorWheel.getDebugState().layoutWheelOpen;
+        document.dispatchEvent(new PointerEvent('pointerup', { button: 1, buttons: 0, clientX: x, clientY: y, bubbles: true, cancelable: true }));
+        return opened;
+      };
+      const blockedInput = !(await tryBlocked(document.getElementById('chat-textarea')));
+      const blockedBtn = !(await tryBlocked(document.getElementById('chat-action-btn')));
+      const blockedOv = !(await tryBlocked(document.getElementById('ov-panel')));
+      const blockedXterm = !(await tryBlocked(document.getElementById('chat-xterm')));
+      const blockedIframe = !(await tryBlocked(document.getElementById('chat-iframe')));
+      const blockedResizer = !(await tryBlocked(document.getElementById('chat-resizer')));
+      const blockedLeftSidebarBlank = !(await tryBlocked(document.getElementById('left-sidebar-blank')));
+      const cbRect = chatBlank.getBoundingClientRect();
+      const sbWidth = cbRect.width - chatBlank.clientWidth;
+      const blockedScrollbar = sbWidth >= 4
+        ? !(await tryBlocked(chatBlank, { x: Math.round(cbRect.right - 2), y: Math.round(cbRect.top + 60) }))
+        : true;
+
+      const rightBlank = document.getElementById('right-blank');
+      const rr = rightBlank.getBoundingClientRect();
+      rightBlank.dispatchEvent(new PointerEvent('pointerdown', { button: 1, buttons: 4, clientX: rr.left + 120, clientY: rr.top + 120, bubbles: true, cancelable: true }));
+      await new Promise((r) => setTimeout(r, 95));
+      const rightPaneOpenedDocNotLayout = window.__agAnchorWheel.getDebugState().bilateralOpen && !window.__agAnchorWheel.getDebugState().layoutWheelOpen;
+      document.dispatchEvent(new PointerEvent('pointerup', { button: 1, buttons: 0, clientX: rr.left + 120, clientY: rr.top + 120, bubbles: true, cancelable: true }));
+      await new Promise((r) => setTimeout(r, 40));
+
+      // Helper to perform a hold-drag-release gesture at a target polar angle (deg: 0=up, 90=right, 180=down, 270=left)
+      async function swipeLayoutAngle(deg, dist = 95, btn = 1, extra = {}, targetEl = chatBlank, originX = cx, originY = cy) {
+        const rad = ((deg - 90) * Math.PI) / 180;
+        targetEl.dispatchEvent(new PointerEvent('pointerdown', { button: btn, buttons: btn === 2 ? 2 : 4, clientX: originX, clientY: originY, bubbles: true, cancelable: true, ...extra }));
+        await new Promise((r) => setTimeout(r, 95));
+        const opened = window.__agAnchorWheel.getDebugState().layoutWheelOpen;
+        const tx = Math.round(originX + dist * Math.cos(rad));
+        const ty = Math.round(originY + dist * Math.sin(rad));
+        document.dispatchEvent(new PointerEvent('pointermove', { button: btn, buttons: btn === 2 ? 2 : 4, clientX: tx, clientY: ty, bubbles: true, ...extra }));
+        document.dispatchEvent(new PointerEvent('pointerup', { button: btn, buttons: 0, clientX: tx, clientY: ty, bubbles: true, cancelable: true, ...extra }));
+        await new Promise((r) => setTimeout(r, 40));
+        return opened;
+      }
+
+      // 4a. Top-Left (330 deg): collapse left sidebar (wide left button at x=310, idempotent on 2nd swipe)
+      const op1 = await swipeLayoutAngle(330);
+      const leftAfterCollapse = state.sideBar.isOpen;
+      await swipeLayoutAngle(330);
+      const leftIdempotent = state.sideBar.isOpen === false && topLeftClicks === 1 && decoyClicks === 0;
+
+      // 4a-bis. Verify CSS animation cascade does NOT override redundant node dimming!
+      chatBlank.dispatchEvent(new PointerEvent('pointerdown', { button: 1, buttons: 4, clientX: cx, clientY: cy, bubbles: true, cancelable: true }));
+      await new Promise((r) => setTimeout(r, 420)); // allow awStaggerBloom (240ms + delay) to settle
+      const redundantNode = document.querySelector('.aw-layout-node[data-layout-action="collapse_left"]');
+      const redundantOpacity = redundantNode ? parseFloat(getComputedStyle(redundantNode).opacity) : 1;
+      const redundantNodeActuallyDimmed = redundantNode?.getAttribute('data-redundant') === '1' && redundantOpacity < 0.7;
+      document.dispatchEvent(new PointerEvent('pointerup', { button: 1, buttons: 0, clientX: cx, clientY: cy, bubbles: true, cancelable: true }));
+      await new Promise((r) => setTimeout(r, 40));
+
+      // 4b. Top-Right (45 deg): expand left sidebar
+      await swipeLayoutAngle(45);
+      const leftAfterExpand = state.sideBar.isOpen;
+
+      // 4c. Bottom-Left (210 deg): expand overview panel
+      await swipeLayoutAngle(210);
+      const overviewAfterExpand = state.sidePanelV2.overviewPanelOpen[cid];
+
+      // 4d. Mid-Left (270 deg): expand right sidebar AND auto-close overview panel!
+      state.sidePanel.conversationPanes[cid].isPaneOpen = false;
+      await swipeLayoutAngle(270);
+      const rightExpandedAndOverviewClosed = state.sidePanel.conversationPanes[cid].isPaneOpen === true && state.sidePanelV2.overviewPanelOpen[cid] === false;
+
+      // 4e. Bottom-Right (135 deg): collapse right sidebar AND close overview if overview is open!
+      state.sidePanelV2.overviewPanelOpen[cid] = true;
+      await swipeLayoutAngle(135);
+      const rightAndOverviewCollapsed = state.sidePanel.conversationPanes[cid].isPaneOpen === false && state.sidePanelV2.overviewPanelOpen[cid] === false;
+
+      // 4f. Bottom-Left twice: open overview -> close overview directly
+      await swipeLayoutAngle(210);
+      const ovReopened = state.sidePanelV2.overviewPanelOpen[cid] === true;
+      await swipeLayoutAngle(210);
+      const ovToggledOff = state.sidePanelV2.overviewPanelOpen[cid] === false;
+
+      // 4g. Edge-clamped spawn (x=30): stationary release MUST cancel; dragging left to wall (x=2) MUST execute expand_right
+      state.sidePanel.conversationPanes[cid].isPaneOpen = false;
+      chatBlank.dispatchEvent(new PointerEvent('pointerdown', { button: 1, buttons: 4, clientX: 30, clientY: 220, bubbles: true, cancelable: true }));
+      await new Promise((r) => setTimeout(r, 95));
+      document.dispatchEvent(new PointerEvent('pointerup', { button: 1, buttons: 0, clientX: 30, clientY: 220, bubbles: true, cancelable: true }));
+      await new Promise((r) => setTimeout(r, 40));
+      const clampedStationaryCanceled = state.sidePanel.conversationPanes[cid].isPaneOpen === false;
+
+      chatBlank.dispatchEvent(new PointerEvent('pointerdown', { button: 1, buttons: 4, clientX: 30, clientY: 220, bubbles: true, cancelable: true }));
+      await new Promise((r) => setTimeout(r, 95));
+      document.dispatchEvent(new PointerEvent('pointermove', { button: 1, buttons: 4, clientX: 2, clientY: 220, bubbles: true }));
+      document.dispatchEvent(new PointerEvent('pointerup', { button: 1, buttons: 0, clientX: 2, clientY: 220, bubbles: true, cancelable: true }));
+      await new Promise((r) => setTimeout(r, 40));
+      const clampedEdgeWallSelectedExpandRight = state.sidePanel.conversationPanes[cid].isPaneOpen === true;
+
+      // 4h. Multi-convo split pane isolation: swiping inside pane 2 targets cid2 without touching cid1
+      const pane2 = document.getElementById('chat-pane-2');
+      const p2r = pane2.getBoundingClientRect();
+      await swipeLayoutAngle(210, 95, 1, {}, pane2, Math.round(p2r.left + 80), Math.round(p2r.top + 30));
+      const multiConvoPane2Isolated = state.sidePanelV2.overviewPanelOpen[cid2] === true && state.sidePanelV2.overviewPanelOpen[cid] === false;
+
+      // 4i. Redux silent-ignore fallback: when Redux ignores action types without throwing, DOM toggle buttons MUST be clicked!
+      state.sidePanel.conversationPanes[cid].isPaneOpen = false;
+      state.sidePanelV2.overviewPanelOpen[cid] = false;
+      ignoreReduxActions = true;
+      await swipeLayoutAngle(270);
+      await swipeLayoutAngle(210);
+      ignoreReduxActions = false;
+      const reduxSilentFallbackClickedDom = fallbackAuxClicks === 1 && fallbackOvClicks === 1 && state.sidePanel.conversationPanes[cid].isPaneOpen === true && state.sidePanelV2.overviewPanelOpen[cid] === true;
+
+      // 4j. Pre-open hold cancellation via pointercancel & window.blur
+      chatBlank.dispatchEvent(new PointerEvent('pointerdown', { button: 1, buttons: 4, clientX: cx, clientY: cy, bubbles: true, cancelable: true }));
+      await new Promise((r) => setTimeout(r, 20));
+      document.dispatchEvent(new PointerEvent('pointercancel', { bubbles: true }));
+      await new Promise((r) => setTimeout(r, 110));
+      const pointerCancelAbortedHold = !window.__agAnchorWheel.getDebugState().layoutWheelOpen;
+
+      chatBlank.dispatchEvent(new PointerEvent('pointerdown', { button: 1, buttons: 4, clientX: cx, clientY: cy, bubbles: true, cancelable: true }));
+      await new Promise((r) => setTimeout(r, 20));
+      window.dispatchEvent(new Event('blur'));
+      await new Promise((r) => setTimeout(r, 110));
+      const blurAbortedHold = !window.__agAnchorWheel.getDebugState().layoutWheelOpen;
+
+      // 4k. Bare right-click guards: active text selection passthrough & macOS immediate contextmenu cancellation
+      mockSettings = { ...mockSettings, middleMode: 'off', wheelTriggerButton: 'right', wheelTriggerModifier: 'none' };
+      window.__agAnchorWheel.onBackendSync({ settings: mockSettings });
+      await new Promise((r) => setTimeout(r, 30));
+      const selText = document.getElementById('chat-selectable-text');
+      const range = document.createRange();
+      range.selectNodeContents(selText);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+      chatBlank.dispatchEvent(new PointerEvent('pointerdown', { button: 2, buttons: 2, clientX: cx, clientY: cy, bubbles: true, cancelable: true }));
+      await new Promise((r) => setTimeout(r, 110));
+      const selectionRightClickPassedThrough = !window.__agAnchorWheel.getDebugState().layoutWheelOpen;
+      document.dispatchEvent(new PointerEvent('pointerup', { button: 2, buttons: 0, clientX: cx, clientY: cy, bubbles: true, cancelable: true }));
+      sel.removeAllRanges();
+
+      // macOS race: contextmenu fires immediately on mousedown before holdMs completes -> cancels holdTimer!
+      chatBlank.dispatchEvent(new PointerEvent('pointerdown', { button: 2, buttons: 2, clientX: cx, clientY: cy, bubbles: true, cancelable: true }));
+      chatBlank.dispatchEvent(new MouseEvent('contextmenu', { button: 2, clientX: cx, clientY: cy, bubbles: true, cancelable: true }));
+      await new Promise((r) => setTimeout(r, 115));
+      const macContextMenuCanceledHold = !window.__agAnchorWheel.getDebugState().layoutWheelOpen;
+
+      // 4l. Works when right-pane middleMode is 'off', respecting Alt + Right modifier and suppressing contextmenu!
+      state.sidePanel.conversationPanes[cid].isPaneOpen = false;
+      mockSettings = { ...mockSettings, middleMode: 'off', wheelTriggerButton: 'right', wheelTriggerModifier: 'alt' };
+      window.__agAnchorWheel.onBackendSync({ settings: mockSettings });
+      await new Promise((r) => setTimeout(r, 40));
+      const altRightLayoutOpened = await swipeLayoutAngle(270, 95, 2, { altKey: true });
+      const ctxEv = new MouseEvent('contextmenu', { button: 2, clientX: cx, clientY: cy, bubbles: true, cancelable: true });
+      chatBlank.dispatchEvent(ctxEv);
+      const altRightLayoutSuppressedCtx = ctxEv.defaultPrevented && state.sidePanel.conversationPanes[cid].isPaneOpen === true;
+
+      // 4m. Custom 5-direction slot editing in Settings modal: smart auto-swap, none/toggle_right execution, and Reset button
+      mockSettings = { ...mockSettings, middleMode: 'bilateral_wheel', wheelTriggerButton: 'middle', wheelTriggerModifier: 'none' };
+      window.__agAnchorWheel.onBackendSync({ settings: mockSettings });
+      await new Promise((r) => setTimeout(r, 30));
+      document.querySelector('#aw-companion-strip [data-aw-role="settings-btn"]')?.click();
+      await new Promise((r) => setTimeout(r, 60));
+      document.getElementById('aw-sm-adv-trigger').open = true;
+      const resetBtnBefore = Boolean(document.getElementById('aw-sm-layout-slots-reset')?.hidden);
+      const selTL = document.querySelector('.aw-layout-slot-sel[data-aw-layout-slot="top_left"]');
+      const selTR = document.querySelector('.aw-layout-slot-sel[data-aw-layout-slot="top_right"]');
+      const selML = document.querySelector('.aw-layout-slot-sel[data-aw-layout-slot="mid_left"]');
+      const selBR = document.querySelector('.aw-layout-slot-sel[data-aw-layout-slot="bottom_right"]');
+      // Change top_left to expand_left -> top_right MUST auto-swap to collapse_left!
+      selTL.value = 'expand_left';
+      selTL.dispatchEvent(new Event('change', { bubbles: true }));
+      const autoSwappedTopRight = selTR.value === 'collapse_left';
+      const resetBtnVisibleAfterCustom = !document.getElementById('aw-sm-layout-slots-reset')?.hidden;
+      // Assign mid_left -> toggle_right, bottom_right -> none
+      selML.value = 'toggle_right';
+      selML.dispatchEvent(new Event('change', { bubbles: true }));
+      selBR.value = 'none';
+      selBR.dispatchEvent(new Event('change', { bubbles: true }));
+      document.getElementById('aw-sm-save').click();
+      await new Promise((r) => setTimeout(r, 80));
+
+      // Verify customized wheel directions actually execute the new actions!
+      state.sideBar.isOpen = false;
+      await swipeLayoutAngle(330); // top_left now expands left!
+      const customTopLeftExpandedLeft = state.sideBar.isOpen === true;
+
+      state.sidePanel.conversationPanes[cid].isPaneOpen = true;
+      state.sidePanelV2.overviewPanelOpen[cid] = false;
+      await swipeLayoutAngle(135); // bottom_right is 'none' -> must do nothing!
+      const customNoneDidNothing = state.sidePanel.conversationPanes[cid].isPaneOpen === true;
+
+      await swipeLayoutAngle(270); // mid_left is 'toggle_right' -> closes right
+      const toggleRightClosed = state.sidePanel.conversationPanes[cid].isPaneOpen === false;
+      await swipeLayoutAngle(270); // mid_left is 'toggle_right' -> reopens right
+      const toggleRightReopened = state.sidePanel.conversationPanes[cid].isPaneOpen === true;
+
+      // Reset to defaults via Settings modal reset button
+      document.querySelector('#aw-companion-strip [data-aw-role="settings-btn"]')?.click();
+      await new Promise((r) => setTimeout(r, 60));
+      document.getElementById('aw-sm-adv-trigger').open = true;
+      document.getElementById('aw-sm-layout-slots-reset')?.click();
+      const resetRestoredDefault =
+        document.querySelector('.aw-layout-slot-sel[data-aw-layout-slot="top_left"]')?.value === 'collapse_left' &&
+        document.querySelector('.aw-layout-slot-sel[data-aw-layout-slot="mid_left"]')?.value === 'expand_right' &&
+        Boolean(document.getElementById('aw-sm-layout-slots-reset')?.hidden);
+      document.getElementById('aw-sm-save').click();
+      await new Promise((r) => setTimeout(r, 60));
+
+      return {
+        offDidNotOpen,
+        mapHiddenBefore,
+        mapVisibleAfter,
+        triggerRowUndimmedWhenOnlyMainLayout,
+        blockedInput,
+        blockedBtn,
+        blockedOv,
+        blockedXterm,
+        blockedIframe,
+        blockedResizer,
+        blockedLeftSidebarBlank,
+        blockedScrollbar,
+        rightPaneOpenedDocNotLayout,
+        op1,
+        leftAfterCollapse,
+        leftIdempotent,
+        redundantNodeActuallyDimmed,
+        leftAfterExpand,
+        overviewAfterExpand,
+        rightExpandedAndOverviewClosed,
+        rightAndOverviewCollapsed,
+        ovReopened,
+        ovToggledOff,
+        clampedStationaryCanceled,
+        clampedEdgeWallSelectedExpandRight,
+        multiConvoPane2Isolated,
+        reduxSilentFallbackClickedDom,
+        pointerCancelAbortedHold,
+        blurAbortedHold,
+        selectionRightClickPassedThrough,
+        macContextMenuCanceledHold,
+        altRightLayoutOpened,
+        altRightLayoutSuppressedCtx,
+        resetBtnBefore,
+        autoSwappedTopRight,
+        resetBtnVisibleAfterCustom,
+        customTopLeftExpandedLeft,
+        customNoneDidNothing,
+        toggleRightClosed,
+        toggleRightReopened,
+        resetRestoredDefault,
+      };
+    })()`);
+
+    assert.deepEqual(cdp.errors, []);
+    assert.equal(res.offDidNotOpen, true);
+    assert.equal(res.mapHiddenBefore, true);
+    assert.equal(res.mapVisibleAfter, true);
+    assert.equal(res.triggerRowUndimmedWhenOnlyMainLayout, true);
+    assert.equal(res.blockedInput, true);
+    assert.equal(res.blockedBtn, true);
+    assert.equal(res.blockedOv, true);
+    assert.equal(res.blockedXterm, true);
+    assert.equal(res.blockedIframe, true);
+    assert.equal(res.blockedResizer, true);
+    assert.equal(res.blockedLeftSidebarBlank, true);
+    assert.equal(res.blockedScrollbar, true);
+    assert.equal(res.rightPaneOpenedDocNotLayout, true);
+    assert.equal(res.op1, true);
+    assert.equal(res.leftAfterCollapse, false);
+    assert.equal(res.leftIdempotent, true);
+    assert.equal(res.redundantNodeActuallyDimmed, true);
+    assert.equal(res.leftAfterExpand, true);
+    assert.equal(res.overviewAfterExpand, true);
+    assert.equal(res.rightExpandedAndOverviewClosed, true);
+    assert.equal(res.rightAndOverviewCollapsed, true);
+    assert.equal(res.ovReopened, true);
+    assert.equal(res.ovToggledOff, true);
+    assert.equal(res.clampedStationaryCanceled, true);
+    assert.equal(res.clampedEdgeWallSelectedExpandRight, true);
+    assert.equal(res.multiConvoPane2Isolated, true);
+    assert.equal(res.reduxSilentFallbackClickedDom, true);
+    assert.equal(res.pointerCancelAbortedHold, true);
+    assert.equal(res.blurAbortedHold, true);
+    assert.equal(res.selectionRightClickPassedThrough, true);
+    assert.equal(res.macContextMenuCanceledHold, true);
+    assert.equal(res.altRightLayoutOpened, true);
+    assert.equal(res.altRightLayoutSuppressedCtx, true);
+    assert.equal(res.resetBtnBefore, true);
+    assert.equal(res.autoSwappedTopRight, true);
+    assert.equal(res.resetBtnVisibleAfterCustom, true);
+    assert.equal(res.customTopLeftExpandedLeft, true);
+    assert.equal(res.customNoneDidNothing, true);
+    assert.equal(res.toggleRightClosed, true);
+    assert.equal(res.toggleRightReopened, true);
+    assert.equal(res.resetRestoredDefault, true);
+  } finally {
+    try { ws?.close(); } catch {}
+    if (browserProc) {
+      await new Promise((resolve) => {
+        const timer = setTimeout(resolve, 1500);
+        browserProc.once('exit', () => { clearTimeout(timer); resolve(); });
+        try { browserProc.kill(); } catch { resolve(); }
+      });
+    }
+    try {
+      fs.rmSync(tmpRoot, { recursive: true, force: true, maxRetries: 6, retryDelay: 120 });
+    } catch {}
+  }
+});

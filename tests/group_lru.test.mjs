@@ -18,6 +18,22 @@ import {
 import { BacklinkIndex } from '../sidecars/anchor_wheel/backend/backlink_index.mjs';
 import { buildNavContext, classifyFile } from '../sidecars/anchor_wheel/backend/nav_context.mjs';
 import { canonicalKey } from '../sidecars/anchor_wheel/backend/security.mjs';
+import vm from 'node:vm';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const layoutWheelSandbox = { globalThis: {}, window: {} };
+layoutWheelSandbox.globalThis = layoutWheelSandbox;
+layoutWheelSandbox.window = layoutWheelSandbox;
+vm.runInNewContext(
+  fs.readFileSync(path.join(__dirname, '..', 'sidecars', 'anchor_wheel', 'shared', 'nav_shared.js'), 'utf8'),
+  layoutWheelSandbox
+);
+vm.runInNewContext(
+  fs.readFileSync(path.join(__dirname, '..', 'sidecars', 'anchor_wheel', 'shared', 'layout_wheel.js'), 'utf8'),
+  layoutWheelSandbox
+);
+const layoutWheelMod = layoutWheelSandbox.AnchorWheelLayout;
 
 test('evictOverflowChildren protects anchor and locked children and evicts oldest unlocked LRU', () => {
   const ws = path.join(os.tmpdir(), 'aw-mock-ws');
@@ -162,6 +178,91 @@ test('normalizeHotkeySpec and anti-conflict trigger settings validate modifiers,
   // Invalid hotkey falls back to previous valid hotkey
   const invalidKeep = sanitizeSettings({ tabCustomHotkey: 'Escape' }, custom);
   assert.equal(invalidKeep.tabCustomHotkey, 'Ctrl+Alt+W');
+
+  // Main chat 5-direction layout wheel is strictly opt-in (default false) and supports custom 5-slot mapping
+  assert.equal(DEFAULT_SETTINGS.mainChatLayoutWheelEnabled, false);
+  assert.deepEqual(DEFAULT_SETTINGS.mainChatLayoutSlots, {
+    top_left: 'collapse_left',
+    mid_left: 'expand_right',
+    bottom_left: 'toggle_overview',
+    top_right: 'expand_left',
+    bottom_right: 'collapse_right',
+  });
+  assert.equal(sanitizeSettings({ mainChatLayoutWheelEnabled: true }, DEFAULT_SETTINGS).mainChatLayoutWheelEnabled, true);
+  assert.equal(sanitizeSettings({ mainChatLayoutWheelEnabled: 'yes' }, DEFAULT_SETTINGS).mainChatLayoutWheelEnabled, false);
+
+  const customSlotSettings = sanitizeSettings(
+    {
+      mainChatLayoutSlots: {
+        top_left: 'toggle_left',
+        mid_left: 'toggle_overview',
+        bottom_left: 'none',
+        top_right: 'invalid_action_xyz',
+        bottom_right: 'toggle_right',
+      },
+    },
+    DEFAULT_SETTINGS
+  );
+  assert.deepEqual(customSlotSettings.mainChatLayoutSlots, {
+    top_left: 'toggle_left',
+    mid_left: 'toggle_overview',
+    bottom_left: 'none',
+    top_right: 'expand_left', // invalid action falls back cleanly
+    bottom_right: 'toggle_right',
+  });
+
+  // Verify custom slot sector resolution + runtime meta for toggle_left, toggle_right, and none
+  const customSectors = layoutWheelMod.resolveLayoutSectors(customSlotSettings.mainChatLayoutSlots);
+  assert.equal(layoutWheelMod.hitTestLayoutAngle(330, customSectors), 'toggle_left');
+  assert.equal(layoutWheelMod.hitTestLayoutAngle(270, customSectors), 'toggle_overview');
+  assert.equal(layoutWheelMod.hitTestLayoutAngle(210, customSectors), 'none');
+  assert.equal(layoutWheelMod.hitTestLayoutSlot(135, customSectors), 'bottom_right');
+  const noneMeta = layoutWheelMod.buildSectorRuntimeMeta(customSectors.find((s) => s.slot === 'bottom_left'), {});
+  assert.equal(noneMeta.disabled, true);
+  assert.equal(noneMeta.title, '留空');
+  const toggleLeftMeta = layoutWheelMod.buildSectorRuntimeMeta(customSectors.find((s) => s.slot === 'top_left'), { leftOpen: true });
+  assert.equal(toggleLeftMeta.title, '收起左栏');
+  assert.equal(toggleLeftMeta.activeDot, true);
+  const toggleRightMeta = layoutWheelMod.buildSectorRuntimeMeta(customSectors.find((s) => s.slot === 'bottom_right'), { rightOpen: false, overviewOpen: false });
+  assert.equal(toggleRightMeta.title, '展开右栏');
+  assert.equal(toggleRightMeta.activeDot, false);
+
+  // Verify 5-direction angle geometry and dynamic runtime metadata
+  assert.equal(layoutWheelMod.hitTestLayoutAngle(323), 'collapse_left'); // top-left
+  assert.equal(layoutWheelMod.hitTestLayoutAngle(270), 'expand_right'); // mid-left
+  assert.equal(layoutWheelMod.hitTestLayoutAngle(330), 'collapse_left'); // top-left (300-360)
+  assert.equal(layoutWheelMod.hitTestLayoutAngle(300), 'collapse_left');
+  assert.equal(layoutWheelMod.hitTestLayoutAngle(359), 'collapse_left');
+  assert.equal(layoutWheelMod.hitTestLayoutAngle(270), 'expand_right'); // mid-left (240-300)
+  assert.equal(layoutWheelMod.hitTestLayoutAngle(240), 'expand_right');
+  assert.equal(layoutWheelMod.hitTestLayoutAngle(210), 'toggle_overview'); // bottom-left (180-240)
+  assert.equal(layoutWheelMod.hitTestLayoutAngle(180), 'toggle_overview'); // zero bottom dead-zone
+  assert.equal(layoutWheelMod.hitTestLayoutAngle(45), 'expand_left'); // top-right (0-90)
+  assert.equal(layoutWheelMod.hitTestLayoutAngle(0), 'expand_left'); // zero top dead-zone
+  assert.equal(layoutWheelMod.hitTestLayoutAngle(360), 'expand_left');
+  assert.equal(layoutWheelMod.hitTestLayoutAngle(135), 'collapse_right'); // bottom-right (90-180)
+  assert.equal(layoutWheelMod.hitTestLayoutAngle(90), 'collapse_right');
+  assert.equal(layoutWheelMod.hitTestLayoutAngle(Number.NaN), null);
+
+  const ovSec = layoutWheelMod.LAYOUT_SECTORS.find((s) => s.id === 'toggle_overview');
+  const expRightSec = layoutWheelMod.LAYOUT_SECTORS.find((s) => s.id === 'expand_right');
+  const colRightSec = layoutWheelMod.LAYOUT_SECTORS.find((s) => s.id === 'collapse_right');
+  const ovOpenMeta = layoutWheelMod.buildSectorRuntimeMeta(ovSec, { leftOpen: true, rightOpen: true, overviewOpen: true, canOverview: true });
+  assert.equal(ovOpenMeta.title, '收起概览');
+  assert.equal(ovOpenMeta.activeDot, true);
+  const expRightWithOv = layoutWheelMod.buildSectorRuntimeMeta(expRightSec, { leftOpen: true, rightOpen: true, overviewOpen: true, canOverview: true });
+  assert.equal(expRightWithOv.meta, '并关概览');
+  assert.equal(expRightWithOv.redundant, false);
+  const colRightWithOvOnly = layoutWheelMod.buildSectorRuntimeMeta(colRightSec, { leftOpen: true, rightOpen: false, overviewOpen: true, canOverview: true });
+  assert.equal(colRightWithOvOnly.meta, '收起概览');
+  assert.equal(colRightWithOvOnly.redundant, false);
+  const colRightWithBoth = layoutWheelMod.buildSectorRuntimeMeta(colRightSec, { leftOpen: true, rightOpen: true, overviewOpen: true, canOverview: true });
+  assert.equal(colRightWithBoth.meta, '并关概览');
+  assert.equal(colRightWithBoth.redundant, false);
+  const colRightBothClosed = layoutWheelMod.buildSectorRuntimeMeta(colRightSec, { leftOpen: true, rightOpen: false, overviewOpen: false, canOverview: true });
+  assert.equal(colRightBothClosed.redundant, true);
+  const ovDisabled = layoutWheelMod.buildSectorRuntimeMeta(ovSec, { canOverview: false });
+  assert.equal(ovDisabled.disabled, true);
 });
 
 test('StateStore lineage resolves multi-level ancestors cleanly and rejects cycle edges', () => {

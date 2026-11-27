@@ -28,6 +28,14 @@ export const DEFAULT_CATEGORY_RULES = Object.freeze([
   }),
 ]);
 
+export const DEFAULT_MAIN_CHAT_LAYOUT_SLOTS = Object.freeze({
+  top_left: 'collapse_left',
+  mid_left: 'expand_right',
+  bottom_left: 'toggle_overview',
+  top_right: 'expand_left',
+  bottom_right: 'collapse_right',
+});
+
 export const DEFAULT_SETTINGS = Object.freeze({
   maxChildrenPerGroup: 6,
   autoAnchorSummaryMd: true,
@@ -38,6 +46,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
   wheelTriggerButton: 'middle', // 'middle' | 'right' | 'side_back' | 'side_forward' | 'left'
   wheelTriggerModifier: 'none', // 'none' | 'alt' | 'shift' | 'ctrl'
   wheelHoldSensitivity: 'balanced', // 'fast' | 'balanced' | 'safe'
+  mainChatLayoutWheelEnabled: false, // opt-in 5-direction sidebar/overview wheel inside Antigravity main chat pane
+  mainChatLayoutSlots: DEFAULT_MAIN_CHAT_LAYOUT_SLOTS,
   tabTriggerEnabled: true,
   tabMode: 'ae_tree', // 'ae_tree' | 'bilateral_wheel' | 'classic_wheel' | 'off'
   tabCustomHotkey: 'Tab', // canonical hotkey spec e.g. 'Tab' | 'Backquote' | 'Alt+Q' | 'Ctrl+Shift+W'
@@ -75,6 +85,33 @@ const VALID_PARENT_DIRS = new Set(['left', 'top', 'right', 'bottom']);
 const VALID_THEMES = new Set(['auto', 'obsidian', 'warm', 'crystal', 'alabaster']);
 const VALID_SECTORS = new Set([4, 6, 8]);
 const VALID_DOC_STRATEGIES = new Set(['auto_yield', 'always_plugin', 'manual_only']);
+const LAYOUT_SLOT_KEYS = Object.freeze(['top_left', 'mid_left', 'bottom_left', 'top_right', 'bottom_right']);
+const VALID_MAIN_CHAT_LAYOUT_ACTIONS = new Set([
+  'collapse_left',
+  'expand_left',
+  'toggle_left',
+  'expand_right',
+  'collapse_right',
+  'toggle_right',
+  'toggle_overview',
+  'none',
+]);
+
+export function sanitizeMainChatLayoutSlots(raw, base = DEFAULT_MAIN_CHAT_LAYOUT_SLOTS) {
+  const src = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  const fallback = base && typeof base === 'object' ? base : DEFAULT_MAIN_CHAT_LAYOUT_SLOTS;
+  const out = {};
+  for (const key of LAYOUT_SLOT_KEYS) {
+    if (VALID_MAIN_CHAT_LAYOUT_ACTIONS.has(src[key])) {
+      out[key] = src[key];
+    } else if (VALID_MAIN_CHAT_LAYOUT_ACTIONS.has(fallback[key])) {
+      out[key] = fallback[key];
+    } else {
+      out[key] = DEFAULT_MAIN_CHAT_LAYOUT_SLOTS[key];
+    }
+  }
+  return out;
+}
 
 const BARE_HOTKEY_KEYS = new Set([
   'Tab', 'Backquote',
@@ -203,6 +240,7 @@ export function sanitizeSettings(raw, base = DEFAULT_SETTINGS) {
   const next = {
     ...base,
     categoryRules: sanitizeCategoryRules(base.categoryRules, DEFAULT_CATEGORY_RULES),
+    mainChatLayoutSlots: sanitizeMainChatLayoutSlots(base.mainChatLayoutSlots, DEFAULT_MAIN_CHAT_LAYOUT_SLOTS),
   };
   if (src.maxChildrenPerGroup !== undefined) {
     const n = Math.round(Number(src.maxChildrenPerGroup));
@@ -238,6 +276,12 @@ export function sanitizeSettings(raw, base = DEFAULT_SETTINGS) {
   }
   if (VALID_HOLD_SENSITIVITIES.has(src.wheelHoldSensitivity)) {
     next.wheelHoldSensitivity = src.wheelHoldSensitivity;
+  }
+  if (typeof src.mainChatLayoutWheelEnabled === 'boolean') {
+    next.mainChatLayoutWheelEnabled = src.mainChatLayoutWheelEnabled;
+  }
+  if (src.mainChatLayoutSlots && typeof src.mainChatLayoutSlots === 'object') {
+    next.mainChatLayoutSlots = sanitizeMainChatLayoutSlots(src.mainChatLayoutSlots, next.mainChatLayoutSlots);
   }
   if (typeof src.tabTriggerEnabled === 'boolean') next.tabTriggerEnabled = src.tabTriggerEnabled;
   if (VALID_TAB_MODES.has(src.tabMode)) next.tabMode = src.tabMode;
@@ -571,6 +615,7 @@ export class StateStore {
       ...this.settings,
       extraScanDirs: [...this.settings.extraScanDirs],
       categoryRules: (this.settings.categoryRules || []).map((r) => ({ ...r, extensions: [...(r.extensions || [])] })),
+      mainChatLayoutSlots: sanitizeMainChatLayoutSlots(this.settings.mainChatLayoutSlots, DEFAULT_MAIN_CHAT_LAYOUT_SLOTS),
     };
   }
 

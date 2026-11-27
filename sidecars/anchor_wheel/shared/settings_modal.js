@@ -32,6 +32,55 @@
     storage: '调节扇区数或四套主题立即预览，保存后全局生效',
   });
 
+  const DEFAULT_MAIN_LAYOUT_SLOTS = Object.freeze({
+    top_left: 'collapse_left',
+    mid_left: 'expand_right',
+    bottom_left: 'toggle_overview',
+    top_right: 'expand_left',
+    bottom_right: 'collapse_right',
+  });
+
+  const MAIN_LAYOUT_SLOT_KEYS = Object.freeze(['top_left', 'mid_left', 'bottom_left', 'top_right', 'bottom_right']);
+
+  const MAIN_LAYOUT_ACTION_OPTIONS = Object.freeze([
+    { id: 'collapse_left', label: '收起左栏' },
+    { id: 'expand_left', label: '展开左栏' },
+    { id: 'toggle_left', label: '切换左栏' },
+    { id: 'expand_right', label: '展开右栏' },
+    { id: 'collapse_right', label: '收起右栏' },
+    { id: 'toggle_right', label: '切换右栏' },
+    { id: 'toggle_overview', label: '概览面板' },
+    { id: 'none', label: '留空（无操作）' },
+  ]);
+
+  const VALID_MAIN_LAYOUT_ACTIONS = new Set(MAIN_LAYOUT_ACTION_OPTIONS.map((o) => o.id));
+
+  function normalizeDraftLayoutSlots(raw) {
+    const src = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+    const out = {};
+    for (const k of MAIN_LAYOUT_SLOT_KEYS) {
+      out[k] = VALID_MAIN_LAYOUT_ACTIONS.has(src[k]) ? src[k] : DEFAULT_MAIN_LAYOUT_SLOTS[k];
+    }
+    return out;
+  }
+
+  function isDefaultLayoutSlots(slots) {
+    const norm = normalizeDraftLayoutSlots(slots);
+    return MAIN_LAYOUT_SLOT_KEYS.every((k) => norm[k] === DEFAULT_MAIN_LAYOUT_SLOTS[k]);
+  }
+
+  function buildLayoutSlotRowHtml(slotKey, dirLabel, currentVal) {
+    const opts = MAIN_LAYOUT_ACTION_OPTIONS.map(
+      (o) => `<option value="${o.id}" ${currentVal === o.id ? 'selected' : ''}>${o.label}</option>`
+    ).join('');
+    return `
+      <label class="aw-layout-slot-row">
+        <span class="aw-layout-slot-tag">${dirLabel}</span>
+        <select class="aw-select aw-layout-slot-sel" data-aw-layout-slot="${slotKey}" aria-label="${dirLabel}扇区动作">${opts}</select>
+      </label>
+    `;
+  }
+
   function createSettingsModal(options = {}) {
     const doc = options.document || document;
     const mountRoot = options.mountRoot || doc.body;
@@ -208,6 +257,16 @@
         }
       }
       if (g('#aw-sm-pdir')) draft.parentDirection = g('#aw-sm-pdir').value;
+      if (g('#aw-sm-main-layout-wheel')) draft.mainChatLayoutWheelEnabled = Boolean(g('#aw-sm-main-layout-wheel').checked);
+      const slotSels = modalEl.querySelectorAll('.aw-layout-slot-sel[data-aw-layout-slot]');
+      if (slotSels.length) {
+        const nextSlots = normalizeDraftLayoutSlots(draft.mainChatLayoutSlots);
+        slotSels.forEach((sel) => {
+          const sk = sel.getAttribute('data-aw-layout-slot');
+          if (sk && VALID_MAIN_LAYOUT_ACTIONS.has(sel.value)) nextSlots[sk] = sel.value;
+        });
+        draft.mainChatLayoutSlots = nextSlots;
+      }
       if (g('#aw-sm-tab-en')) draft.tabTriggerEnabled = Boolean(g('#aw-sm-tab-en').checked);
       if (g('#aw-sm-tab-mode')) draft.tabMode = g('#aw-sm-tab-mode').value;
       if (g('#aw-sm-tab-close')) draft.tabCloseOnSelect = Boolean(g('#aw-sm-tab-close').checked);
@@ -332,12 +391,28 @@
         btn.setAttribute('data-active', btn.getAttribute('data-aw-sens') === sensId ? '1' : '0');
       });
       const advSummary = modalEl.querySelector('#aw-sm-adv-trigger-summary');
+      const mainLayoutOn = Boolean(draft.mainChatLayoutWheelEnabled);
       if (advSummary) {
-        advSummary.textContent = `进阶手势与防冲突微调（灵敏度：${sensNames[sensId] || '均衡'}）`;
+        advSummary.textContent = `进阶手势、防冲突与主对话布局轮盘（灵敏度：${sensNames[sensId] || '均衡'}${mainLayoutOn ? ' · 主对话轮盘已开启' : ''}）`;
       }
       const sensSub = modalEl.querySelector('#aw-sm-sens-sub');
       if (sensSub) {
         sensSub.textContent = `当前 ${trigMeta.shortLabel}：按住 ${trigMeta.holdMs}ms 或拖动 ${trigMeta.dragPx}px 即呼出`;
+      }
+      const mainLayoutSub = modalEl.querySelector('#aw-sm-main-layout-sub');
+      if (mainLayoutSub) {
+        const bareMiddle = trigMeta.id === 'middle' && (!trigMeta.modifier || trigMeta.modifier === 'none');
+        mainLayoutSub.textContent = bareMiddle
+          ? `在主对话空白处按住 ${trigMeta.shortLabel} 呼出 5 向布局轮盘（与右侧文档轮盘独立，自动避让输入框与按钮；使用中键将替代主对话中键自动滚屏，如需保留建议改用 Alt+右键或侧键）`
+          : `在主对话空白处按住 ${trigMeta.shortLabel} 呼出 5 向布局轮盘（与右侧文档轮盘独立，自动避让输入框与按钮；仅原生窗口生效）`;
+      }
+      const mainLayoutMap = modalEl.querySelector('#aw-sm-main-layout-map');
+      if (mainLayoutMap) {
+        mainLayoutMap.hidden = !mainLayoutOn;
+      }
+      const layoutSlotsReset = modalEl.querySelector('#aw-sm-layout-slots-reset');
+      if (layoutSlotsReset) {
+        layoutSlotsReset.hidden = isDefaultLayoutSlots(draft.mainChatLayoutSlots);
       }
 
       const focusHintEl = modalEl.querySelector('#aw-sm-focus-hint');
@@ -350,7 +425,7 @@
       // Dim dependent form rows when their parent toggle/channel is disabled
       const trigRow = modalEl.querySelector('#aw-sm-row-trigger-btn');
       if (trigRow) {
-        trigRow.setAttribute('data-dim', draft.middleMode === 'off' ? '1' : '0');
+        trigRow.setAttribute('data-dim', draft.middleMode === 'off' && !draft.mainChatLayoutWheelEnabled ? '1' : '0');
       }
       const pdirRow = modalEl.querySelector('#aw-sm-row-pdir');
       if (pdirRow) {
@@ -740,7 +815,7 @@
               <input type="checkbox" id="aw-sm-tab-close" class="aw-reactive-ctrl" ${s.tabCloseOnSelect ? 'checked' : ''} />
             </div>
             <details class="aw-settings-fold" id="aw-sm-adv-trigger" ${advTriggerExpanded ? 'open' : ''}>
-              <summary id="aw-sm-adv-trigger-summary">进阶手势与防冲突微调（灵敏度：均衡）</summary>
+              <summary id="aw-sm-adv-trigger-summary">进阶手势、防冲突与主对话布局轮盘（灵敏度：均衡）</summary>
               <div class="aw-settings-fold-body">
                 <div class="aw-form-row">
                   <div class="aw-form-label">
@@ -753,7 +828,31 @@
                     <button type="button" class="aw-tray-btn" data-aw-sens="safe" data-active="${s.wheelHoldSensitivity === 'safe' ? '1' : '0'}">防误触</button>
                   </div>
                 </div>
-                <div class="aw-fold-note">与 Quicker / MouseInc / WGestures 等全局工具共存时，可改用修饰键组合或「按住快捷键松手」；也支持在 Quicker / 鼠标宏中向 Antigravity 发送上方自定义快捷键实现联动。</div>
+                <div class="aw-form-row">
+                  <div class="aw-form-label">
+                    <strong>启用主对话窗口 5 向布局轮盘（默认关闭）</strong>
+                    <span id="aw-sm-main-layout-sub">在主对话空白处按住中键呼出 5 向布局轮盘（与右侧文档轮盘独立，自动避让输入框与按钮；仅原生窗口生效）</span>
+                  </div>
+                  <input type="checkbox" id="aw-sm-main-layout-wheel" class="aw-reactive-ctrl" ${s.mainChatLayoutWheelEnabled ? 'checked' : ''} />
+                </div>
+                <div class="aw-layout-slot-editor" id="aw-sm-main-layout-map" ${s.mainChatLayoutWheelEnabled ? '' : 'hidden'}>
+                  <div class="aw-layout-slot-head">
+                    <span>5 向扇区自定义（选已用项自动对调）</span>
+                    <button type="button" class="aw-hotkey-reset" id="aw-sm-layout-slots-reset" ${isDefaultLayoutSlots(s.mainChatLayoutSlots) ? 'hidden' : ''}>恢复默认</button>
+                  </div>
+                  <div class="aw-layout-slot-grid">
+                    <div class="aw-layout-slot-col">
+                      ${buildLayoutSlotRowHtml('top_left', '左上', normalizeDraftLayoutSlots(s.mainChatLayoutSlots).top_left)}
+                      ${buildLayoutSlotRowHtml('mid_left', '左中', normalizeDraftLayoutSlots(s.mainChatLayoutSlots).mid_left)}
+                      ${buildLayoutSlotRowHtml('bottom_left', '左下', normalizeDraftLayoutSlots(s.mainChatLayoutSlots).bottom_left)}
+                    </div>
+                    <div class="aw-layout-slot-col">
+                      ${buildLayoutSlotRowHtml('top_right', '右上', normalizeDraftLayoutSlots(s.mainChatLayoutSlots).top_right)}
+                      ${buildLayoutSlotRowHtml('bottom_right', '右下', normalizeDraftLayoutSlots(s.mainChatLayoutSlots).bottom_right)}
+                    </div>
+                  </div>
+                </div>
+                <div class="aw-fold-note">与 Quicker / MouseInc / WGestures 等全局工具共存时，可改用修饰键组合，或用「按住快捷键松手」（快捷键仅作用于右侧文档导览）；也支持在 Quicker / 鼠标宏中向 Antigravity 发送上方自定义快捷键实现联动。</div>
               </div>
             </details>
           </div>
@@ -1112,6 +1211,44 @@
         advTriggerExpanded = Boolean(e.currentTarget?.open);
       });
 
+      modal.querySelectorAll('.aw-layout-slot-sel[data-aw-layout-slot]').forEach((sel) => {
+        sel.addEventListener('change', () => {
+          stopHotkeyRecording(modal);
+          if (!draft) return;
+          const slotKey = sel.getAttribute('data-aw-layout-slot');
+          const nextVal = sel.value;
+          if (!slotKey || !VALID_MAIN_LAYOUT_ACTIONS.has(nextVal)) return;
+          const slots = normalizeDraftLayoutSlots(draft.mainChatLayoutSlots);
+          const prevVal = slots[slotKey];
+          if (nextVal !== 'none' && nextVal !== prevVal) {
+            const dupKey = MAIN_LAYOUT_SLOT_KEYS.find((k) => k !== slotKey && slots[k] === nextVal);
+            if (dupKey) {
+              slots[dupKey] = prevVal;
+              const dupSel = modal.querySelector(`.aw-layout-slot-sel[data-aw-layout-slot="${dupKey}"]`);
+              if (dupSel) dupSel.value = prevVal;
+            }
+          }
+          slots[slotKey] = nextVal;
+          draft.mainChatLayoutSlots = slots;
+          const resetBtnEl = modal.querySelector('#aw-sm-layout-slots-reset');
+          if (resetBtnEl) resetBtnEl.hidden = isDefaultLayoutSlots(slots);
+        });
+      });
+
+      modal.querySelector('#aw-sm-layout-slots-reset')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        stopHotkeyRecording(modal);
+        if (!draft) return;
+        const fresh = { ...DEFAULT_MAIN_LAYOUT_SLOTS };
+        draft.mainChatLayoutSlots = fresh;
+        modal.querySelectorAll('.aw-layout-slot-sel[data-aw-layout-slot]').forEach((sel) => {
+          const sk = sel.getAttribute('data-aw-layout-slot');
+          if (sk && fresh[sk]) sel.value = fresh[sk];
+        });
+        const resetBtnEl = modal.querySelector('#aw-sm-layout-slots-reset');
+        if (resetBtnEl) resetBtnEl.hidden = true;
+      });
+
       if (activeTab === 'categories') {
         bindRuleRowEvents(modal);
       }
@@ -1236,6 +1373,7 @@
         ...settings,
         categoryRules: sanitizedRules,
         extraScanDirs: [...(settings?.extraScanDirs || [])],
+        mainChatLayoutSlots: normalizeDraftLayoutSlots(settings?.mainChatLayoutSlots),
       };
       currentCallbacks = {
         evicted,

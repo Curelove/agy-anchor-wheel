@@ -12,7 +12,7 @@
   --aw-bg: var(--background, #0b0b0e);
   --aw-surface: var(--content, #0e0e11);
   --aw-card: var(--card, #141418);
-  --aw-popover: var(--ag-cs-popover-bg, #16171e);
+  --aw-popover: var(--ag-cs-popover-bg, var(--popover, var(--card, #16171e)));
   --aw-border: var(--border, rgba(255, 255, 255, 0.08));
   --aw-card-border: var(--card-border, rgba(255, 255, 255, 0.12));
   --aw-fg: var(--foreground, #f2f2f5);
@@ -863,7 +863,7 @@
 /* ── Stagger Bloom, Magnetic Aim, Tree Charge & Branch Illuminations ───── */
 @keyframes awStaggerBloom {
   0% { opacity: 0; transform: translate(-50%, -50%) scale(0.82); }
-  100% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  100% { opacity: var(--aw-node-opacity, 1); transform: translate(-50%, -50%) scale(1); }
 }
 
 @keyframes awCardStaggerIn {
@@ -2007,6 +2007,107 @@
   line-height: 1.5;
   color: var(--aw-fg-muted);
   padding: 4px 0 2px;
+}
+
+.aw-layout-slot-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 9px 10px;
+  border-radius: var(--aw-r-sm);
+  background: var(--aw-hover);
+  border: 1px solid var(--aw-border);
+}
+
+.aw-layout-slot-editor[hidden] {
+  display: none !important;
+}
+
+.aw-layout-slot-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--aw-fg-muted);
+}
+
+.aw-layout-slot-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 12px;
+  align-items: start;
+}
+
+.aw-layout-slot-col {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.aw-layout-slot-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.aw-layout-slot-tag {
+  flex: 0 0 34px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--aw-fg);
+  text-align: center;
+  padding: 3px 0;
+  border-radius: calc(var(--aw-r-sm) - 2px);
+  background: var(--aw-card);
+  border: 1px solid var(--aw-border);
+}
+
+.aw-layout-slot-sel {
+  flex: 1 1 auto;
+  min-width: 0;
+  width: 100%;
+  height: 26px;
+  font-size: 12px;
+}
+
+@media (max-width: 560px) {
+  .aw-layout-slot-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+  }
+}
+
+.aw-layout-hub-ring {
+  fill: none;
+  stroke: var(--aw-accent);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+  opacity: 0.48;
+  pointer-events: none;
+}
+
+.aw-layout-sector[data-redundant="1"]:not([data-active="1"]) {
+  opacity: 0.72;
+}
+
+.aw-layout-node {
+  opacity: var(--aw-node-opacity, 1);
+  transition: opacity 0.12s var(--aw-ease-out);
+}
+
+.aw-layout-node[data-disabled="1"] {
+  --aw-node-opacity: 0.36;
+}
+
+.aw-layout-node[data-redundant="1"] {
+  --aw-node-opacity: 0.54;
+}
+
+.aw-layout-node[data-active="1"]:not([data-disabled="1"]) {
+  --aw-node-opacity: 1;
 }
 
 .aw-rule-header {

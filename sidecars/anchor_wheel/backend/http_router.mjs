@@ -81,6 +81,7 @@ export function createRouterHandlers({
     ['/nav_shared.js', 'shared/nav_shared.js', 'application/javascript; charset=utf-8'],
     ['/wheel.js', 'shared/radial_wheel.js', 'application/javascript; charset=utf-8'],
     ['/bilateral_wheel.js', 'shared/bilateral_wheel.js', 'application/javascript; charset=utf-8'],
+    ['/layout_wheel.js', 'shared/layout_wheel.js', 'application/javascript; charset=utf-8'],
     ['/ae_tree.js', 'shared/ae_tree.js', 'application/javascript; charset=utf-8'],
     ['/settings_modal.js', 'shared/settings_modal.js', 'application/javascript; charset=utf-8'],
     ['/markdown.js', 'shared/markdown_render.js', 'application/javascript; charset=utf-8'],

@@ -66,6 +66,7 @@
   let lastObservedTabKey = '';
   let wheelInstance = null;
   let bilateralInstance = null;
+  let layoutWheelInstance = null;
   let aeTreeInstance = null;
   let settingsModalInstance = null;
   let storeUnsubscribe = null;
@@ -877,6 +878,13 @@
         isPreviewEnabled: () => settings.hoverPreviewEnabled !== false,
       });
     }
+    if (!layoutWheelInstance && W.AnchorWheelLayout) {
+      layoutWheelInstance = W.AnchorWheelLayout.createLayoutWheel({
+        document: D,
+        mountRoot: D.body,
+        getTheme,
+      });
+    }
     if (!aeTreeInstance && W.AnchorWheelTree) {
       aeTreeInstance = W.AnchorWheelTree.createAeTree({
         document: D,
@@ -913,8 +921,326 @@
     holdWheelActiveButton = -1;
     wheelInstance?.close?.();
     bilateralInstance?.close?.();
+    layoutWheelInstance?.close?.();
     aeTreeInstance?.close?.();
     sweepOrphanPreviewCards();
+  }
+
+  function findLeftSidebarToggleButton() {
+    const rightCol = getRightPaneColumn();
+    const maxLeft = Math.max(360, (W.innerWidth || 1400) * 0.55);
+    const visible = Array.from(D.querySelectorAll('[data-testid="sidebar-toggle"]'))
+      .filter((b) => {
+        if (rightCol && rightCol.contains(b)) return false;
+        const r = b.getBoundingClientRect();
+        return r.width > 0 && r.height > 0;
+      })
+      .map((b) => ({ el: b, rect: b.getBoundingClientRect() }));
+
+    const topBar = visible
+      .filter((x) => x.rect.top < 110 && x.rect.left < maxLeft)
+      .sort((a, b) => a.rect.left - b.rect.left);
+    if (topBar.length) return topBar[0].el;
+
+    visible.sort((a, b) => a.rect.left - b.rect.left);
+    return visible[0]?.el || null;
+  }
+
+  function resolvePaneTreeIdFromTarget(targetEl, reduxStore, browserCtx) {
+    if (targetEl && targetEl.nodeType === 1) {
+      const cidEl = targetEl.closest?.('[data-cascade-id]');
+      const domCid = cidEl?.getAttribute?.('data-cascade-id') || '';
+      if (GUID_RE.test(domCid)) {
+        return { kind: 'cascadeId', cascadeId: domCid };
+      }
+      try {
+        let domCur = targetEl.closest?.('[data-testid="conversation-view"]') || targetEl;
+        let fiber = null;
+        for (let depth = 0; domCur && depth < 8 && !fiber; depth++) {
+          for (const k of Object.keys(domCur)) {
+            if (k.startsWith('__reactFiber') && domCur[k]) {
+              fiber = domCur[k];
+              break;
+            }
+          }
+          domCur = domCur.parentElement;
+        }
+        let steps = 0;
+        while (fiber && steps++ < 80) {
+          const mp = fiber.memoizedProps;
+          if (mp && typeof mp === 'object') {
+            if (mp.panelScope && typeof mp.panelScope.kind === 'string') return mp.panelScope;
+            if (mp.treeId && typeof mp.treeId.kind === 'string') return mp.treeId;
+            if (typeof mp.cascadeId === 'string' && GUID_RE.test(mp.cascadeId)) {
+              return { kind: 'cascadeId', cascadeId: mp.cascadeId };
+            }
+            if (typeof mp.value?.getTargetTreeId === 'function') {
+              const t = mp.value.getTargetTreeId();
+              if (t && typeof t.kind === 'string') return t;
+            }
+          }
+          fiber = fiber.return;
+        }
+      } catch {}
+    }
+    return resolveHostTreeId(reduxStore, browserCtx);
+  }
+
+  function getReduxSidePanelPane(st, treeId) {
+    if (!st?.sidePanel || !treeId) return null;
+    if (treeId.kind === 'cascadeId') return st.sidePanel.conversationPanes?.[treeId.cascadeId] || null;
+    if (treeId.kind === 'newConversation') {
+      return st.sidePanel.newConversationPanes?.[treeId.projectId || treeId.paneId || treeId.id] || null;
+    }
+    if (treeId.kind === 'home') return st.sidePanel.homePane || null;
+    if (treeId.kind === 'customView') return st.sidePanel.customViewPanes?.[treeId.viewId] || null;
+    return null;
+  }
+
+  function readReduxRightOpen(reduxStore, treeId) {
+    const st = reduxStore?.getState?.();
+    const pane = getReduxSidePanelPane(st, treeId);
+    return typeof pane?.isPaneOpen === 'boolean' ? pane.isPaneOpen : null;
+  }
+
+  function readReduxOverviewOpen(reduxStore, treeId) {
+    if (!treeId || treeId.kind !== 'cascadeId' || !treeId.cascadeId) return null;
+    const st = reduxStore?.getState?.();
+    const val = st?.sidePanelV2?.overviewPanelOpen?.[treeId.cascadeId];
+    return typeof val === 'boolean' ? val : null;
+  }
+
+  function getHostLayoutState(targetEl = null) {
+    const { browserCtx, reduxStore } = discoverHostBridge();
+    const st = reduxStore?.getState?.() || {};
+    const treeId = resolvePaneTreeIdFromTarget(targetEl, reduxStore, browserCtx);
+
+    let leftOpen = false;
+    if (typeof st.sideBar?.isOpen === 'boolean') {
+      leftOpen = st.sideBar.isOpen;
+    } else {
+      const sbItem = D.querySelector('[data-testid="conversation-row-sidebar"], [data-testid="sidebar-search-button"]');
+      leftOpen = Boolean(sbItem && sbItem.getBoundingClientRect().width > 20);
+    }
+
+    const spPane = getReduxSidePanelPane(st, treeId);
+    const col = getRightPaneColumn();
+    const colWidth = col && col.isConnected ? col.getBoundingClientRect().width : 0;
+    const domRightVisible = colWidth > 80;
+
+    let rightOpen = false;
+    if (typeof spPane?.isPaneOpen === 'boolean') {
+      if (spPane.isPaneOpen) {
+        const hasZeroTabs = Array.isArray(spPane.tabs) && spPane.tabs.length === 0;
+        const collapsedDomCol = Boolean(col && col.isConnected && colWidth <= 2);
+        rightOpen = !(hasZeroTabs && !domRightVisible) && !collapsedDomCol;
+      } else {
+        rightOpen = false;
+      }
+    } else {
+      rightOpen = domRightVisible;
+    }
+
+    const canOverview = Boolean(treeId?.kind === 'cascadeId' && treeId.cascadeId);
+    const ovEl = D.querySelector('[data-testid="overview-panel"]');
+    const ovRect = ovEl && ovEl.isConnected ? ovEl.getBoundingClientRect() : null;
+    const domOverviewOpen = Boolean(ovRect && ovRect.width > 60 && ovRect.height > 60);
+    const reduxOverview = readReduxOverviewOpen(reduxStore, treeId);
+    const overviewOpen = typeof reduxOverview === 'boolean' ? (reduxOverview || domOverviewOpen) : domOverviewOpen;
+    const maximized = Boolean(st.layout?.isSidePanelMaximized);
+
+    return { leftOpen, rightOpen, overviewOpen, canOverview, maximized, treeId, reduxStore };
+  }
+
+  function executeHostLayoutAction(actionId, targetEl = null) {
+    const ls = getHostLayoutState(targetEl);
+    const { reduxStore, treeId } = ls;
+
+    if (actionId === 'collapse_left') {
+      if (!ls.leftOpen) return true;
+      const btn = findLeftSidebarToggleButton();
+      if (btn) {
+        btn.click();
+        return true;
+      }
+      if (reduxStore) {
+        try { reduxStore.dispatch({ type: 'sideBar/setIsOpen', payload: false }); } catch {}
+        return reduxStore.getState?.()?.sideBar?.isOpen === false;
+      }
+      return false;
+    }
+
+    if (actionId === 'expand_left') {
+      if (ls.maximized && reduxStore) {
+        try { reduxStore.dispatch({ type: 'layout/setSidePanelMaximized', payload: false }); } catch {}
+      }
+      if (ls.leftOpen) return true;
+      const btn = findLeftSidebarToggleButton();
+      if (btn) {
+        btn.click();
+        return true;
+      }
+      if (reduxStore) {
+        try { reduxStore.dispatch({ type: 'sideBar/setIsOpen', payload: true }); } catch {}
+        return reduxStore.getState?.()?.sideBar?.isOpen === true;
+      }
+      return false;
+    }
+
+    if (actionId === 'expand_right') {
+      let toggledAuxDom = false;
+      let rightReady = ls.rightOpen;
+      if (reduxStore && treeId) {
+        try {
+          reduxStore.dispatch({
+            type: 'sidePanel/setSidePanelOpen',
+            payload: { panelScope: treeId, treeId, isOpen: true },
+          });
+        } catch {}
+        if (readReduxRightOpen(reduxStore, treeId) === true) {
+          rightReady = true;
+        }
+      }
+      if (!rightReady && !ls.rightOpen) {
+        const auxBtn = D.querySelector('[data-testid="toggle-aux-sidebar"]');
+        if (auxBtn) {
+          auxBtn.click();
+          toggledAuxDom = true;
+          rightReady = true;
+        }
+      }
+      if (ls.overviewOpen) {
+        let ovClosed = false;
+        if (reduxStore && ls.canOverview) {
+          try {
+            reduxStore.dispatch({
+              type: 'sidePanelV2/setOverviewPanelOpen',
+              payload: { cascadeId: treeId.cascadeId, open: false },
+            });
+          } catch {}
+          if (readReduxOverviewOpen(reduxStore, treeId) === false) {
+            ovClosed = true;
+          }
+        }
+        if (!ovClosed && !toggledAuxDom) {
+          D.querySelector('[data-testid="toggle-overview-panel"]')?.click?.();
+        }
+      }
+      return rightReady || ls.overviewOpen;
+    }
+
+    if (actionId === 'collapse_right') {
+      if (ls.maximized && reduxStore) {
+        try { reduxStore.dispatch({ type: 'layout/setSidePanelMaximized', payload: false }); } catch {}
+      }
+      let acted = false;
+      if (ls.rightOpen) {
+        let closedRight = false;
+        if (reduxStore && treeId) {
+          try {
+            reduxStore.dispatch({
+              type: 'sidePanel/setSidePanelOpen',
+              payload: { panelScope: treeId, treeId, isOpen: false },
+            });
+          } catch {}
+          if (readReduxRightOpen(reduxStore, treeId) === false) {
+            closedRight = true;
+          }
+        }
+        if (!closedRight) {
+          const auxBtn = D.querySelector('[data-testid="toggle-aux-sidebar"]');
+          if (auxBtn) {
+            auxBtn.click();
+            closedRight = true;
+          }
+        }
+        acted = acted || closedRight;
+      }
+      if (ls.overviewOpen) {
+        let closedOv = false;
+        if (reduxStore && ls.canOverview) {
+          try {
+            reduxStore.dispatch({
+              type: 'sidePanelV2/setOverviewPanelOpen',
+              payload: { cascadeId: treeId.cascadeId, open: false },
+            });
+          } catch {}
+          if (readReduxOverviewOpen(reduxStore, treeId) === false) {
+            closedOv = true;
+          }
+        }
+        if (!closedOv) {
+          const ovBtn = D.querySelector('[data-testid="toggle-overview-panel"]');
+          if (ovBtn) {
+            ovBtn.click();
+            closedOv = true;
+          }
+        }
+        acted = acted || closedOv;
+      }
+      return acted || (!ls.rightOpen && !ls.overviewOpen);
+    }
+
+    if (actionId === 'toggle_left') {
+      return executeHostLayoutAction(ls.leftOpen ? 'collapse_left' : 'expand_left', targetEl);
+    }
+
+    if (actionId === 'toggle_right') {
+      return executeHostLayoutAction(ls.rightOpen || ls.overviewOpen ? 'collapse_right' : 'expand_right', targetEl);
+    }
+
+    if (actionId === 'toggle_overview') {
+      if (!ls.canOverview && !ls.overviewOpen) return false;
+      const desired = !ls.overviewOpen;
+      if (reduxStore && ls.canOverview) {
+        try {
+          reduxStore.dispatch({
+            type: 'sidePanelV2/setOverviewPanelOpen',
+            payload: { cascadeId: treeId.cascadeId, open: desired },
+          });
+        } catch {}
+        if (readReduxOverviewOpen(reduxStore, treeId) === desired) {
+          return true;
+        }
+      }
+      const ovBtn = D.querySelector('[data-testid="toggle-overview-panel"]');
+      if (ovBtn) {
+        ovBtn.click();
+        return true;
+      }
+      return false;
+    }
+
+    return false;
+  }
+
+  function openMainChatLayoutWheel(x, y, { holdMode = true, holdButton = 1, target = null } = {}) {
+    ensureSharedInstances();
+    if (!layoutWheelInstance) return false;
+    settingsModalInstance?.close?.();
+    closePopover();
+    wheelInstance?.close?.();
+    layoutWheelInstance?.close?.();
+    bilateralInstance?.close?.();
+    aeTreeInstance?.close?.();
+    const layoutState = getHostLayoutState(target);
+    layoutWheelInstance.open({
+      x,
+      y,
+      holdMode,
+      holdButton,
+      layoutState,
+      slotConfig: settings.mainChatLayoutSlots,
+      onAction: (actionId) => {
+        executeHostLayoutAction(actionId, target);
+      },
+      onClose: () => {
+        if (!aeTreeInstance?.isOpen?.() && !bilateralInstance?.isOpen?.() && !wheelInstance?.isOpen?.()) {
+          activeTabTriggerMode = false;
+        }
+      },
+    });
+    return true;
   }
 
   async function refreshPersistentNavigatorIfOpen() {
@@ -956,6 +1282,7 @@
     settingsModalInstance?.close?.();
     closePopover();
     wheelInstance?.close?.();
+    layoutWheelInstance?.close?.();
     aeTreeInstance?.close?.();
     activeTabTriggerMode = Boolean(fromTabMode && !holdMode);
     bilateralInstance.open({
@@ -989,6 +1316,7 @@
     settingsModalInstance?.close?.();
     closePopover();
     wheelInstance?.close?.();
+    layoutWheelInstance?.close?.();
     bilateralInstance?.close?.();
     const col = getRightPaneColumn();
     const anchorRect = col ? col.getBoundingClientRect() : null;
@@ -1020,6 +1348,7 @@
     settingsModalInstance?.close?.();
     closePopover();
     bilateralInstance?.close?.();
+    layoutWheelInstance?.close?.();
     aeTreeInstance?.close?.();
     const { group, isLiveFallback } = target;
     activeTabTriggerMode = Boolean(fromTabMode && !holdMode);
@@ -3041,6 +3370,111 @@
     return Boolean(tabBar && tabBar.contains(target));
   }
 
+  function isOnNativeScrollbar(el, clientX, clientY) {
+    if (!el || el.nodeType !== 1 || typeof el.getBoundingClientRect !== 'function') return false;
+    const rect = el.getBoundingClientRect();
+    if (!rect || rect.width <= 0 || rect.height <= 0) return false;
+    if (el.scrollHeight > el.clientHeight + 2 && el.clientWidth > 0) {
+      const sbW = rect.width - (el.clientLeft || 0) - el.clientWidth;
+      const vEdge = rect.left + (el.clientLeft || 0) + el.clientWidth;
+      if (sbW >= 4 && clientX >= vEdge - 1 && clientX <= rect.right + 1) return true;
+    }
+    if (el.scrollWidth > el.clientWidth + 2 && el.clientHeight > 0) {
+      const sbH = rect.height - (el.clientTop || 0) - el.clientHeight;
+      const hEdge = rect.top + (el.clientTop || 0) + el.clientHeight;
+      if (sbH >= 4 && clientY >= hEdge - 1 && clientY <= rect.bottom + 1) return true;
+    }
+    return false;
+  }
+
+  function isInsideLeftSidebarRegion(target) {
+    const anchor = D.querySelector('[data-testid="conversation-row-sidebar"], [data-testid="sidebar-search-button"]');
+    if (!anchor) return false;
+    const convo = D.querySelector('[data-testid="conversation-view"]');
+    const aux = D.querySelector('[data-testid="aux-pane-split"], [data-testid="side-panel-split"]');
+    let root = anchor;
+    let cur = anchor.parentElement;
+    while (cur && cur !== D.body && cur !== D.documentElement) {
+      if ((convo && cur.contains(convo)) || (aux && cur.contains(aux))) break;
+      const r = cur.getBoundingClientRect();
+      if (r.width > (W.innerWidth || 1400) * 0.55) break;
+      root = cur;
+      cur = cur.parentElement;
+    }
+    return Boolean(root && root.contains(target));
+  }
+
+  function isEligibleMainChatWheelTarget(target, button = 1, clientX = 0, clientY = 999, modifier = 'none') {
+    if (!settings.mainChatLayoutWheelEnabled) return false;
+    if (!target || target.nodeType !== 1) return false;
+    if (isInsideRightContent(target) || isInsideNativeTabBar(target)) return false;
+
+    // Protect active text selection for bare right-click copy and Shift+Left range selection
+    try {
+      const sel = W.getSelection?.();
+      if (sel && !sel.isCollapsed && ((button === 2 && modifier === 'none') || (button === 0 && modifier === 'shift'))) {
+        return false;
+      }
+    } catch {}
+
+    // Never intercept native scrollbar thumb/track clicks on scrollable containers
+    if (isOnNativeScrollbar(target, clientX, clientY)) return false;
+
+    if (
+      target.closest?.(
+        [
+          '[data-aw-owned="1"]',
+          '[role="dialog"]',
+          '[role="menu"]',
+          '[role="listbox"]',
+          '[data-radix-popper-content-wrapper]',
+          '[data-testid="overview-panel"]',
+          '[data-testid="overview-panel-host-gutter"]',
+          '[data-testid="title-menu-bar-item"]',
+          '[data-testid="conversation-row-sidebar"]',
+          '[data-testid="tab-file-tree-sidebar"]',
+          'aside',
+          'nav',
+          'header',
+          '[role="tree"]',
+          '[role="toolbar"]',
+          '[role="tablist"]',
+          '[role="separator"]',
+          '[data-panel-resize-handle-id]',
+          '.xterm',
+          'iframe',
+          'video',
+          'audio',
+          'canvas',
+          '[data-testid="entity-pill"]',
+          '[role="link"]',
+        ].join(', ')
+      )
+    ) {
+      return false;
+    }
+
+    if (isInsideLeftSidebarRegion(target)) return false;
+
+    const inConvoView = Boolean(target.closest?.('[data-testid="conversation-view"]'));
+    let inMainPane = inConvoView;
+    if (!inMainPane) {
+      const aux = D.querySelector('[data-testid="aux-pane-split"], [data-testid="side-panel-split"]');
+      const leftPane = aux?.firstElementChild || null;
+      if (leftPane && leftPane !== getRightPaneColumn() && leftPane.contains(target) && clientY >= 72) {
+        inMainPane = true;
+      }
+    }
+    if (!inMainPane) return false;
+
+    const blockedSel =
+      button === 0
+        ? '[data-testid="agent-input-box"], input, textarea, select, [contenteditable="true"], [role="textbox"], .monaco-editor, .cm-editor, .ProseMirror, button, a, [role="button"], [role="menuitem"], [role="tab"], summary, label, pre, code'
+        : '[data-testid="agent-input-box"], input, textarea, select, [contenteditable="true"], [role="textbox"], .monaco-editor, .cm-editor, .ProseMirror, button, a, [role="button"], [role="menuitem"], [role="tab"], summary, label';
+    if (target.closest?.(blockedSel)) return false;
+    return true;
+  }
+
   function recordLocalLineageMirror(
     parentPath,
     parentTitle,
@@ -3234,12 +3668,20 @@
 
   function onCaptureMouseDown(ev) {
     if (destroyed) return;
+    const trig = getWheelTriggerMeta();
     if (!isInsideRightContent(ev.target)) {
       if (ev.button === 0) promotePreviewTabsInPane();
+      if (
+        settings.mainChatLayoutWheelEnabled &&
+        ev.button === trig.button &&
+        matchesWheelTriggerMod(ev, trig) &&
+        isEligibleMainChatWheelTarget(ev.target, ev.button, ev.clientX, ev.clientY, trig.modifier)
+      ) {
+        if (ev.button !== 2) ev.preventDefault();
+      }
       return;
     }
     const midMode = settings.middleMode || 'bilateral_wheel';
-    const trig = getWheelTriggerMeta();
     const noMod = !ev.altKey && !ev.ctrlKey && !ev.shiftKey && !ev.metaKey;
     if (ev.button === 1) {
       if (
@@ -3276,7 +3718,12 @@
     }
     const midMode = settings.middleMode || 'bilateral_wheel';
     const trig = getWheelTriggerMeta();
-    if ((ev.button === 3 || ev.button === 4) && midMode !== 'off' && trig.button === ev.button && matchesWheelTriggerMod(ev, trig) && isInsideRightContent(ev.target)) {
+    if (
+      (ev.button === 3 || ev.button === 4) &&
+      trig.button === ev.button &&
+      matchesWheelTriggerMod(ev, trig) &&
+      ((midMode !== 'off' && isInsideRightContent(ev.target)) || isEligibleMainChatWheelTarget(ev.target, ev.button, ev.clientX, ev.clientY, trig.modifier))
+    ) {
       ev.preventDefault();
       ev.stopPropagation();
       ev.stopImmediatePropagation();
@@ -3306,6 +3753,11 @@
       ev.stopImmediatePropagation();
       return;
     }
+    // On macOS, native contextmenu fires on mousedown and swallows pointerup;
+    // cancel any pending right-click hold timer before letting a menu take focus.
+    if (holdOrigin && !holdOrigin.opened && holdOrigin.button === 2) {
+      cancelPendingHold();
+    }
     // Shift + Right-click acts as an explicit escape hatch to always open the host's native context menu
     if (ev.shiftKey && !ev.altKey && !ev.ctrlKey && !ev.metaKey) return;
     const ctxTarget = extractContextTargetFromEvent(ev.target);
@@ -3317,7 +3769,9 @@
   }
 
   function onCaptureDragStart(ev) {
-    if (destroyed || !isInsideRightContent(ev.target)) return;
+    if (destroyed) return;
+    cancelPendingHold();
+    if (!isInsideRightContent(ev.target)) return;
     let meta = extractLinkMetaFromTarget(ev.target);
     if (!meta && activeIsDirectory) {
       const rowMeta = extractDirectoryRowMetaFromTarget(ev.target);
@@ -3368,22 +3822,59 @@
   let holdOrigin = null;
   let holdWheelActiveButton = -1;
 
+  function cancelPendingHold() {
+    clearTimeout(holdTimer);
+    holdTimer = null;
+    holdOrigin = null;
+  }
+
+  function onPointerCancel() {
+    cancelPendingHold();
+    if (holdWheelActiveButton !== -1) {
+      holdWheelActiveButton = -1;
+      closeAllNavigators();
+    }
+  }
+
+  function onWindowBlurCancelHold() {
+    cancelPendingHold();
+  }
+
+  function onVisibilityChangeCancelHold() {
+    if (D.hidden) {
+      cancelPendingHold();
+      if (holdWheelActiveButton !== -1) {
+        holdWheelActiveButton = -1;
+        closeAllNavigators();
+      }
+    }
+  }
+
   function openHoldWheelAtOrigin(origin) {
-    const midMode = settings.middleMode || 'bilateral_wheel';
-    if (midMode === 'off') return false;
     let opened = false;
-    if (midMode === 'classic_wheel') {
-      const target = getWheelTargetGroup();
-      opened = target ? openClassicWheelForTarget(target, origin.x, origin.y, { holdMode: true, holdButton: origin.button }) : false;
+    if (origin.scope === 'main_chat') {
+      if (!settings.mainChatLayoutWheelEnabled) return false;
+      opened = openMainChatLayoutWheel(origin.x, origin.y, {
+        holdMode: true,
+        holdButton: origin.button,
+        target: origin.target || null,
+      });
     } else {
-      const syncCtx = getSyncNavContext(navScopeOverride);
-      if (!syncCtx?.current) return false;
-      const usedCache = syncCtx === cachedNavContext;
-      opened = openBilateralForContext(syncCtx, origin.x, origin.y, { holdMode: true, holdButton: origin.button });
-      if (opened && !usedCache) {
-        void fetchNavContext(navScopeOverride).then((fresh) => {
-          if (fresh && bilateralInstance?.isOpen?.()) bilateralInstance.updateContext(fresh);
-        });
+      const midMode = settings.middleMode || 'bilateral_wheel';
+      if (midMode === 'off') return false;
+      if (midMode === 'classic_wheel') {
+        const target = getWheelTargetGroup();
+        opened = target ? openClassicWheelForTarget(target, origin.x, origin.y, { holdMode: true, holdButton: origin.button }) : false;
+      } else {
+        const syncCtx = getSyncNavContext(navScopeOverride);
+        if (!syncCtx?.current) return false;
+        const usedCache = syncCtx === cachedNavContext;
+        opened = openBilateralForContext(syncCtx, origin.x, origin.y, { holdMode: true, holdButton: origin.button });
+        if (opened && !usedCache) {
+          void fetchNavContext(navScopeOverride).then((fresh) => {
+            if (fresh && bilateralInstance?.isOpen?.()) bilateralInstance.updateContext(fresh);
+          });
+        }
       }
     }
     if (opened) {
@@ -3406,37 +3897,51 @@
   function onPointerDown(ev) {
     if (destroyed) return;
     lastPointerPos = { x: ev.clientX, y: ev.clientY };
-    if (!isInsideRightContent(ev.target)) return;
-    if (ev.target?.closest?.('[data-aw-owned="1"]')) {
-      const allowPassthrough = Boolean(
-        ev.target?.closest?.('[data-aw-wheel-passthrough="1"]') &&
-        !ev.target?.closest?.('button, a, input, select, textarea, summary, label, .aw-doc-toolbar, .aw-doc-findbar, .aw-doc-sheetbar, .aw-doc-outline')
-      );
-      if (!allowPassthrough) return;
-    }
-    const midMode = settings.middleMode || 'bilateral_wheel';
     const trig = getWheelTriggerMeta();
-    if (midMode === 'off' || ev.button !== trig.button || !matchesWheelTriggerMod(ev, trig)) return;
-    // Middle-click on links preserves background tab opening; modified left-click avoids hijacking links/controls
-    if (ev.button === 1 && trig.modifier === 'none' && extractLinkMetaFromTarget(ev.target)) return;
-    if (
-      ev.button === 0 &&
-      (extractLinkMetaFromTarget(ev.target) ||
-        (activeIsDirectory && extractDirectoryRowMetaFromTarget(ev.target)) ||
-        ev.target?.closest?.('button, a, input, select, textarea, summary, label'))
-    ) {
+    if (ev.button !== trig.button || !matchesWheelTriggerMod(ev, trig)) return;
+
+    const inRight = isInsideRightContent(ev.target);
+    let scope = '';
+
+    if (inRight) {
+      if (ev.target?.closest?.('[data-aw-owned="1"]')) {
+        const allowPassthrough = Boolean(
+          ev.target?.closest?.('[data-aw-wheel-passthrough="1"]') &&
+          !ev.target?.closest?.('button, a, input, select, textarea, summary, label, .aw-doc-toolbar, .aw-doc-findbar, .aw-doc-sheetbar, .aw-doc-outline')
+        );
+        if (!allowPassthrough) return;
+      }
+      const midMode = settings.middleMode || 'bilateral_wheel';
+      if (midMode === 'off') return;
+      // Middle-click on links preserves background tab opening; modified left-click avoids hijacking links/controls
+      if (ev.button === 1 && trig.modifier === 'none' && extractLinkMetaFromTarget(ev.target)) return;
+      if (
+        ev.button === 0 &&
+        (extractLinkMetaFromTarget(ev.target) ||
+          (activeIsDirectory && extractDirectoryRowMetaFromTarget(ev.target)) ||
+          ev.target?.closest?.('button, a, input, select, textarea, summary, label'))
+      ) {
+        return;
+      }
+      scope = 'right_doc';
+    } else if (isEligibleMainChatWheelTarget(ev.target, ev.button, ev.clientX, ev.clientY, trig.modifier)) {
+      scope = 'main_chat';
+    } else {
       return;
     }
+
     if (ev.button !== 2) ev.preventDefault();
 
     const origin = {
       x: ev.clientX,
       y: ev.clientY,
+      target: ev.target,
       button: trig.button,
       modifier: trig.modifier,
       dragPx: trig.dragPx,
+      scope,
       opened: false,
-      inRightContent: true,
+      inRightContent: scope === 'right_doc',
       downAt: Date.now(),
     };
     holdOrigin = origin;
@@ -3484,12 +3989,13 @@
     if (ev.button === 3 || ev.button === 4) {
       const midMode = settings.middleMode || 'bilateral_wheel';
       const trig = getWheelTriggerMeta();
-      if (
-        midMode !== 'off' &&
+      const matchedSideWheel =
         trig.button === ev.button &&
         (prevOrigin?.button === ev.button || matchesWheelTriggerMod(ev, trig)) &&
-        (prevOrigin?.inRightContent || isInsideRightContent(ev.target))
-      ) {
+        ((midMode !== 'off' && (prevOrigin?.inRightContent || isInsideRightContent(ev.target))) ||
+          prevOrigin?.scope === 'main_chat' ||
+          isEligibleMainChatWheelTarget(ev.target, ev.button, ev.clientX, ev.clientY, trig.modifier));
+      if (matchedSideWheel) {
         ev.preventDefault();
         return;
       }
@@ -3621,6 +4127,9 @@
     D.addEventListener('pointerdown', onPointerDown, true);
     D.addEventListener('pointermove', onPointerMove, true);
     D.addEventListener('pointerup', onPointerUp, true);
+    D.addEventListener('pointercancel', onPointerCancel, true);
+    W.addEventListener('blur', onWindowBlurCancelHold);
+    D.addEventListener('visibilitychange', onVisibilityChangeCancelHold);
     W.addEventListener('keydown', onCaptureKeyDown, true);
     D.addEventListener('click', onDocClickClosePopover, false);
 
@@ -3703,6 +4212,8 @@
         wheelTriggerButton: settings.wheelTriggerButton || 'middle',
         wheelTriggerModifier: settings.wheelTriggerModifier || 'none',
         wheelHoldSensitivity: settings.wheelHoldSensitivity || 'balanced',
+        mainChatLayoutWheelEnabled: Boolean(settings.mainChatLayoutWheelEnabled),
+        mainChatLayoutSlots: settings.mainChatLayoutSlots || null,
         tabCustomHotkey: settings.tabCustomHotkey || 'Tab',
         tabTriggerAction: settings.tabTriggerAction || 'toggle',
         updateShouldNotify: updState.shouldNotify,
@@ -3716,6 +4227,7 @@
         contentContainerIndex: col ? Array.from(col.children).indexOf(contentWrap) : -1,
         wheelOpen: Boolean(wheelInstance?.isOpen?.()),
         bilateralOpen: Boolean(bilateralInstance?.isOpen?.()),
+        layoutWheelOpen: Boolean(layoutWheelInstance?.isOpen?.()),
         aeTreeOpen: Boolean(aeTreeInstance?.isOpen?.()),
         settingsOpen: Boolean(settingsModalInstance?.isOpen?.()),
       };
@@ -3794,6 +4306,9 @@
       D.removeEventListener('pointerdown', onPointerDown, true);
       D.removeEventListener('pointermove', onPointerMove, true);
       D.removeEventListener('pointerup', onPointerUp, true);
+      D.removeEventListener('pointercancel', onPointerCancel, true);
+      W.removeEventListener('blur', onWindowBlurCancelHold);
+      D.removeEventListener('visibilitychange', onVisibilityChangeCancelHold);
       W.removeEventListener('keydown', onCaptureKeyDown, true);
       D.removeEventListener('click', onDocClickClosePopover, false);
       for (const el of D.querySelectorAll('[data-aw-hidden-tab="1"]')) el.removeAttribute('data-aw-hidden-tab');

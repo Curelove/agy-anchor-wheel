@@ -179,6 +179,7 @@ const BUNDLE_SOURCE_FILES = Object.freeze([
   ['shared', 'nav_shared.js'],
   ['shared', 'radial_wheel.js'],
   ['shared', 'bilateral_wheel.js'],
+  ['shared', 'layout_wheel.js'],
   ['shared', 'ae_tree.js'],
   ['shared', 'settings_modal.js'],
   ['shared', 'markdown_render.js'],
@@ -247,6 +248,7 @@ export class CdpBridge {
     const navSharedJs = fs.readFileSync(path.join(SIDECAR_ROOT, 'shared', 'nav_shared.js'), 'utf8');
     const wheelJs = fs.readFileSync(path.join(SIDECAR_ROOT, 'shared', 'radial_wheel.js'), 'utf8');
     const bilateralJs = fs.readFileSync(path.join(SIDECAR_ROOT, 'shared', 'bilateral_wheel.js'), 'utf8');
+    const layoutWheelJs = fs.readFileSync(path.join(SIDECAR_ROOT, 'shared', 'layout_wheel.js'), 'utf8');
     const aeTreeJs = fs.readFileSync(path.join(SIDECAR_ROOT, 'shared', 'ae_tree.js'), 'utf8');
     const settingsModalJs = fs.readFileSync(path.join(SIDECAR_ROOT, 'shared', 'settings_modal.js'), 'utf8');
     const mdJs = fs.readFileSync(path.join(SIDECAR_ROOT, 'shared', 'markdown_render.js'), 'utf8');
@@ -268,6 +270,7 @@ export class CdpBridge {
       navSharedJs,
       wheelJs,
       bilateralJs,
+      layoutWheelJs,
       aeTreeJs,
       settingsModalJs,
       mdJs,
