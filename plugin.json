@@ -2,7 +2,7 @@
   "name": "agy-anchor-wheel",
   "displayName": "锚点轮盘 · AnchorWheel",
   "description": "Upgrade Antigravity's side pane with ProRes Alpha checkerboard MOV/MKV/AVI video streaming, zero-dep Adobe (.psd/.aep/.prproj/.ai/.mogrt/.cube) & Office/PDF/Notebook/SQLite/3D/Archive preview, chat-link preview-tab overwrite protection, configurable Bilateral Wheel, Tab ancestor tree, Obsidian backlinks, and auto-encoding repair.",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "logo": "assets/logo.svg",
   "author": {
     "name": "Curelove",

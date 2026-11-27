@@ -343,6 +343,7 @@
       y,
       holdMode,
       holdButton,
+      holdHotkey: extra.holdHotkey || '',
       persistOnScroll: Boolean(extra.persistOnScroll),
       closeOnSelect: holdMode || !extra.fromTabMode || Boolean(state.settings?.tabCloseOnSelect),
       sectors: state.settings?.wheelSectors || 8,
@@ -352,7 +353,7 @@
         ? (group.children?.length ? '当前已打开标签' : '点击下方设为母页或点 MD 链接')
         : '点击 MD 链接即收编进本组',
       onSelect: (picked) => {
-        const keepNav = Boolean(extra.fromTabMode && !state.settings?.tabCloseOnSelect);
+        const keepNav = Boolean(extra.fromTabMode && !holdMode && !state.settings?.tabCloseOnSelect);
         void openFile(picked.path, {
           inNewTab: true,
           isDirectory: Boolean(picked.isDirectory),
@@ -402,6 +403,9 @@
           }
         : null,
       onShowOutlinks: state.activeTabPath ? () => openLinksPopover(els.btnLinks, 'outlinks') : null,
+      onClose: () => {
+        if (!aeTree.isOpen() && !bilateral.isOpen()) state.activeTabNavMode = false;
+      },
     });
   }
 
@@ -449,7 +453,7 @@
     return state.navContext;
   }
 
-  function openBilateralWheel(x, y, { holdMode = false, holdButton = 1, persistOnScroll = false, fromTabMode = false, forcedContext = null } = {}) {
+  function openBilateralWheel(x, y, { holdMode = false, holdButton = 1, holdHotkey = '', persistOnScroll = false, fromTabMode = false, forcedContext = null } = {}) {
     const ctx = forcedContext || getSyncNavContext(state.navScopeOverride);
     if (!ctx?.current) return false;
     settingsModal.close();
@@ -463,12 +467,13 @@
       y,
       holdMode,
       holdButton,
+      holdHotkey,
       persistOnScroll,
       closeOnSelect: fromTabMode ? Boolean(state.settings?.tabCloseOnSelect) : false,
       parentDirection: state.settings?.parentDirection || 'left',
       scope: state.navScopeOverride || ctx.childSourceScope || state.settings?.childSourceScope || 'opened_and_outlinks',
       onSelect: (picked) => {
-        const keepNav = Boolean(fromTabMode && !state.settings?.tabCloseOnSelect);
+        const keepNav = Boolean(fromTabMode && !holdMode && !state.settings?.tabCloseOnSelect);
         void openFile(picked.path, {
           inNewTab: true,
           isDirectory: Boolean(picked.isDirectory),
@@ -489,21 +494,23 @@
     return true;
   }
 
-  function openAeTree({ fromTabMode = true, forcedContext = null } = {}) {
+  function openAeTree({ fromTabMode = true, holdMode = false, holdHotkey = '', forcedContext = null } = {}) {
     const ctx = forcedContext || getSyncNavContext(state.navScopeOverride);
     if (!ctx?.current) return false;
     settingsModal.close();
     closePopover();
     wheel.close();
     bilateral.close();
-    state.activeTabNavMode = Boolean(fromTabMode);
+    state.activeTabNavMode = Boolean(fromTabMode && !holdMode);
     aeTree.open({
       context: ctx,
       anchorRect: els.reader?.getBoundingClientRect?.() || null,
       scope: state.navScopeOverride || ctx.childSourceScope || state.settings?.childSourceScope || 'opened_and_outlinks',
       closeOnSelect: Boolean(state.settings?.tabCloseOnSelect),
+      holdMode,
+      holdHotkey,
       onSelect: (picked) => {
-        const keepNav = Boolean(fromTabMode && !state.settings?.tabCloseOnSelect);
+        const keepNav = Boolean(fromTabMode && !holdMode && !state.settings?.tabCloseOnSelect);
         void openFile(picked.path, {
           inNewTab: true,
           isDirectory: Boolean(picked.isDirectory),
@@ -528,23 +535,43 @@
     return Boolean(state.activeTabNavMode && (aeTree.isOpen() || bilateral.isOpen() || wheel.isOpen()));
   }
 
-  function triggerTabNavigator() {
-    if (isAnyTabNavigatorOpen()) {
+  let lastPointerPos = null;
+
+  function triggerTabNavigator({ holdMode = false, holdHotkey = '' } = {}) {
+    if (holdMode) {
+      if (aeTree.isOpen() || bilateral.isOpen() || wheel.isOpen()) return true;
+    } else if (isAnyTabNavigatorOpen()) {
       closeOverlays();
       return true;
     }
     const mode = state.settings?.tabMode || 'ae_tree';
     if (mode === 'off') return false;
+    const readerRect = els.reader?.getBoundingClientRect?.() || null;
+    const usePointer =
+      holdMode &&
+      lastPointerPos &&
+      (!readerRect ||
+        (lastPointerPos.x >= readerRect.left - 16 &&
+          lastPointerPos.x <= readerRect.right + 16 &&
+          lastPointerPos.y >= readerRect.top - 16 &&
+          lastPointerPos.y <= readerRect.bottom + 16));
+    const cx = usePointer ? lastPointerPos.x : window.innerWidth / 2;
+    const cy = usePointer ? lastPointerPos.y : window.innerHeight / 2;
+
     if (mode === 'classic_wheel') {
       const t = getWheelTargetGroup();
       if (!t) return false;
-      openWheelForTarget(t, window.innerWidth / 2, window.innerHeight / 2, false, 1, { persistOnScroll: true, fromTabMode: true });
+      openWheelForTarget(t, cx, cy, holdMode, 1, {
+        holdHotkey,
+        persistOnScroll: !holdMode,
+        fromTabMode: true,
+      });
       return true;
     }
     const ok =
       mode === 'bilateral_wheel'
-        ? openBilateralWheel(window.innerWidth / 2, window.innerHeight / 2, { holdMode: false, persistOnScroll: true, fromTabMode: true })
-        : openAeTree({ fromTabMode: true });
+        ? openBilateralWheel(cx, cy, { holdMode, holdHotkey, persistOnScroll: !holdMode, fromTabMode: true })
+        : openAeTree({ fromTabMode: true, holdMode, holdHotkey });
     void refreshNavContext(state.navScopeOverride).then((fresh) => {
       if (!fresh) return;
       if (aeTree.isOpen()) aeTree.updateContext(fresh);
@@ -1175,7 +1202,7 @@
             <img src="/logo.svg" alt="AnchorWheel Logo" />
             <div>
               <h1 class="aw-hero-title">锚点轮盘 · AnchorWheel</h1>
-              <p class="aw-hero-sub">点击 MD 链接默认不覆盖原页，按住${S.resolveWheelTriggerButton(state.settings).shortLabel}或按 ${window.AnchorWheelMarkdown.esc(state.settings?.tabCustomHotkey || 'Tab')} 随时呼出导览（${cdpOk ? '原生侧栏增强已在线' : '独立工作台运行中'}）</p>
+              <p class="aw-hero-sub">点击 MD 链接默认不覆盖原页，按住${S.esc(S.resolveWheelTriggerButton(state.settings).shortLabel)}或${state.settings?.tabTriggerAction === 'hold' ? '按住 ' : '按 '}${S.esc(S.formatHotkeyLabel ? S.formatHotkeyLabel(state.settings?.tabCustomHotkey || 'Tab') : (state.settings?.tabCustomHotkey || 'Tab'))} 随时呼出导览（${cdpOk ? '原生侧栏增强已在线' : '独立工作台运行中'}）</p>
             </div>
           </div>
           <div class="aw-open-bar">
@@ -1780,7 +1807,7 @@
       }
     });
 
-    // Keyboard shortcuts: configurable Tab / Alt+Q / Alt+Left / Alt+Right
+    // Keyboard shortcuts: configurable custom hotkey (toggle or hold-release) & Alt+Left/Right history
     window.addEventListener(
       'keydown',
       (ev) => {
@@ -1790,16 +1817,17 @@
         }
         const tabEn = state.settings?.tabTriggerEnabled !== false && state.settings?.tabMode !== 'off';
         const hk = state.settings?.tabCustomHotkey || 'Tab';
-        const matchedTabKey =
-          (hk === 'Tab' && ev.key === 'Tab' && !ev.altKey && !ev.ctrlKey && !ev.metaKey && !ev.shiftKey) ||
-          (hk === 'Alt+Q' && ev.altKey && !ev.ctrlKey && !ev.metaKey && ev.key.toLowerCase() === 'q') ||
-          (hk === 'Alt+W' && ev.altKey && !ev.ctrlKey && !ev.metaKey && ev.key.toLowerCase() === 'w') ||
-          (hk === 'F2' && ev.key === 'F2' && !ev.altKey && !ev.ctrlKey && !ev.metaKey);
+        const matchedTabKey = S.matchesHotkeyEvent ? S.matchesHotkeyEvent(ev, hk) : (hk === 'Tab' && ev.key === 'Tab');
 
         if (tabEn && matchedTabKey && state.activeTabPath) {
           ev.preventDefault();
           ev.stopPropagation();
-          triggerTabNavigator();
+          if (ev.repeat) return;
+          const isHoldAction = (state.settings?.tabTriggerAction || 'toggle') === 'hold';
+          triggerTabNavigator({
+            holdMode: isHoldAction,
+            holdHotkey: isHoldAction ? hk : '',
+          });
           return;
         }
 
@@ -1814,16 +1842,20 @@
       true
     );
 
-    // Hold-Trigger Mouse Channel (supports Middle / Right / Side Back / Side Forward)
+    // Hold-Trigger Mouse Channel (supports Middle / Right / Side Back / Side Forward / Modified Left + Sensitivity)
     let holdTimer = null;
     let downInfo = null;
     let holdWheelActiveButton = -1;
     let suppressNextAuxClick = false;
     let suppressNextContextMenu = false;
+    let suppressNextClick = false;
     let suppressAuxTimer = null;
     let suppressCtxTimer = null;
+    let suppressClickTimer = null;
 
     const getTriggerMeta = () => S.resolveWheelTriggerButton(state.settings);
+    const matchesTriggerMod = (ev, trig) =>
+      S.matchesMouseTriggerModifier ? S.matchesMouseTriggerModifier(ev, trig?.modifier || 'none') : true;
     const armSuppressAux = (ms = 220) => {
       suppressNextAuxClick = true;
       clearTimeout(suppressAuxTimer);
@@ -1833,6 +1865,11 @@
       suppressNextContextMenu = true;
       clearTimeout(suppressCtxTimer);
       suppressCtxTimer = setTimeout(() => { suppressNextContextMenu = false; suppressCtxTimer = null; }, ms);
+    };
+    const armSuppressClick = (ms = 240) => {
+      suppressNextClick = true;
+      clearTimeout(suppressClickTimer);
+      suppressClickTimer = setTimeout(() => { suppressNextClick = false; suppressClickTimer = null; }, ms);
     };
 
     const openMouseHoldWheel = (info) => {
@@ -1856,20 +1893,43 @@
           suppressNextContextMenu = true;
           clearTimeout(suppressCtxTimer);
           suppressCtxTimer = null;
+        } else if (info.button === 0) {
+          suppressNextClick = true;
+          clearTimeout(suppressClickTimer);
+          suppressClickTimer = null;
         }
       }
       return opened;
     };
+
+    document.addEventListener(
+      'click',
+      (ev) => {
+        if (suppressNextClick && ev.button === 0) {
+          suppressNextClick = false;
+          ev.preventDefault();
+          ev.stopPropagation();
+        }
+      },
+      true
+    );
 
     els.reader.addEventListener(
       'mousedown',
       (ev) => {
         const midMode = state.settings?.middleMode || 'bilateral_wheel';
         const trig = getTriggerMeta();
+        const noMod = !ev.altKey && !ev.ctrlKey && !ev.shiftKey && !ev.metaKey;
         if (ev.button === 1) {
-          if (ev.target.closest('[data-aw-link]') || (midMode !== 'off' && trig.button === 1)) ev.preventDefault();
-        } else if ((ev.button === 3 || ev.button === 4) && midMode !== 'off' && trig.button === ev.button) {
+          if ((noMod && ev.target.closest('[data-aw-link]')) || (midMode !== 'off' && trig.button === 1 && matchesTriggerMod(ev, trig))) {
+            ev.preventDefault();
+          }
+        } else if ((ev.button === 3 || ev.button === 4) && midMode !== 'off' && trig.button === ev.button && matchesTriggerMod(ev, trig)) {
           ev.preventDefault();
+        } else if (ev.button === 0 && midMode !== 'off' && trig.button === 0 && trig.modifier !== 'none' && matchesTriggerMod(ev, trig)) {
+          if (!ev.target.closest('[data-aw-link], a, input, select, textarea, summary, label, button, .aw-doc-toolbar, .aw-doc-findbar, .aw-doc-sheetbar, .aw-doc-outline')) {
+            ev.preventDefault();
+          }
         }
       },
       true
@@ -1886,7 +1946,7 @@
         }
         const midMode = state.settings?.middleMode || 'bilateral_wheel';
         const trig = getTriggerMeta();
-        if ((ev.button === 3 || ev.button === 4) && midMode !== 'off' && trig.button === ev.button && els.reader.contains(ev.target)) {
+        if ((ev.button === 3 || ev.button === 4) && midMode !== 'off' && trig.button === ev.button && matchesTriggerMod(ev, trig) && els.reader.contains(ev.target)) {
           ev.preventDefault();
           ev.stopPropagation();
         }
@@ -1907,12 +1967,15 @@
     );
 
     els.reader.addEventListener('pointerdown', (ev) => {
+      lastPointerPos = { x: ev.clientX, y: ev.clientY };
       const midMode = state.settings?.middleMode || 'bilateral_wheel';
       const trig = getTriggerMeta();
-      if (midMode === 'off' || ev.button !== trig.button) return;
+      if (midMode === 'off' || ev.button !== trig.button || !matchesTriggerMod(ev, trig)) return;
       const skipSel =
-        ev.button === 1
+        ev.button === 1 && trig.modifier === 'none'
           ? '[data-aw-link], a, input, select, textarea, summary, label, button:not([data-aw-dir-file]), .aw-doc-toolbar, .aw-doc-findbar, .aw-doc-sheetbar, .aw-doc-outline'
+          : ev.button === 0
+          ? '[data-aw-link], a, input, select, textarea, summary, label, button, .aw-doc-toolbar, .aw-doc-findbar, .aw-doc-sheetbar, .aw-doc-outline'
           : 'input, select, textarea, summary, label, button:not([data-aw-dir-file]), .aw-doc-toolbar, .aw-doc-findbar, .aw-doc-sheetbar, .aw-doc-outline';
       if (ev.target.closest(skipSel)) return;
       if (ev.button !== 2) ev.preventDefault();
@@ -1920,6 +1983,7 @@
         x: ev.clientX,
         y: ev.clientY,
         button: trig.button,
+        modifier: trig.modifier,
         dragPx: trig.dragPx,
         opened: false,
         inReader: true,
@@ -1934,6 +1998,7 @@
       }, trig.holdMs);
     });
     document.addEventListener('pointermove', (ev) => {
+      lastPointerPos = { x: ev.clientX, y: ev.clientY };
       if (!downInfo || downInfo.opened) return;
       if (Math.hypot(ev.clientX - downInfo.x, ev.clientY - downInfo.y) >= Number(downInfo.dragPx || 8)) {
         clearTimeout(holdTimer);
@@ -1950,13 +2015,19 @@
         holdWheelActiveButton = -1;
         if (ev.button === 2) armSuppressCtx(280);
         else if (ev.button === 1 || ev.button === 3 || ev.button === 4) armSuppressAux(220);
+        else if (ev.button === 0) armSuppressClick(240);
         ev.preventDefault();
         return;
       }
       if (ev.button === 3 || ev.button === 4) {
         const midMode = state.settings?.middleMode || 'bilateral_wheel';
         const trig = getTriggerMeta();
-        if (midMode !== 'off' && trig.button === ev.button && (prev?.inReader || els.reader.contains(ev.target))) {
+        if (
+          midMode !== 'off' &&
+          trig.button === ev.button &&
+          (prev?.button === ev.button || matchesTriggerMod(ev, trig)) &&
+          (prev?.inReader || els.reader.contains(ev.target))
+        ) {
           ev.preventDefault();
           return;
         }

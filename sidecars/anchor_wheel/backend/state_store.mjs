@@ -35,10 +35,13 @@ export const DEFAULT_SETTINGS = Object.freeze({
   wheelHotkey: 'Alt+Q',
   wheelSectors: 8,
   middleMode: 'bilateral_wheel', // 'bilateral_wheel' | 'classic_wheel' | 'off'
-  wheelTriggerButton: 'middle', // 'middle' | 'right' | 'side_back' | 'side_forward'
+  wheelTriggerButton: 'middle', // 'middle' | 'right' | 'side_back' | 'side_forward' | 'left'
+  wheelTriggerModifier: 'none', // 'none' | 'alt' | 'shift' | 'ctrl'
+  wheelHoldSensitivity: 'balanced', // 'fast' | 'balanced' | 'safe'
   tabTriggerEnabled: true,
   tabMode: 'ae_tree', // 'ae_tree' | 'bilateral_wheel' | 'classic_wheel' | 'off'
-  tabCustomHotkey: 'Tab', // 'Tab' | 'Alt+Q' | 'Alt+W' | 'F2'
+  tabCustomHotkey: 'Tab', // canonical hotkey spec e.g. 'Tab' | 'Backquote' | 'Alt+Q' | 'Ctrl+Shift+W'
+  tabTriggerAction: 'toggle', // 'toggle' | 'hold'
   tabCloseOnSelect: false,
   childSourceScope: 'opened_and_outlinks', // 'opened_and_outlinks' | 'opened_only'
   parentDirection: 'left', // 'left' | 'top' | 'right' | 'bottom'
@@ -61,15 +64,106 @@ export const DEFAULT_SETTINGS = Object.freeze({
 });
 
 const VALID_TRIGGERS = new Set(['middle_or_badge', 'right_drag', 'hotkey_only', 'badge_only']);
-const VALID_TRIGGER_BUTTONS = new Set(['middle', 'right', 'side_back', 'side_forward']);
+const VALID_TRIGGER_BUTTONS = new Set(['middle', 'right', 'side_back', 'side_forward', 'left']);
+const VALID_TRIGGER_MODIFIERS = new Set(['none', 'alt', 'shift', 'ctrl']);
+const VALID_HOLD_SENSITIVITIES = new Set(['fast', 'balanced', 'safe']);
 const VALID_MIDDLE_MODES = new Set(['bilateral_wheel', 'classic_wheel', 'off']);
 const VALID_TAB_MODES = new Set(['ae_tree', 'bilateral_wheel', 'classic_wheel', 'off']);
-const VALID_TAB_HOTKEYS = new Set(['Tab', 'Alt+Q', 'Alt+W', 'F2']);
+const VALID_TAB_ACTIONS = new Set(['toggle', 'hold']);
 const VALID_CHILD_SCOPES = new Set(['opened_and_outlinks', 'opened_only']);
 const VALID_PARENT_DIRS = new Set(['left', 'top', 'right', 'bottom']);
 const VALID_THEMES = new Set(['auto', 'obsidian', 'warm', 'crystal', 'alabaster']);
 const VALID_SECTORS = new Set([4, 6, 8]);
 const VALID_DOC_STRATEGIES = new Set(['auto_yield', 'always_plugin', 'manual_only']);
+
+const BARE_HOTKEY_KEYS = new Set([
+  'Tab', 'Backquote',
+  'F1', 'F2', 'F3', 'F4', 'F5', 'F6', 'F7', 'F8', 'F9', 'F10', 'F11', 'F12',
+]);
+const EXTRA_COMBO_HOTKEY_KEYS = new Set([
+  'Space', 'Minus', 'Equal', 'BracketLeft', 'BracketRight', 'Backslash',
+  'Semicolon', 'Quote', 'Comma', 'Period', 'Slash',
+  'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
+]);
+const HOTKEY_KEY_ALIASES = Object.freeze({
+  tab: 'Tab',
+  backquote: 'Backquote',
+  '`': 'Backquote',
+  '~': 'Backquote',
+  '·': 'Backquote',
+  space: 'Space',
+  spacebar: 'Space',
+  ' ': 'Space',
+  minus: 'Minus',
+  '-': 'Minus',
+  equal: 'Equal',
+  '=': 'Equal',
+  bracketleft: 'BracketLeft',
+  '[': 'BracketLeft',
+  bracketright: 'BracketRight',
+  ']': 'BracketRight',
+  backslash: 'Backslash',
+  '\\': 'Backslash',
+  semicolon: 'Semicolon',
+  ';': 'Semicolon',
+  quote: 'Quote',
+  "'": 'Quote',
+  comma: 'Comma',
+  ',': 'Comma',
+  period: 'Period',
+  '.': 'Period',
+  slash: 'Slash',
+  '/': 'Slash',
+  arrowup: 'ArrowUp',
+  arrowdown: 'ArrowDown',
+  arrowleft: 'ArrowLeft',
+  arrowright: 'ArrowRight',
+});
+
+export function normalizeHotkeySpec(raw) {
+  const text = String(raw || '').trim();
+  if (!text || text.length > 40) return '';
+  const parts = text.split('+').map((p) => p.trim()).filter(Boolean);
+  if (!parts.length || parts.length > 5) return '';
+  const mods = { Ctrl: false, Alt: false, Shift: false, Meta: false };
+  let mainKey = '';
+  for (const part of parts) {
+    const low = part.toLowerCase();
+    if (low === 'ctrl' || low === 'control') {
+      mods.Ctrl = true;
+    } else if (low === 'alt' || low === 'option') {
+      mods.Alt = true;
+    } else if (low === 'shift') {
+      mods.Shift = true;
+    } else if (low === 'meta' || low === 'cmd' || low === 'command' || low === 'win' || low === 'super') {
+      mods.Meta = true;
+    } else if (!mainKey) {
+      if (/^key([a-z])$/i.test(part)) {
+        mainKey = part.slice(3).toUpperCase();
+      } else if (/^digit([0-9])$/i.test(part)) {
+        mainKey = part.slice(5);
+      } else if (/^[a-z0-9]$/i.test(part)) {
+        mainKey = part.toUpperCase();
+      } else if (/^f([1-9]|1[0-2])$/i.test(part)) {
+        mainKey = part.toUpperCase();
+      } else if (HOTKEY_KEY_ALIASES[low]) {
+        mainKey = HOTKEY_KEY_ALIASES[low];
+      } else {
+        return '';
+      }
+    } else {
+      return '';
+    }
+  }
+  if (!mainKey) return '';
+  const hasMod = mods.Ctrl || mods.Alt || mods.Shift || mods.Meta;
+  const isBareAllowed = BARE_HOTKEY_KEYS.has(mainKey);
+  const isComboAllowed = isBareAllowed || EXTRA_COMBO_HOTKEY_KEYS.has(mainKey) || /^[A-Z0-9]$/.test(mainKey);
+  if (!isComboAllowed) return '';
+  if (!hasMod && !isBareAllowed) return '';
+  const orderedMods = ['Ctrl', 'Alt', 'Shift', 'Meta'].filter((m) => mods[m]);
+  return orderedMods.length ? `${orderedMods.join('+')}+${mainKey}` : mainKey;
+}
 
 export function sanitizeCategoryRules(rawRules, fallback = DEFAULT_CATEGORY_RULES) {
   const src = Array.isArray(rawRules) ? rawRules : fallback;
@@ -136,9 +230,22 @@ export function sanitizeSettings(raw, base = DEFAULT_SETTINGS) {
   } else if (src.wheelTrigger === 'right_drag' && src.wheelTriggerButton === undefined && base.wheelTriggerButton === 'middle') {
     next.wheelTriggerButton = 'right';
   }
+  if (VALID_TRIGGER_MODIFIERS.has(src.wheelTriggerModifier)) {
+    next.wheelTriggerModifier = src.wheelTriggerModifier;
+  }
+  if (next.wheelTriggerButton === 'left' && next.wheelTriggerModifier === 'none') {
+    next.wheelTriggerModifier = 'alt';
+  }
+  if (VALID_HOLD_SENSITIVITIES.has(src.wheelHoldSensitivity)) {
+    next.wheelHoldSensitivity = src.wheelHoldSensitivity;
+  }
   if (typeof src.tabTriggerEnabled === 'boolean') next.tabTriggerEnabled = src.tabTriggerEnabled;
   if (VALID_TAB_MODES.has(src.tabMode)) next.tabMode = src.tabMode;
-  if (VALID_TAB_HOTKEYS.has(src.tabCustomHotkey)) next.tabCustomHotkey = src.tabCustomHotkey;
+  if (src.tabCustomHotkey !== undefined) {
+    const cleanHotkey = normalizeHotkeySpec(src.tabCustomHotkey);
+    if (cleanHotkey) next.tabCustomHotkey = cleanHotkey;
+  }
+  if (VALID_TAB_ACTIONS.has(src.tabTriggerAction)) next.tabTriggerAction = src.tabTriggerAction;
   if (typeof src.tabCloseOnSelect === 'boolean') next.tabCloseOnSelect = src.tabCloseOnSelect;
   if (VALID_CHILD_SCOPES.has(src.childSourceScope)) next.childSourceScope = src.childSourceScope;
   if (VALID_PARENT_DIRS.has(src.parentDirection)) next.parentDirection = src.parentDirection;

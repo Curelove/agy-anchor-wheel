@@ -80,6 +80,7 @@
       doc.removeEventListener('pointermove', onPointerMove, true);
       doc.removeEventListener('pointerup', onPointerUp, true);
       doc.removeEventListener('keydown', onKeyDown, true);
+      doc.removeEventListener('keyup', onKeyUp, true);
       const cb = activeState?.onClose;
       try { backdropEl.remove(); } catch {}
       backdropEl = null;
@@ -99,6 +100,7 @@
         backdropEl && doc.removeEventListener('pointermove', onPointerMove, true);
         backdropEl && doc.removeEventListener('pointerup', onPointerUp, true);
         backdropEl && doc.removeEventListener('keydown', onKeyDown, true);
+        backdropEl && doc.removeEventListener('keyup', onKeyUp, true);
         try { backdropEl?.remove(); } catch {}
         backdropEl = null;
         activeState = null;
@@ -365,7 +367,7 @@
       const holdMask = S?.buttonToButtonsMask
         ? S.buttonToButtonsMask(st.holdButton)
         : (st.holdButton === 1 ? 4 : st.holdButton === 2 ? 2 : st.holdButton === 3 ? 8 : st.holdButton === 4 ? 16 : 0);
-      if (st.holdMode && holdMask && ev.isTrusted && typeof ev.buttons === 'number' && (ev.buttons & holdMask) === 0) {
+      if (st.holdMode && !st.holdHotkey && holdMask && ev.isTrusted && typeof ev.buttons === 'number' && (ev.buttons & holdMask) === 0) {
         close();
         return;
       }
@@ -516,9 +518,22 @@
     }
 
     function onPointerUp(ev) {
-      if (!activeState || !activeState.holdMode) return;
+      if (!activeState || !activeState.holdMode || activeState.holdHotkey) return;
       if (activeState.holdButton !== undefined && ev.button !== activeState.holdButton) return;
       ev.preventDefault();
+      if (activeState.hoverCommitItem && activeState.hoverCommitItem.path) {
+        commitTarget(activeState.hoverCommitItem);
+      } else {
+        close();
+      }
+    }
+
+    function onKeyUp(ev) {
+      if (!activeState || !activeState.holdMode || !activeState.holdHotkey) return;
+      if (!S?.isHotkeyReleaseEvent?.(ev, activeState.holdHotkey)) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      ev.stopImmediatePropagation?.();
       if (activeState.hoverCommitItem && activeState.hoverCommitItem.path) {
         commitTarget(activeState.hoverCommitItem);
       } else {
@@ -563,7 +578,7 @@
 
       const cancelBanner = S.markNode(doc.createElement('div'));
       cancelBanner.className = 'aw-wheel-cancel-banner';
-      cancelBanner.textContent = st.holdMode ? '空白/圈外松手取消' : '点击母页或分类展开子项';
+      cancelBanner.textContent = st.holdHotkey ? '空白/圈外松开快捷键取消' : st.holdMode ? '空白/圈外松手取消' : '点击母页或分类展开子项';
       stage.appendChild(cancelBanner);
 
       const svg = doc.createElementNS(SVG_NS, 'svg');
@@ -734,6 +749,7 @@
       y,
       holdMode = false,
       holdButton = 1,
+      holdHotkey = '',
       persistOnScroll = false,
       closeOnSelect = false,
       parentDirection = 'left',
@@ -781,6 +797,7 @@
         scale,
         holdMode: Boolean(holdMode),
         holdButton,
+        holdHotkey: String(holdHotkey || ''),
         persistOnScroll: Boolean(persistOnScroll),
         closeOnSelect: Boolean(closeOnSelect),
         parentDirection,
@@ -809,6 +826,7 @@
       doc.addEventListener('pointermove', onPointerMove, true);
       doc.addEventListener('pointerup', onPointerUp, true);
       doc.addEventListener('keydown', onKeyDown, true);
+      doc.addEventListener('keyup', onKeyUp, true);
       try { doc.defaultView?.addEventListener?.('blur', onWindowBlur); } catch {}
     }
 

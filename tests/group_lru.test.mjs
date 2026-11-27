@@ -4,7 +4,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
+  DEFAULT_SETTINGS,
   evictOverflowChildren,
+  normalizeHotkeySpec,
   pushHistory,
   resolveAncestors,
   sanitizeCategoryRules,
@@ -121,6 +123,45 @@ test('sanitizeSettings preserves mandatory 其他 fallback category and validate
   assert.ok(rulesOnly.length >= 1);
   assert.equal(classifyFile(path.join(os.tmpdir(), 'a.unknown'), s.categoryRules).id, 'other');
   assert.equal(classifyFile(path.join(os.tmpdir(), 'hero.PNG'), s.categoryRules).label, '立绘');
+});
+
+test('normalizeHotkeySpec and anti-conflict trigger settings validate modifiers, sensitivity, and safe left-button guard', () => {
+  assert.equal(normalizeHotkeySpec('Tab'), 'Tab');
+  assert.equal(normalizeHotkeySpec('`'), 'Backquote');
+  assert.equal(normalizeHotkeySpec('Backquote'), 'Backquote');
+  assert.equal(normalizeHotkeySpec('f6'), 'F6');
+  assert.equal(normalizeHotkeySpec('option+KeyE'), 'Alt+E');
+  assert.equal(normalizeHotkeySpec('shift+ctrl+space'), 'Ctrl+Shift+Space');
+  // Bare letters, Space, Escape, or pure modifiers are rejected
+  assert.equal(normalizeHotkeySpec('q'), '');
+  assert.equal(normalizeHotkeySpec('Space'), '');
+  assert.equal(normalizeHotkeySpec('Escape'), '');
+  assert.equal(normalizeHotkeySpec('Alt'), '');
+
+  // Bare left click without modifier must automatically upgrade to 'alt'
+  const leftSafe = sanitizeSettings({ wheelTriggerButton: 'left', wheelTriggerModifier: 'none' }, DEFAULT_SETTINGS);
+  assert.equal(leftSafe.wheelTriggerButton, 'left');
+  assert.equal(leftSafe.wheelTriggerModifier, 'alt');
+
+  const custom = sanitizeSettings(
+    {
+      wheelTriggerButton: 'right',
+      wheelTriggerModifier: 'shift',
+      wheelHoldSensitivity: 'safe',
+      tabCustomHotkey: 'ctrl+alt+KeyW',
+      tabTriggerAction: 'hold',
+    },
+    DEFAULT_SETTINGS
+  );
+  assert.equal(custom.wheelTriggerButton, 'right');
+  assert.equal(custom.wheelTriggerModifier, 'shift');
+  assert.equal(custom.wheelHoldSensitivity, 'safe');
+  assert.equal(custom.tabCustomHotkey, 'Ctrl+Alt+W');
+  assert.equal(custom.tabTriggerAction, 'hold');
+
+  // Invalid hotkey falls back to previous valid hotkey
+  const invalidKeep = sanitizeSettings({ tabCustomHotkey: 'Escape' }, custom);
+  assert.equal(invalidKeep.tabCustomHotkey, 'Ctrl+Alt+W');
 });
 
 test('StateStore lineage resolves multi-level ancestors cleanly and rejects cycle edges', () => {

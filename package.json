@@ -1,6 +1,6 @@
 {
   "name": "agy-anchor-wheel",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "description": "Dual-mode Antigravity side-pane enhancer & workbench: ProRes Alpha checkerboard MOV/MKV/AVI video streaming, zero-dep Adobe (.psd/.psb/.aep/.prproj/.ai/.mogrt/.indd/.cube) & 2D PPTX/DOCX/XLSX/PDF/Notebook/SQLite/3D/Font/Archive preview, chat preview-tab anti-overwrite, Bilateral Wheel, folder navigation, Obsidian backlinks, and encoding repair.",
   "type": "module",
   "main": "sidecars/anchor_wheel/main.mjs",

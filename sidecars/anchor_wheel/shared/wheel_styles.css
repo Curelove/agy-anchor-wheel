@@ -1861,6 +1861,154 @@
   margin-bottom: 2px;
 }
 
+/* Compact Anti-Conflict Trigger Controls (Modifier + Button, Keycap Recorder, Collapsible Tuning) */
+.aw-combo-ctrl,
+.aw-hotkey-ctrl {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.aw-combo-plus {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--aw-fg-muted);
+  user-select: none;
+}
+
+.aw-hotkey-btn {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 58px;
+  height: 28px;
+  padding: 0 11px;
+  border-radius: var(--aw-r-sm);
+  border: 1px solid var(--aw-card-border) !important;
+  background: var(--aw-hover) !important;
+  color: var(--aw-fg) !important;
+  box-shadow: inset 0 -1px 0 var(--aw-border) !important;
+  font-family: var(--aw-font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: border-color 0.14s var(--aw-ease-out), background 0.14s var(--aw-ease-out), color 0.14s var(--aw-ease-out), box-shadow 0.14s var(--aw-ease-out);
+}
+
+.aw-hotkey-btn:hover {
+  border-color: var(--aw-accent) !important;
+  color: var(--aw-accent) !important;
+}
+
+.aw-hotkey-btn[data-recording="1"] {
+  border-color: var(--aw-accent) !important;
+  background: var(--aw-accent-soft) !important;
+  color: var(--aw-accent) !important;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--aw-accent) 24%, transparent) !important;
+  font-family: var(--aw-font-sans);
+}
+
+.aw-hotkey-reset {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 24px;
+  padding: 0 6px;
+  border: none !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  color: var(--aw-fg-muted) !important;
+  font-family: var(--aw-font-sans);
+  font-size: 12px;
+  cursor: pointer;
+  border-radius: var(--aw-r-sm);
+  transition: color 0.14s var(--aw-ease-out), background 0.14s var(--aw-ease-out);
+}
+
+.aw-hotkey-reset:hover {
+  color: var(--aw-fg) !important;
+  background: var(--aw-hover) !important;
+}
+
+.aw-hotkey-reset[hidden] {
+  display: none !important;
+}
+
+#aw-sm-hotkey-sub[data-tone="accent"] {
+  color: var(--aw-accent);
+}
+
+#aw-sm-hotkey-sub[data-tone="warn"] {
+  color: var(--aw-warn, #f59e0b);
+}
+
+.aw-settings-fold {
+  margin-top: 4px;
+  padding-top: 8px;
+  border-top: 1px solid var(--aw-border);
+}
+
+.aw-settings-fold > summary {
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--aw-fg-muted);
+  user-select: none;
+  padding: 2px 0;
+  transition: color 0.14s var(--aw-ease-out);
+}
+
+.aw-settings-fold > summary::-webkit-details-marker {
+  display: none;
+}
+
+.aw-settings-fold > summary::before {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform 0.16s var(--aw-ease-out);
+  margin-left: 2px;
+  flex-shrink: 0;
+}
+
+.aw-settings-fold[open] > summary::before {
+  transform: rotate(45deg);
+}
+
+.aw-settings-fold > summary:hover,
+.aw-settings-fold[open] > summary {
+  color: var(--aw-fg);
+}
+
+.aw-settings-fold-body {
+  padding-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.aw-fold-note {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--aw-fg-muted);
+  padding: 4px 0 2px;
+}
+
 .aw-rule-header {
   display: flex;
   align-items: center;
@@ -2059,6 +2207,11 @@
   }
   .aw-settings-foot-hint {
     display: none;
+  }
+  .aw-combo-ctrl,
+  .aw-hotkey-ctrl {
+    width: 100%;
+    justify-content: flex-start;
   }
 }
 

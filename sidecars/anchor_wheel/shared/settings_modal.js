@@ -12,7 +12,7 @@
     {
       key: 'bilateral_wheel',
       title: '双侧分类轮盘',
-      desc: '推荐鼠标按键按住呼出（默认中键，可改右键或侧键）：圆心固定为当前页，一侧回母页，另一侧按分类展开子页；超过 3 条可按住滑轨反向挑选。',
+      desc: '支持按住鼠标按键（可加修饰键避冲突）或按住自定义快捷键呼出：圆心固定为当前页，一侧回母页，另一侧按分类展开子页。',
     },
     {
       key: 'ae_tree',
@@ -45,8 +45,40 @@
     let draft = null;
     let editingRules = [];
     let currentCallbacks = null;
+    let isRecordingHotkey = false;
+    let hotkeyFeedback = '';
+    let hotkeyFeedbackTimer = null;
+    let advTriggerExpanded = false;
+
+    function clearHotkeyFeedback() {
+      clearTimeout(hotkeyFeedbackTimer);
+      hotkeyFeedbackTimer = null;
+      hotkeyFeedback = '';
+    }
+
+    function setHotkeyFeedback(msg, modalEl) {
+      clearTimeout(hotkeyFeedbackTimer);
+      hotkeyFeedback = msg;
+      updateLiveGuides(modalEl);
+      if (msg) {
+        hotkeyFeedbackTimer = setTimeout(() => {
+          hotkeyFeedback = '';
+          hotkeyFeedbackTimer = null;
+          if (backdropEl) updateLiveGuides(backdropEl.querySelector('.aw-settings-modal'));
+        }, 2600);
+      }
+    }
+
+    function stopHotkeyRecording(modalEl) {
+      if (!isRecordingHotkey) return;
+      isRecordingHotkey = false;
+      clearHotkeyFeedback();
+      if (modalEl) updateLiveGuides(modalEl);
+    }
 
     function close() {
+      clearHotkeyFeedback();
+      isRecordingHotkey = false;
       if (!backdropEl) return;
       doc.removeEventListener('keydown', onKeyDown, true);
       try { backdropEl.remove(); } catch {}
@@ -58,6 +90,39 @@
 
     function onKeyDown(ev) {
       if (!backdropEl) return;
+      const modalEl = backdropEl.querySelector('.aw-settings-modal');
+      if (isRecordingHotkey) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        ev.stopImmediatePropagation?.();
+        const res = S.eventToHotkeyString ? S.eventToHotkeyString(ev) : { ok: false, reason: 'unsupported' };
+        if (res.ok && res.hotkey) {
+          isRecordingHotkey = false;
+          clearHotkeyFeedback();
+          if (draft) {
+            draft.tabCustomHotkey = res.hotkey;
+            draft.tabTriggerEnabled = true;
+          }
+          focusChannel = 'tab';
+          const tabEn = modalEl?.querySelector('#aw-sm-tab-en');
+          if (tabEn) tabEn.checked = true;
+          updateLiveGuides(modalEl);
+          return;
+        }
+        if (res.reason === 'cancel') {
+          stopHotkeyRecording(modalEl);
+          return;
+        }
+        if (res.reason === 'modifier_only') {
+          return;
+        }
+        if (res.reason === 'need_modifier') {
+          setHotkeyFeedback('字母或空格键容易误触，请搭配 Alt / Ctrl / Shift，或改用 Tab / ` / F1-F12', modalEl);
+          return;
+        }
+        setHotkeyFeedback('该按键暂不支持绑定，请换用常用功能键或组合键', modalEl);
+        return;
+      }
       if (ev.key === 'Escape') {
         ev.preventDefault();
         ev.stopPropagation();
@@ -126,11 +191,25 @@
       if (!modalEl || !draft) return;
       const g = (sel) => modalEl.querySelector(sel);
       if (g('#aw-sm-middle')) draft.middleMode = g('#aw-sm-middle').value;
+      const prevBtn = draft.wheelTriggerButton || 'middle';
+      const prevMod = draft.wheelTriggerModifier || 'none';
       if (g('#aw-sm-trigger-btn')) draft.wheelTriggerButton = g('#aw-sm-trigger-btn').value;
+      if (g('#aw-sm-trigger-mod')) draft.wheelTriggerModifier = g('#aw-sm-trigger-mod').value;
+      if (draft.wheelTriggerButton === 'left' && draft.wheelTriggerModifier === 'none') {
+        if (prevBtn !== 'left') {
+          draft.wheelTriggerModifier = 'alt';
+          if (g('#aw-sm-trigger-mod')) g('#aw-sm-trigger-mod').value = 'alt';
+        } else if (prevMod !== 'none') {
+          draft.wheelTriggerButton = 'middle';
+          if (g('#aw-sm-trigger-btn')) g('#aw-sm-trigger-btn').value = 'middle';
+        } else {
+          draft.wheelTriggerModifier = 'alt';
+          if (g('#aw-sm-trigger-mod')) g('#aw-sm-trigger-mod').value = 'alt';
+        }
+      }
       if (g('#aw-sm-pdir')) draft.parentDirection = g('#aw-sm-pdir').value;
       if (g('#aw-sm-tab-en')) draft.tabTriggerEnabled = Boolean(g('#aw-sm-tab-en').checked);
       if (g('#aw-sm-tab-mode')) draft.tabMode = g('#aw-sm-tab-mode').value;
-      if (g('#aw-sm-tab-key')) draft.tabCustomHotkey = g('#aw-sm-tab-key').value;
       if (g('#aw-sm-tab-close')) draft.tabCloseOnSelect = Boolean(g('#aw-sm-tab-close').checked);
 
       if (g('#aw-sm-scope')) draft.childSourceScope = g('#aw-sm-scope').value;
@@ -193,16 +272,72 @@
 
       const trigHint = modalEl.querySelector('#aw-sm-middle-label');
       if (trigHint) {
-        trigHint.textContent = `按住${trigMeta.label}呼出模式（松手即确认）`;
+        const hasAsciiPrefix = /^[A-Za-z]/.test(trigMeta.label || '');
+        trigHint.textContent = hasAsciiPrefix
+          ? `按住 ${trigMeta.label} 呼出模式（松手即确认）`
+          : `按住${trigMeta.label}呼出模式（松手即确认）`;
       }
       const trigSub = modalEl.querySelector('#aw-sm-trigger-btn-sub');
       if (trigSub) {
-        trigSub.textContent =
-          trigMeta.id === 'right'
-            ? '按住或拖移呼出轮盘并自动屏蔽右键菜单；快速短按右键仍保留原菜单'
-            : trigMeta.id === 'side_back' || trigMeta.id === 'side_forward'
-            ? '在右侧栏按住对应侧键即呼出轮盘（不再误触前进/后退），另一颗侧键保留翻页'
-            : '默认中键按住呼出；中键短按链接仍保留后台新标签打开';
+        if (trigMeta.id === 'left') {
+          trigSub.textContent = `在空白处按住 ${trigMeta.label} 呼出（适配触控板与无中键设备；点链接仍保留原行为）`;
+        } else if (trigMeta.modifier && trigMeta.modifier !== 'none') {
+          trigSub.textContent = `按住 ${trigMeta.label} 呼出，完全避开 Quicker、鼠标手势与常规右键菜单`;
+        } else if (trigMeta.id === 'right') {
+          trigSub.textContent = '按住或拖动呼出轮盘；短按保留菜单，按住 Shift + 右键强制透传宿主原生菜单';
+        } else if (trigMeta.id === 'side_back' || trigMeta.id === 'side_forward') {
+          trigSub.textContent = '在右侧栏按住对应侧键即呼出轮盘，另一颗侧键照常翻页';
+        } else {
+          trigSub.textContent = '默认中键按住呼出（与 Quicker 冲突时，可加修饰键或改用侧键 / 右键 / 下方快捷键）';
+        }
+      }
+
+      const hkRaw = draft.tabCustomHotkey || 'Tab';
+      const hkDisplay = S.formatHotkeyLabel ? S.formatHotkeyLabel(hkRaw) : hkRaw;
+      const tabHold = draft.tabTriggerAction === 'hold';
+      const recBtn = modalEl.querySelector('#aw-sm-hotkey-rec');
+      if (recBtn) {
+        recBtn.setAttribute('data-recording', isRecordingHotkey ? '1' : '0');
+        recBtn.textContent = isRecordingHotkey ? '请按下按键…' : hkDisplay;
+      }
+      const resetBtn = modalEl.querySelector('#aw-sm-hotkey-reset');
+      if (resetBtn) {
+        resetBtn.hidden = hkRaw === 'Tab' || isRecordingHotkey;
+      }
+      const hkSub = modalEl.querySelector('#aw-sm-hotkey-sub');
+      if (hkSub) {
+        if (hotkeyFeedback) {
+          hkSub.textContent = hotkeyFeedback;
+          hkSub.setAttribute('data-tone', 'warn');
+        } else if (isRecordingHotkey) {
+          hkSub.textContent = '直接按下目标按键或组合键即可录入，按 Esc 取消录制';
+          hkSub.setAttribute('data-tone', 'accent');
+        } else if (tabHold) {
+          hkSub.textContent = `按住 ${hkDisplay} 原地呼出，滑动光标选好目标后松开即打开（零鼠标按键冲突）`;
+          hkSub.removeAttribute('data-tone');
+        } else {
+          hkSub.textContent = '点击右侧键帽直接按键录入（支持 Tab / ` / F1-F12 或修饰组合键）';
+          hkSub.removeAttribute('data-tone');
+        }
+      }
+
+      modalEl.querySelectorAll('[data-aw-tab-action]').forEach((btn) => {
+        const val = btn.getAttribute('data-aw-tab-action');
+        btn.setAttribute('data-active', (tabHold ? 'hold' : 'toggle') === val ? '1' : '0');
+      });
+
+      const sensId = trigMeta.sensitivity || 'balanced';
+      const sensNames = { fast: '跟手', balanced: '均衡', safe: '防误触' };
+      modalEl.querySelectorAll('[data-aw-sens]').forEach((btn) => {
+        btn.setAttribute('data-active', btn.getAttribute('data-aw-sens') === sensId ? '1' : '0');
+      });
+      const advSummary = modalEl.querySelector('#aw-sm-adv-trigger-summary');
+      if (advSummary) {
+        advSummary.textContent = `进阶手势与防冲突微调（灵敏度：${sensNames[sensId] || '均衡'}）`;
+      }
+      const sensSub = modalEl.querySelector('#aw-sm-sens-sub');
+      if (sensSub) {
+        sensSub.textContent = `当前 ${trigMeta.shortLabel}：按住 ${trigMeta.holdMs}ms 或拖动 ${trigMeta.dragPx}px 即呼出`;
       }
 
       const focusHintEl = modalEl.querySelector('#aw-sm-focus-hint');
@@ -225,9 +360,10 @@
         pdirRow.setAttribute('data-dim', bilateralUsed ? '0' : '1');
       }
       const tabOff = draft.tabTriggerEnabled === false;
-      for (const id of ['#aw-sm-row-tab-mode', '#aw-sm-row-tab-key', '#aw-sm-row-tab-close']) {
+      for (const id of ['#aw-sm-row-tab-mode', '#aw-sm-row-tab-key']) {
         modalEl.querySelector(id)?.setAttribute('data-dim', tabOff ? '1' : '0');
       }
+      modalEl.querySelector('#aw-sm-row-tab-close')?.setAttribute('data-dim', tabOff || tabHold ? '1' : '0');
       const prevOff = draft.hoverPreviewEnabled === false;
       for (const id of ['#aw-sm-row-prev-delay', '#aw-sm-row-prev-anim']) {
         modalEl.querySelector(id)?.setAttribute('data-dim', prevOff ? '1' : '0');
@@ -532,15 +668,25 @@
             </div>
             <div class="aw-form-row" id="aw-sm-row-trigger-btn">
               <div class="aw-form-label">
-                <strong>轮盘触发鼠标按键</strong>
-                <span id="aw-sm-trigger-btn-sub">默认中键按住呼出；中键短按链接仍保留后台新标签打开</span>
+                <strong>鼠标触发按键</strong>
+                <span id="aw-sm-trigger-btn-sub">默认中键按住呼出（与 Quicker 冲突时，可加修饰键或改用侧键 / 右键 / 下方快捷键）</span>
               </div>
-              <select id="aw-sm-trigger-btn" class="aw-select aw-reactive-ctrl">
-                <option value="middle" ${(s.wheelTriggerButton || 'middle') === 'middle' ? 'selected' : ''}>鼠标中键（默认）</option>
-                <option value="right" ${s.wheelTriggerButton === 'right' ? 'selected' : ''}>鼠标右键（按住/拖动呼出）</option>
-                <option value="side_back" ${s.wheelTriggerButton === 'side_back' ? 'selected' : ''}>鼠标侧键 1（后退键）</option>
-                <option value="side_forward" ${s.wheelTriggerButton === 'side_forward' ? 'selected' : ''}>鼠标侧键 2（前进键）</option>
-              </select>
+              <div class="aw-combo-ctrl">
+                <select id="aw-sm-trigger-mod" class="aw-select aw-reactive-ctrl" aria-label="修饰键">
+                  <option value="none" ${(s.wheelTriggerModifier || 'none') === 'none' ? 'selected' : ''}>无修饰</option>
+                  <option value="alt" ${s.wheelTriggerModifier === 'alt' ? 'selected' : ''}>${S.isMacPlatform?.() ? 'Option' : 'Alt'}</option>
+                  <option value="shift" ${s.wheelTriggerModifier === 'shift' ? 'selected' : ''}>Shift</option>
+                  <option value="ctrl" ${s.wheelTriggerModifier === 'ctrl' ? 'selected' : ''}>Ctrl</option>
+                </select>
+                <span class="aw-combo-plus" aria-hidden="true">+</span>
+                <select id="aw-sm-trigger-btn" class="aw-select aw-reactive-ctrl" aria-label="鼠标按键">
+                  <option value="middle" ${(s.wheelTriggerButton || 'middle') === 'middle' ? 'selected' : ''}>鼠标中键</option>
+                  <option value="right" ${s.wheelTriggerButton === 'right' ? 'selected' : ''}>鼠标右键</option>
+                  <option value="side_back" ${s.wheelTriggerButton === 'side_back' ? 'selected' : ''}>侧键 1（后退）</option>
+                  <option value="side_forward" ${s.wheelTriggerButton === 'side_forward' ? 'selected' : ''}>侧键 2（前进）</option>
+                  <option value="left" ${s.wheelTriggerButton === 'left' ? 'selected' : ''}>鼠标左键（空白区）</option>
+                </select>
+              </div>
             </div>
             <div class="aw-form-row" id="aw-sm-row-pdir">
               <div class="aw-form-label">
@@ -556,33 +702,35 @@
             </div>
             <div class="aw-form-row">
               <div class="aw-form-label">
-                <strong>启用快捷键常驻导览（覆盖右侧栏原生 Tab）</strong>
-                <span>阅读文档时拦截原生 Tab 跳页首；聊天框、搜索框与代码编辑框内自动放行</span>
+                <strong>启用快捷键呼出导览</strong>
+                <span>阅读文档时生效，聊天框、搜索框与代码编辑框内自动放行</span>
               </div>
               <input type="checkbox" id="aw-sm-tab-en" class="aw-reactive-ctrl" ${s.tabTriggerEnabled !== false ? 'checked' : ''} />
             </div>
             <div class="aw-form-row" id="aw-sm-row-tab-mode">
               <div class="aw-form-label">
                 <strong>快捷键呼出的视图样式</strong>
-                <span>按键切换开关，页面滚动时持续停留</span>
+                <span>可配合下方「按住松手」实现零鼠标冲突轮盘划选</span>
               </div>
               <select id="aw-sm-tab-mode" class="aw-select aw-reactive-ctrl">
                 <option value="ae_tree" ${s.tabMode === 'ae_tree' ? 'selected' : ''}>竖向层级树</option>
-                <option value="bilateral_wheel" ${s.tabMode === 'bilateral_wheel' ? 'selected' : ''}>双侧分类轮盘（滚轮浏览）</option>
+                <option value="bilateral_wheel" ${s.tabMode === 'bilateral_wheel' ? 'selected' : ''}>双侧分类轮盘</option>
                 <option value="classic_wheel" ${s.tabMode === 'classic_wheel' ? 'selected' : ''}>经典母页轮盘</option>
               </select>
             </div>
             <div class="aw-form-row" id="aw-sm-row-tab-key">
               <div class="aw-form-label">
-                <strong>快捷键选择</strong>
-                <span>上方层级树按键帽会实时显示当前按键</span>
+                <strong>快捷键与呼出方式</strong>
+                <span id="aw-sm-hotkey-sub">点击右侧键帽直接按键录入（支持 Tab / \` / F1-F12 或修饰组合键）</span>
               </div>
-              <select id="aw-sm-tab-key" class="aw-select aw-reactive-ctrl">
-                <option value="Tab" ${s.tabCustomHotkey === 'Tab' ? 'selected' : ''}>Tab 键（推荐）</option>
-                <option value="Alt+Q" ${s.tabCustomHotkey === 'Alt+Q' ? 'selected' : ''}>Alt + Q</option>
-                <option value="Alt+W" ${s.tabCustomHotkey === 'Alt+W' ? 'selected' : ''}>Alt + W</option>
-                <option value="F2" ${s.tabCustomHotkey === 'F2' ? 'selected' : ''}>F2</option>
-              </select>
+              <div class="aw-hotkey-ctrl">
+                <button type="button" id="aw-sm-hotkey-rec" class="aw-hotkey-btn" data-recording="0" title="点击后直接按下新快捷键，Esc 取消">${S.esc(S.formatHotkeyLabel ? S.formatHotkeyLabel(s.tabCustomHotkey || 'Tab') : (s.tabCustomHotkey || 'Tab'))}</button>
+                <button type="button" id="aw-sm-hotkey-reset" class="aw-hotkey-reset" title="恢复为默认 Tab 键" ${(s.tabCustomHotkey || 'Tab') === 'Tab' ? 'hidden' : ''}>恢复</button>
+                <div class="aw-tray" role="group" aria-label="快捷键呼出方式">
+                  <button type="button" class="aw-tray-btn" data-aw-tab-action="toggle" data-active="${s.tabTriggerAction !== 'hold' ? '1' : '0'}">按一下开关</button>
+                  <button type="button" class="aw-tray-btn" data-aw-tab-action="hold" data-active="${s.tabTriggerAction === 'hold' ? '1' : '0'}">按住松手</button>
+                </div>
+              </div>
             </div>
             <div class="aw-form-row" id="aw-sm-row-tab-close">
               <div class="aw-form-label">
@@ -591,6 +739,23 @@
               </div>
               <input type="checkbox" id="aw-sm-tab-close" class="aw-reactive-ctrl" ${s.tabCloseOnSelect ? 'checked' : ''} />
             </div>
+            <details class="aw-settings-fold" id="aw-sm-adv-trigger" ${advTriggerExpanded ? 'open' : ''}>
+              <summary id="aw-sm-adv-trigger-summary">进阶手势与防冲突微调（灵敏度：均衡）</summary>
+              <div class="aw-settings-fold-body">
+                <div class="aw-form-row">
+                  <div class="aw-form-label">
+                    <strong>鼠标按住触发灵敏度</strong>
+                    <span id="aw-sm-sens-sub">当前中键：按住 115ms 或拖动 8px 即呼出</span>
+                  </div>
+                  <div class="aw-tray" role="group" aria-label="触发灵敏度">
+                    <button type="button" class="aw-tray-btn" data-aw-sens="fast" data-active="${s.wheelHoldSensitivity === 'fast' ? '1' : '0'}">跟手</button>
+                    <button type="button" class="aw-tray-btn" data-aw-sens="balanced" data-active="${(s.wheelHoldSensitivity || 'balanced') === 'balanced' ? '1' : '0'}">均衡</button>
+                    <button type="button" class="aw-tray-btn" data-aw-sens="safe" data-active="${s.wheelHoldSensitivity === 'safe' ? '1' : '0'}">防误触</button>
+                  </div>
+                </div>
+                <div class="aw-fold-note">与 Quicker / MouseInc / WGestures 等全局工具共存时，可改用修饰键组合或「按住快捷键松手」；也支持在 Quicker / 鼠标宏中向 Antigravity 发送上方自定义快捷键实现联动。</div>
+              </div>
+            </details>
           </div>
         `;
       } else if (activeTab === 'categories') {
@@ -891,11 +1056,60 @@
         if (ctrl.closest('.aw-rule-list')) return; // bound by bindRuleRowEvents
         const evtName = ctrl.tagName === 'INPUT' && (ctrl.type === 'text' || ctrl.type === 'number') ? 'input' : 'change';
         ctrl.addEventListener(evtName, () => {
+          stopHotkeyRecording(modal);
           syncDraftFromDom(modal);
-          if (ctrl.id === 'aw-sm-middle' || ctrl.id === 'aw-sm-trigger-btn') focusChannel = 'middle';
-          else if (['aw-sm-tab-mode', 'aw-sm-tab-key', 'aw-sm-tab-en', 'aw-sm-tab-close'].includes(ctrl.id)) focusChannel = 'tab';
+          if (['aw-sm-middle', 'aw-sm-trigger-btn', 'aw-sm-trigger-mod'].includes(ctrl.id)) focusChannel = 'middle';
+          else if (['aw-sm-tab-mode', 'aw-sm-tab-en', 'aw-sm-tab-close'].includes(ctrl.id)) focusChannel = 'tab';
           updateLiveGuides(modal);
         });
+      });
+
+      modal.querySelector('#aw-sm-hotkey-rec')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        syncDraftFromDom(modal);
+        focusChannel = 'tab';
+        if (isRecordingHotkey) {
+          stopHotkeyRecording(modal);
+        } else {
+          clearHotkeyFeedback();
+          isRecordingHotkey = true;
+          updateLiveGuides(modal);
+        }
+      });
+
+      modal.querySelector('#aw-sm-hotkey-reset')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        stopHotkeyRecording(modal);
+        if (draft) draft.tabCustomHotkey = 'Tab';
+        focusChannel = 'tab';
+        updateLiveGuides(modal);
+      });
+
+      modal.querySelectorAll('[data-aw-tab-action]').forEach((btn) => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          stopHotkeyRecording(modal);
+          syncDraftFromDom(modal);
+          if (draft) draft.tabTriggerAction = btn.getAttribute('data-aw-tab-action') === 'hold' ? 'hold' : 'toggle';
+          focusChannel = 'tab';
+          updateLiveGuides(modal);
+        });
+      });
+
+      modal.querySelectorAll('[data-aw-sens]').forEach((btn) => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          stopHotkeyRecording(modal);
+          syncDraftFromDom(modal);
+          const val = btn.getAttribute('data-aw-sens');
+          if (draft && ['fast', 'balanced', 'safe'].includes(val)) draft.wheelHoldSensitivity = val;
+          focusChannel = 'middle';
+          updateLiveGuides(modal);
+        });
+      });
+
+      modal.querySelector('#aw-sm-adv-trigger')?.addEventListener('toggle', (e) => {
+        advTriggerExpanded = Boolean(e.currentTarget?.open);
       });
 
       if (activeTab === 'categories') {
@@ -905,6 +1119,7 @@
       modal.querySelectorAll('[data-aw-sm-tab]').forEach((btn) => {
         btn.addEventListener('click', (e) => {
           e.stopPropagation();
+          stopHotkeyRecording(modal);
           syncDraftFromDom(modal);
           activeTab = btn.getAttribute('data-aw-sm-tab');
           render();
@@ -1007,6 +1222,9 @@
       activeTab = initialTab || 'modes';
       activeCatPreview = 'bilateral';
       focusChannel = initialFocusChannel === 'tab' ? 'tab' : 'middle';
+      advTriggerExpanded = false;
+      isRecordingHotkey = false;
+      clearHotkeyFeedback();
       initialSavedTheme = settings?.theme || options.theme || 'auto';
       const sanitizedRules = S.sanitizeRulesClient(settings?.categoryRules).map((r) => ({ ...r, extensions: [...r.extensions] }));
       editingRules = sanitizedRules.map((r) => ({
@@ -1043,7 +1261,12 @@
 
       const modal = S.markNode(doc.createElement('div'));
       modal.className = 'aw-settings-modal';
-      modal.addEventListener('click', (e) => e.stopPropagation());
+      modal.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (isRecordingHotkey && !e.target?.closest?.('#aw-sm-hotkey-rec')) {
+          stopHotkeyRecording(modal);
+        }
+      });
       modal.addEventListener('mousedown', (e) => e.stopPropagation());
       backdropEl.appendChild(modal);
       mountRoot.appendChild(backdropEl);

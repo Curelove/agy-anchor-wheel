@@ -674,18 +674,17 @@ test('Mode 1 native_enhancer: DOM container tracking, non-overwriting tab dispat
       const activeAfterClick = document.querySelectorAll('.aw-guide-card[data-card-state="active"]').length;
       const activeKeyAfterClick = document.querySelector('.aw-guide-card[data-card-state="active"]')?.getAttribute('data-aw-guide-card');
 
-      // Change hotkey to Alt+Q -> live SVG keycap updates immediately!
-      const hkSel = document.getElementById('aw-sm-tab-key');
-      hkSel.value = 'Alt+Q';
-      hkSel.dispatchEvent(new Event('change', { bubbles: true }));
+      // Record hotkey Alt+Q via keycap recorder -> live SVG keycap updates immediately!
+      const hkRecBtn = document.getElementById('aw-sm-hotkey-rec');
+      hkRecBtn.click();
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'q', code: 'KeyQ', altKey: true, bubbles: true, cancelable: true }));
       await new Promise((r) => setTimeout(r, 20));
       const treeSvgText = document.querySelector('[data-aw-guide-card="ae_tree"] .aw-guide-svg')?.textContent || '';
 
       // Restore defaults before saving
       pDirSel.value = 'left';
       pDirSel.dispatchEvent(new Event('change', { bubbles: true }));
-      hkSel.value = 'Tab';
-      hkSel.dispatchEvent(new Event('change', { bubbles: true }));
+      document.getElementById('aw-sm-hotkey-reset')?.click();
 
       document.querySelector('[data-aw-sm-tab="categories"]')?.click();
       await new Promise((r) => setTimeout(r, 30));
@@ -2791,7 +2790,7 @@ test('Mode 1 native_enhancer: companion ProRes MOV auto-takeover, chat preview-t
         setTimeout(() => window.__agAnchorWheelResolve?.(req.id, res), 0);
       };
 
-      window.__agAnchorWheelBoot = { version: '0.11.0', settings: mockSettings, wheelCss: ${JSON.stringify(wheelCss)} };
+      window.__agAnchorWheelBoot = { version: ${JSON.stringify(PLUGIN_VERSION)}, settings: mockSettings, wheelCss: ${JSON.stringify(wheelCss)} };
       eval(${JSON.stringify(navSharedJs)});
       eval(${JSON.stringify(wheelJs)});
       eval(${JSON.stringify(bilateralJs)});
@@ -2865,6 +2864,352 @@ test('Mode 1 native_enhancer: companion ProRes MOV auto-takeover, chat preview-t
     assert.equal(res.tabsAfterChatClick1, 3);
     assert.equal(res.tabsAfterChatClick2, 4);
     assert.equal(res.posixRelResolved, '/Users/alice/project/assets/banner.png');
+  } finally {
+    try { ws?.close(); } catch {}
+    if (browserProc) {
+      await new Promise((resolve) => {
+        const timer = setTimeout(resolve, 1500);
+        browserProc.once('exit', () => { clearTimeout(timer); resolve(); });
+        try { browserProc.kill(); } catch { resolve(); }
+      });
+    }
+    try {
+      fs.rmSync(tmpRoot, { recursive: true, force: true, maxRetries: 6, retryDelay: 120 });
+    } catch {}
+  }
+});
+
+test('Mode 1 native_enhancer: Quicker anti-conflict modifier+mouse triggers, sensitivity presets, Escape-safe hotkey recorder, no hardcoded Alt+Q hijack, and hold-hotkey wheel release', async (t) => {
+  const exe = findBrowserExe();
+  if (!exe) {
+    t.skip('No headless Chromium binary available');
+    return;
+  }
+
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'aw-anticonflict-test-'));
+  const profileDir = path.join(tmpRoot, 'profile');
+  fs.mkdirSync(profileDir, { recursive: true });
+
+  const wheelCss = fs.readFileSync(path.join(ROOT, 'sidecars', 'anchor_wheel', 'shared', 'wheel_styles.css'), 'utf8');
+  const navSharedJs = fs.readFileSync(path.join(ROOT, 'sidecars', 'anchor_wheel', 'shared', 'nav_shared.js'), 'utf8');
+  const wheelJs = fs.readFileSync(path.join(ROOT, 'sidecars', 'anchor_wheel', 'shared', 'radial_wheel.js'), 'utf8');
+  const bilateralJs = fs.readFileSync(path.join(ROOT, 'sidecars', 'anchor_wheel', 'shared', 'bilateral_wheel.js'), 'utf8');
+  const aeTreeJs = fs.readFileSync(path.join(ROOT, 'sidecars', 'anchor_wheel', 'shared', 'ae_tree.js'), 'utf8');
+  const settingsModalJs = fs.readFileSync(path.join(ROOT, 'sidecars', 'anchor_wheel', 'shared', 'settings_modal.js'), 'utf8');
+  const mdJs = fs.readFileSync(path.join(ROOT, 'sidecars', 'anchor_wheel', 'shared', 'markdown_render.js'), 'utf8');
+  const docViewerJs = fs.readFileSync(path.join(ROOT, 'sidecars', 'anchor_wheel', 'shared', 'doc_viewer.js'), 'utf8');
+  const nativeJs = fs.readFileSync(path.join(ROOT, 'sidecars', 'anchor_wheel', 'native', 'native_enhancer.js'), 'utf8');
+
+  let browserProc = null;
+  let ws = null;
+
+  try {
+    browserProc = spawn(
+      exe,
+      [
+        '--headless=new',
+        '--disable-gpu',
+        '--no-first-run',
+        '--no-default-browser-check',
+        '--no-sandbox',
+        '--disable-dev-shm-usage',
+        '--remote-debugging-port=0',
+        `--user-data-dir=${profileDir}`,
+        'about:blank',
+      ],
+      { stdio: 'ignore', windowsHide: true }
+    );
+
+    const port = await waitForPortFile(profileDir);
+    const pages = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
+    const page = pages.find((p) => p.type === 'page') || pages[0];
+    ws = new WebSocket(page.webSocketDebuggerUrl);
+    await new Promise((r) => ws.addEventListener('open', r));
+    const cdp = new MiniCdp(ws);
+    await cdp.send('Runtime.enable');
+
+    const res = await cdp.evalAsync(`(async () => {
+      document.body.style.cssText = 'margin:0;padding:0;width:1100px;height:760px;';
+      const cid = 'conv-anticonflict-01';
+      const parentPath = 'C:/Users/demo/00_母页.md';
+      const curPath = 'C:/Users/demo/01_正文.md';
+      const childImg = 'C:/Users/demo/shot_a.png';
+      const parentUri = 'file:///c%3A/Users/demo/00_%E6%AF%8D%E9%A1%B5.md';
+      const curUri = 'file:///c%3A/Users/demo/01_%E6%AD%A3%E6%96%87.md';
+
+      document.body.innerHTML = \`
+        <div id="root">
+          <div data-testid="aux-pane-split" style="display:flex;width:1100px;height:760px;">
+            <div style="width:520px;height:760px;"></div>
+            <div style="width:580px;height:760px;">
+              <div class="flex flex-col browser-hole-ancestor" style="width:580px;height:760px;">
+                <div class="agy-layout-vars shrink-0 flex items-center" style="height:36px;">
+                  <div class="agy-aux-tab">01_正文.md</div>
+                </div>
+                <div class="flex-grow basis-0 overflow-hidden" style="height:700px;position:relative;">
+                  <div id="crumb" data-uri="\${curUri}">01_正文.md</div>
+                  <div id="blank-area" style="width:560px;height:500px;margin-top:20px;">
+                    <p id="blank-p" style="padding:40px;">空白阅读区域</p>
+                    <a id="doc-link" href="./shot_a.png">shot_a.png</a>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      \`;
+
+      const state = {
+        sidePanelV2: {
+          conversationPanes: {
+            [cid]: {
+              activeTabId: 'file__' + curUri,
+              tabs: [
+                { id: 'file__' + parentUri, isPreview: false, content: { type: 'fileView', fileView: { fileUri: parentUri, cascadeId: cid } } },
+                { id: 'file__' + curUri, isPreview: false, content: { type: 'fileView', fileView: { fileUri: curUri, cascadeId: cid } } },
+              ],
+            },
+          },
+          overviewPanelOpen: {},
+        },
+      };
+      const listeners = new Set();
+      const reduxStore = {
+        getState: () => state,
+        subscribe: (fn) => { listeners.add(fn); return () => listeners.delete(fn); },
+        dispatch: (action) => {
+          const pane = state.sidePanelV2.conversationPanes[cid];
+          if (action.type === 'sidePanelV2/setContent') {
+            const uri = action.payload?.content?.fileView?.fileUri || '';
+            const id = action.payload.tabId || ('file__' + uri);
+            if (!pane.tabs.some((t) => t.id === id)) pane.tabs.push({ id, content: action.payload.content });
+            if (!action.payload.background) pane.activeTabId = id;
+          } else if (action.type === 'sidePanelV2/setActiveTab') {
+            pane.activeTabId = action.payload.tabId;
+          }
+          for (const fn of listeners) fn();
+        },
+      };
+      document.getElementById('root').__reactFiber$mock = {
+        memoizedProps: { store: reduxStore },
+        child: { memoizedProps: { openUrlInBrowserPane: () => {}, getTargetTreeId: () => ({ kind: 'cascadeId', cascadeId: cid }) }, child: null, sibling: null },
+        sibling: null,
+      };
+
+      let mockSettings = {
+        middleMode: 'bilateral_wheel',
+        wheelTriggerButton: 'right',
+        wheelTriggerModifier: 'alt',
+        wheelHoldSensitivity: 'balanced',
+        tabTriggerEnabled: true,
+        tabMode: 'ae_tree',
+        tabCustomHotkey: 'Tab',
+        tabTriggerAction: 'toggle',
+        tabCloseOnSelect: false,
+        parentDirection: 'left',
+        hoverPreviewEnabled: false,
+        autoCheckUpdates: false,
+      };
+      const mockSession = {
+        groups: [{ id: 'g1', anchorPath: parentPath, anchorTitle: '00_母页.md', children: [{ path: curPath, title: '01_正文.md' }] }],
+        activeGroupId: 'g1',
+        history: { entries: [], index: -1 },
+        recentlyEvicted: [],
+        lineage: { parentByKey: { [curPath.toLowerCase()]: { parentPath, parentTitle: '00_母页.md', parentKey: parentPath.toLowerCase() } } },
+      };
+
+      window.__agAnchorWheelCall = (raw) => {
+        const req = JSON.parse(raw);
+        let resp = { ok: true };
+        if (req.action === 'getBoot') {
+          resp = { ok: true, version: ${JSON.stringify(PLUGIN_VERSION)}, settings: mockSettings, session: mockSession };
+        } else if (req.action === 'updateSettings') {
+          mockSettings = { ...mockSettings, ...(req.settings || {}) };
+          resp = { ok: true, settings: mockSettings };
+        } else if (req.action === 'getBacklinks') {
+          resp = { ok: true, path: req.path, backlinks: [], outlinks: [{ label: 'shot_a.png', resolvedPath: childImg, exists: true }] };
+        } else if (req.action === 'getNavContext') {
+          resp = {
+            ok: true,
+            activePath: req.path,
+            parentDirection: mockSettings.parentDirection,
+            childSourceScope: 'opened_and_outlinks',
+            current: { path: req.path, title: '01_正文.md', isDirectory: false, children: [{ path: childImg, title: 'shot_a.png', isOpenedTab: false }] },
+            parent: { path: parentPath, title: '00_母页.md', isDirectory: false },
+            ancestors: [{ path: parentPath, title: '00_母页.md', isDirectory: false, siblings: [] }],
+            categories: [{ id: 'image', label: '图片', items: [{ path: childImg, title: 'shot_a.png', isOpenedTab: false }] }],
+            totalCurrentChildren: 1,
+          };
+        } else if (req.action === 'sessionOp') {
+          resp = { ok: true, session: mockSession };
+        }
+        setTimeout(() => window.__agAnchorWheelResolve?.(req.id, resp), 0);
+      };
+
+      window.__agAnchorWheelBoot = { version: ${JSON.stringify(PLUGIN_VERSION)}, settings: mockSettings, wheelCss: ${JSON.stringify(wheelCss)} };
+      eval(${JSON.stringify(navSharedJs)});
+      eval(${JSON.stringify(wheelJs)});
+      eval(${JSON.stringify(bilateralJs)});
+      eval(${JSON.stringify(aeTreeJs)});
+      eval(${JSON.stringify(settingsModalJs)});
+      eval(${JSON.stringify(mdJs)});
+      eval(${JSON.stringify(docViewerJs)});
+      eval(${JSON.stringify(nativeJs)});
+
+      await new Promise((r) => setTimeout(r, 200));
+      const blank = document.getElementById('blank-p');
+      const rect = blank.getBoundingClientRect();
+      const bx = Math.round(rect.left + 120);
+      const by = Math.round(rect.top + 30);
+
+      // 1. No hardcoded Alt+Q hijack when tabCustomHotkey is 'Tab'
+      const altQEv = new KeyboardEvent('keydown', { key: 'q', code: 'KeyQ', altKey: true, bubbles: true, cancelable: true });
+      window.dispatchEvent(altQEv);
+      await new Promise((r) => setTimeout(r, 40));
+      const altQNotHijacked = !altQEv.defaultPrevented && !window.__agAnchorWheel.getDebugState().wheelOpen;
+
+      // 2. Modifier + Mouse (Alt + Right): bare Right drag MUST NOT open wheel, bare Middle MUST NOT preventDefault
+      const bareMid = new MouseEvent('mousedown', { button: 1, clientX: bx, clientY: by, bubbles: true, cancelable: true });
+      blank.dispatchEvent(bareMid);
+      const bareMiddleUntouched = !bareMid.defaultPrevented;
+
+      blank.dispatchEvent(new PointerEvent('pointerdown', { button: 2, buttons: 2, clientX: bx, clientY: by, bubbles: true, cancelable: true }));
+      document.dispatchEvent(new PointerEvent('pointermove', { button: 2, buttons: 2, clientX: bx + 20, clientY: by, bubbles: true, cancelable: true }));
+      await new Promise((r) => setTimeout(r, 180));
+      const bareRightDidNotOpen = !window.__agAnchorWheel.getDebugState().bilateralOpen;
+      document.dispatchEvent(new PointerEvent('pointerup', { button: 2, buttons: 0, clientX: bx + 20, clientY: by, bubbles: true, cancelable: true }));
+
+      // Alt + Right hold opens wheel and suppresses contextmenu on release
+      blank.dispatchEvent(new PointerEvent('pointerdown', { button: 2, buttons: 2, altKey: true, clientX: bx, clientY: by, bubbles: true, cancelable: true }));
+      await new Promise((r) => setTimeout(r, 175));
+      const altRightOpened = window.__agAnchorWheel.getDebugState().bilateralOpen;
+      document.dispatchEvent(new PointerEvent('pointerup', { button: 2, buttons: 0, altKey: true, clientX: bx, clientY: by, bubbles: true, cancelable: true }));
+      const ctxAfterAltRight = new MouseEvent('contextmenu', { button: 2, clientX: bx, clientY: by, bubbles: true, cancelable: true });
+      blank.dispatchEvent(ctxAfterAltRight);
+      const altRightSuppressedCtx = ctxAfterAltRight.defaultPrevented;
+
+      // 3. Sensitivity 'safe' prevents small 9px jitter on bare right-click, while 20px opens; Shift+Right passes contextmenu through on breadcrumb
+      mockSettings = { ...mockSettings, wheelTriggerButton: 'right', wheelTriggerModifier: 'none', wheelHoldSensitivity: 'safe' };
+      window.__agAnchorWheel.onBackendSync({ settings: mockSettings });
+      await new Promise((r) => setTimeout(r, 50));
+
+      blank.dispatchEvent(new PointerEvent('pointerdown', { button: 2, buttons: 2, clientX: bx, clientY: by, bubbles: true, cancelable: true }));
+      document.dispatchEvent(new PointerEvent('pointermove', { button: 2, buttons: 2, clientX: bx + 9, clientY: by, bubbles: true, cancelable: true }));
+      await new Promise((r) => setTimeout(r, 60));
+      const safeIgnoredJitter = !window.__agAnchorWheel.getDebugState().bilateralOpen;
+      document.dispatchEvent(new PointerEvent('pointermove', { button: 2, buttons: 2, clientX: bx + 20, clientY: by, bubbles: true, cancelable: true }));
+      const safeOpenedOnDeliberateDrag = window.__agAnchorWheel.getDebugState().bilateralOpen;
+      document.dispatchEvent(new PointerEvent('pointerup', { button: 2, buttons: 0, clientX: bx + 20, clientY: by, bubbles: true, cancelable: true }));
+      await new Promise((r) => setTimeout(r, 320));
+
+      // Shift + Right on breadcrumb escapes custom explorer menu to preserve host native menu
+      const shiftCtx = new MouseEvent('contextmenu', { button: 2, shiftKey: true, clientX: bx, clientY: 50, bubbles: true, cancelable: true });
+      document.getElementById('crumb').dispatchEvent(shiftCtx);
+      const shiftRightEscapedNativeMenu = !shiftCtx.defaultPrevented;
+
+      // 4. Modified Left (Alt + Left) for trackpads/no-middle-button mice
+      mockSettings = { ...mockSettings, wheelTriggerButton: 'left', wheelTriggerModifier: 'alt', wheelHoldSensitivity: 'fast' };
+      window.__agAnchorWheel.onBackendSync({ settings: mockSettings });
+      await new Promise((r) => setTimeout(r, 50));
+      blank.dispatchEvent(new PointerEvent('pointerdown', { button: 0, buttons: 1, altKey: true, clientX: bx, clientY: by, bubbles: true, cancelable: true }));
+      await new Promise((r) => setTimeout(r, 90));
+      const altLeftOpened = window.__agAnchorWheel.getDebugState().bilateralOpen;
+      document.dispatchEvent(new PointerEvent('pointerup', { button: 0, buttons: 0, altKey: true, clientX: bx, clientY: by, bubbles: true, cancelable: true }));
+      const clickAfterAltLeft = new MouseEvent('click', { button: 0, clientX: bx, clientY: by, bubbles: true, cancelable: true });
+      blank.dispatchEvent(clickAfterAltLeft);
+      const altLeftSuppressedClick = clickAfterAltLeft.defaultPrevented;
+
+      // 5. Settings modal hotkey recorder (reject bare letter, Esc cancels recording WITHOUT closing modal, record Backquote + hold action)
+      document.querySelector('#aw-companion-strip [data-aw-role="settings-btn"]')?.click();
+      await new Promise((r) => setTimeout(r, 80));
+      const recBtn = document.getElementById('aw-sm-hotkey-rec');
+      recBtn.click();
+      // Bare letter 'a' should be rejected and keep recording
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', code: 'KeyA', bubbles: true, cancelable: true }));
+      const stillRecordingAfterBareLetter = recBtn.getAttribute('data-recording') === '1';
+      // Escape cancels recording while keeping settings modal open
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true, cancelable: true }));
+      const escKeptModalOpen = window.__agAnchorWheel.getDebugState().settingsOpen && recBtn.getAttribute('data-recording') === '0';
+      // Record Backquote (even under Chinese IME where ev.key === '·')
+      recBtn.click();
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: '·', code: 'Backquote', bubbles: true, cancelable: true }));
+      const recordedLabel = recBtn.textContent;
+      // Switch hotkey view to bilateral_wheel and action to hold, then save
+      const tabModeSel = document.getElementById('aw-sm-tab-mode');
+      tabModeSel.value = 'bilateral_wheel';
+      tabModeSel.dispatchEvent(new Event('change'));
+      document.querySelector('[data-aw-tab-action="hold"]').click();
+      document.getElementById('aw-sm-save').click();
+      await new Promise((r) => setTimeout(r, 100));
+
+      // 6. Hold-hotkey bilateral wheel: move cursor -> hold Backquote (repeat ignored) -> slide left to parent -> release Backquote -> navigates to parent!
+      document.dispatchEvent(new PointerEvent('pointermove', { clientX: bx + 80, clientY: by + 120, bubbles: true }));
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: '·', code: 'Backquote', bubbles: true, cancelable: true }));
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: '·', code: 'Backquote', repeat: true, bubbles: true, cancelable: true }));
+      await new Promise((r) => setTimeout(r, 40));
+      const holdHotkeyOpenedWheel = window.__agAnchorWheel.getDebugState().bilateralOpen;
+      const stageRect = document.querySelector('.aw-bi-stage')?.getBoundingClientRect();
+      const stageCenterX = stageRect ? stageRect.left + stageRect.width / 2 : bx + 80;
+      const stageCenterY = stageRect ? stageRect.top + stageRect.height / 2 : by + 120;
+      // Slide left onto parent arc (parentDirection === 'left')
+      document.dispatchEvent(new PointerEvent('pointermove', { clientX: stageCenterX - 95, clientY: stageCenterY, bubbles: true }));
+      // Release Backquote -> commits parent navigation and closes wheel!
+      document.dispatchEvent(new KeyboardEvent('keyup', { key: '·', code: 'Backquote', bubbles: true, cancelable: true }));
+      await new Promise((r) => setTimeout(r, 120));
+      const holdHotkeyCommittedParent =
+        !window.__agAnchorWheel.getDebugState().bilateralOpen &&
+        window.__agAnchorWheel.getDebugState().activeFilePath.endsWith('00_母页.md');
+
+      // 7. Combo hold-hotkey (Alt+E): releasing Alt first still closes cleanly without getting stuck
+      mockSettings = { ...mockSettings, tabCustomHotkey: 'Alt+E', tabTriggerAction: 'hold', tabMode: 'bilateral_wheel' };
+      window.__agAnchorWheel.onBackendSync({ settings: mockSettings });
+      await new Promise((r) => setTimeout(r, 40));
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'e', code: 'KeyE', altKey: true, bubbles: true, cancelable: true }));
+      await new Promise((r) => setTimeout(r, 40));
+      const comboOpened = window.__agAnchorWheel.getDebugState().bilateralOpen;
+      document.dispatchEvent(new KeyboardEvent('keyup', { key: 'Alt', code: 'AltLeft', bubbles: true, cancelable: true }));
+      await new Promise((r) => setTimeout(r, 40));
+      const comboClosedOnModRelease = !window.__agAnchorWheel.getDebugState().bilateralOpen;
+
+      return {
+        altQNotHijacked,
+        bareMiddleUntouched,
+        bareRightDidNotOpen,
+        altRightOpened,
+        altRightSuppressedCtx,
+        safeIgnoredJitter,
+        safeOpenedOnDeliberateDrag,
+        shiftRightEscapedNativeMenu,
+        altLeftOpened,
+        altLeftSuppressedClick,
+        stillRecordingAfterBareLetter,
+        escKeptModalOpen,
+        recordedLabel,
+        holdHotkeyOpenedWheel,
+        holdHotkeyCommittedParent,
+        comboOpened,
+        comboClosedOnModRelease,
+      };
+    })()`);
+
+    assert.deepEqual(cdp.errors, []);
+    assert.equal(res.altQNotHijacked, true);
+    assert.equal(res.bareMiddleUntouched, true);
+    assert.equal(res.bareRightDidNotOpen, true);
+    assert.equal(res.altRightOpened, true);
+    assert.equal(res.altRightSuppressedCtx, true);
+    assert.equal(res.safeIgnoredJitter, true);
+    assert.equal(res.safeOpenedOnDeliberateDrag, true);
+    assert.equal(res.shiftRightEscapedNativeMenu, true);
+    assert.equal(res.altLeftOpened, true);
+    assert.equal(res.altLeftSuppressedClick, true);
+    assert.equal(res.stillRecordingAfterBareLetter, true);
+    assert.equal(res.escKeptModalOpen, true);
+    assert.equal(res.recordedLabel, '` ~');
+    assert.equal(res.holdHotkeyOpenedWheel, true);
+    assert.equal(res.holdHotkeyCommittedParent, true);
+    assert.equal(res.comboOpened, true);
+    assert.equal(res.comboClosedOnModRelease, true);
   } finally {
     try { ws?.close(); } catch {}
     if (browserProc) {

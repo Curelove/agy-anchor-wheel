@@ -92,14 +92,22 @@
     let activeState = null;
     let backdropEl = null;
 
+    function onWindowBlur() {
+      close();
+    }
+
     function close() {
+      try { doc.defaultView?.removeEventListener?.('blur', onWindowBlur); } catch {}
       if (!backdropEl) return;
       doc.removeEventListener('pointermove', onPointerMove, true);
       doc.removeEventListener('pointerup', onPointerUp, true);
       doc.removeEventListener('keydown', onKeyDown, true);
+      doc.removeEventListener('keyup', onKeyUp, true);
+      const cb = activeState?.onClose;
       try { backdropEl.remove(); } catch {}
       backdropEl = null;
       activeState = null;
+      cb?.();
     }
 
     function selectIndex(idx) {
@@ -166,7 +174,7 @@
       const holdMask = Shared?.buttonToButtonsMask
         ? Shared.buttonToButtonsMask(activeState.holdButton)
         : (activeState.holdButton === 1 ? 4 : activeState.holdButton === 2 ? 2 : activeState.holdButton === 3 ? 8 : activeState.holdButton === 4 ? 16 : 0);
-      if (activeState.holdMode && holdMask && ev.isTrusted && typeof ev.buttons === 'number' && (ev.buttons & holdMask) === 0) {
+      if (activeState.holdMode && !activeState.holdHotkey && holdMask && ev.isTrusted && typeof ev.buttons === 'number' && (ev.buttons & holdMask) === 0) {
         close();
         return;
       }
@@ -183,7 +191,7 @@
     }
 
     function onPointerUp(ev) {
-      if (!activeState || !activeState.holdMode || activeState.listMode) return;
+      if (!activeState || !activeState.holdMode || activeState.holdHotkey || activeState.listMode) return;
       if (activeState.holdButton !== undefined && ev.button !== activeState.holdButton) return;
       ev.preventDefault();
       const hit = hitTestPointer(ev.clientX, ev.clientY);
@@ -200,6 +208,24 @@
       } else {
         close();
       }
+    }
+
+    function onKeyUp(ev) {
+      if (!activeState || !activeState.holdMode || !activeState.holdHotkey || activeState.listMode) return;
+      if (!Shared?.isHotkeyReleaseEvent?.(ev, activeState.holdHotkey)) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      ev.stopImmediatePropagation?.();
+      const hit = activeState.hoverHit;
+      if (hit === 'hub') {
+        selectIndex('hub');
+        return;
+      }
+      if (typeof hit === 'number' && activeState.pageItems[hit]) {
+        selectIndex(hit);
+        return;
+      }
+      close();
     }
 
     function onKeyDown(ev) {
@@ -475,7 +501,9 @@
         // Hold-release pure mode: NEVER render click-only toolbar buttons inside the wheel
         const whisper = markNode(doc.createElement('div'));
         whisper.className = 'aw-wheel-hold-hint';
-        whisper.textContent = '划向目标扇区或中心松手打开 · 空白/圈外松手取消';
+        whisper.textContent = st.holdHotkey
+          ? '划向目标扇区或中心松开快捷键打开 · 空白/圈外松开取消'
+          : '划向目标扇区或中心松手打开 · 空白/圈外松手取消';
         stage.appendChild(whisper);
       } else {
         const toolbar = markNode(doc.createElement('div'));
@@ -543,6 +571,7 @@
       y,
       holdMode = false,
       holdButton = 1,
+      holdHotkey = '',
       persistOnScroll = false,
       closeOnSelect = true,
       sectors = 8,
@@ -555,6 +584,7 @@
       onRemoveChild,
       onPinCurrent,
       onShowOutlinks,
+      onClose,
     }) {
       close();
       if (!group) return;
@@ -610,6 +640,7 @@
         scale,
         holdMode: Boolean(holdMode),
         holdButton,
+        holdHotkey: String(holdHotkey || ''),
         persistOnScroll: Boolean(persistOnScroll),
         closeOnSelect: closeOnSelect !== false,
         sectors,
@@ -626,6 +657,7 @@
         onRemoveChild,
         onPinCurrent,
         onShowOutlinks,
+        onClose,
       };
 
       mountRoot.appendChild(backdropEl);
@@ -638,6 +670,8 @@
       doc.addEventListener('pointermove', onPointerMove, true);
       doc.addEventListener('pointerup', onPointerUp, true);
       doc.addEventListener('keydown', onKeyDown, true);
+      doc.addEventListener('keyup', onKeyUp, true);
+      try { doc.defaultView?.addEventListener?.('blur', onWindowBlur); } catch {}
     }
 
     function updateGroup(nextGroup) {

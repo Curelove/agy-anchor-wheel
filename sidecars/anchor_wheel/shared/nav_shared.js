@@ -49,14 +49,291 @@
     right: Object.freeze({ id: 'right', button: 2, buttonsMask: 2, label: '鼠标右键', shortLabel: '右键', holdMs: 135, dragPx: 8 }),
     side_back: Object.freeze({ id: 'side_back', button: 3, buttonsMask: 8, label: '鼠标侧键 1（后退键）', shortLabel: '后退侧键', holdMs: 65, dragPx: 5 }),
     side_forward: Object.freeze({ id: 'side_forward', button: 4, buttonsMask: 16, label: '鼠标侧键 2（前进键）', shortLabel: '前进侧键', holdMs: 65, dragPx: 5 }),
+    left: Object.freeze({ id: 'left', button: 0, buttonsMask: 1, label: '鼠标左键（空白区）', shortLabel: '左键', holdMs: 115, dragPx: 8 }),
   });
 
+  const WHEEL_TRIGGER_MODIFIERS = Object.freeze({
+    none: Object.freeze({ id: 'none', label: '无修饰键', shortLabel: '' }),
+    alt: Object.freeze({ id: 'alt', label: 'Alt', shortLabel: 'Alt' }),
+    shift: Object.freeze({ id: 'shift', label: 'Shift', shortLabel: 'Shift' }),
+    ctrl: Object.freeze({ id: 'ctrl', label: 'Ctrl', shortLabel: 'Ctrl' }),
+  });
+
+  const WHEEL_HOLD_SENSITIVITIES = Object.freeze({
+    fast: Object.freeze({ id: 'fast', label: '跟手', normalHoldMs: 60, normalDragPx: 5, rightHoldMs: 75, rightDragPx: 6, sideHoldMs: 35, sideDragPx: 4 }),
+    balanced: Object.freeze({ id: 'balanced', label: '均衡', normalHoldMs: 115, normalDragPx: 8, rightHoldMs: 135, rightDragPx: 8, sideHoldMs: 65, sideDragPx: 5 }),
+    safe: Object.freeze({ id: 'safe', label: '防误触', normalHoldMs: 200, normalDragPx: 14, rightHoldMs: 215, rightDragPx: 14, sideHoldMs: 135, sideDragPx: 10 }),
+  });
+
+  function isMacPlatform() {
+    try {
+      const nav = typeof navigator !== 'undefined' ? navigator : null;
+      const plat = String(nav?.userAgentData?.platform || nav?.platform || nav?.userAgent || '');
+      if (plat) return /mac/i.test(plat);
+    } catch {}
+    try {
+      if (typeof process !== 'undefined' && process.platform) return process.platform === 'darwin';
+    } catch {}
+    return false;
+  }
+
   function resolveWheelTriggerButton(settingsOrId) {
-    const raw =
-      typeof settingsOrId === 'string'
-        ? settingsOrId
-        : settingsOrId?.wheelTriggerButton || (settingsOrId?.wheelTrigger === 'right_drag' ? 'right' : 'middle');
-    return WHEEL_TRIGGER_BUTTONS[raw] || WHEEL_TRIGGER_BUTTONS.middle;
+    const isObj = Boolean(settingsOrId && typeof settingsOrId === 'object');
+    const rawBtn = isObj
+      ? settingsOrId.wheelTriggerButton || (settingsOrId.wheelTrigger === 'right_drag' ? 'right' : 'middle')
+      : String(settingsOrId || 'middle');
+    const base = WHEEL_TRIGGER_BUTTONS[rawBtn] || WHEEL_TRIGGER_BUTTONS.middle;
+    let rawMod = isObj ? String(settingsOrId.wheelTriggerModifier || 'none') : 'none';
+    if (!WHEEL_TRIGGER_MODIFIERS[rawMod]) rawMod = 'none';
+    if (base.id === 'left' && rawMod === 'none') rawMod = 'alt';
+    const modMeta = WHEEL_TRIGGER_MODIFIERS[rawMod] || WHEEL_TRIGGER_MODIFIERS.none;
+
+    const rawSens = isObj ? String(settingsOrId.wheelHoldSensitivity || 'balanced') : 'balanced';
+    const sensMeta = WHEEL_HOLD_SENSITIVITIES[rawSens] || WHEEL_HOLD_SENSITIVITIES.balanced;
+    let holdMs = sensMeta.normalHoldMs;
+    let dragPx = sensMeta.normalDragPx;
+    if (base.id === 'right') {
+      holdMs = sensMeta.rightHoldMs;
+      dragPx = sensMeta.rightDragPx;
+    } else if (base.id === 'side_back' || base.id === 'side_forward') {
+      holdMs = sensMeta.sideHoldMs;
+      dragPx = sensMeta.sideDragPx;
+    }
+
+    const mac = isMacPlatform();
+    const modDisp =
+      modMeta.id === 'alt'
+        ? (mac ? 'Option' : 'Alt')
+        : modMeta.shortLabel;
+    const shortLabel = modDisp ? `${modDisp}+${base.shortLabel}` : base.shortLabel;
+    const label = modDisp ? `${modDisp} + ${base.label}` : base.label;
+
+    return {
+      ...base,
+      modifier: modMeta.id,
+      modifierLabel: modDisp,
+      sensitivity: sensMeta.id,
+      holdMs,
+      dragPx,
+      buttonShortLabel: base.shortLabel,
+      buttonLabel: base.label,
+      shortLabel,
+      label,
+    };
+  }
+
+  function matchesMouseTriggerModifier(ev, modifier = 'none') {
+    if (!ev) return false;
+    const mod = String(modifier || 'none');
+    const alt = Boolean(ev.altKey);
+    const ctrl = Boolean(ev.ctrlKey);
+    const shift = Boolean(ev.shiftKey);
+    const meta = Boolean(ev.metaKey);
+    if (mod === 'alt') return alt && !ctrl && !shift && !meta;
+    if (mod === 'shift') return shift && !alt && !ctrl && !meta;
+    if (mod === 'ctrl') return ctrl && !alt && !shift && !meta;
+    return !alt && !ctrl && !shift && !meta;
+  }
+
+  const BARE_HOTKEY_KEYS = new Set([
+    'Tab', 'Backquote',
+    'F1', 'F2', 'F3', 'F4', 'F5', 'F6', 'F7', 'F8', 'F9', 'F10', 'F11', 'F12',
+  ]);
+  const EXTRA_COMBO_HOTKEY_KEYS = new Set([
+    'Space', 'Minus', 'Equal', 'BracketLeft', 'BracketRight', 'Backslash',
+    'Semicolon', 'Quote', 'Comma', 'Period', 'Slash',
+    'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
+  ]);
+  const HOTKEY_KEY_ALIASES = Object.freeze({
+    tab: 'Tab',
+    backquote: 'Backquote',
+    '`': 'Backquote',
+    '~': 'Backquote',
+    '·': 'Backquote',
+    space: 'Space',
+    spacebar: 'Space',
+    ' ': 'Space',
+    minus: 'Minus',
+    '-': 'Minus',
+    equal: 'Equal',
+    '=': 'Equal',
+    bracketleft: 'BracketLeft',
+    '[': 'BracketLeft',
+    bracketright: 'BracketRight',
+    ']': 'BracketRight',
+    backslash: 'Backslash',
+    '\\': 'Backslash',
+    semicolon: 'Semicolon',
+    ';': 'Semicolon',
+    quote: 'Quote',
+    "'": 'Quote',
+    comma: 'Comma',
+    ',': 'Comma',
+    period: 'Period',
+    '.': 'Period',
+    slash: 'Slash',
+    '/': 'Slash',
+    arrowup: 'ArrowUp',
+    arrowdown: 'ArrowDown',
+    arrowleft: 'ArrowLeft',
+    arrowright: 'ArrowRight',
+  });
+  const HOTKEY_DISPLAY_MAP = Object.freeze({
+    Backquote: '` ~',
+    Space: 'Space',
+    Minus: '-',
+    Equal: '=',
+    BracketLeft: '[',
+    BracketRight: ']',
+    Backslash: '\\',
+    Semicolon: ';',
+    Quote: "'",
+    Comma: ',',
+    Period: '.',
+    Slash: '/',
+    ArrowUp: '↑',
+    ArrowDown: '↓',
+    ArrowLeft: '←',
+    ArrowRight: '→',
+  });
+
+  function mapSingleKeyToken(raw) {
+    const part = String(raw || '').trim();
+    if (!part) return '';
+    const low = part.toLowerCase();
+    if (/^key([a-z])$/i.test(part)) return part.slice(3).toUpperCase();
+    if (/^digit([0-9])$/i.test(part)) return part.slice(5);
+    if (/^[a-z0-9]$/i.test(part)) return part.toUpperCase();
+    if (/^f([1-9]|1[0-2])$/i.test(part)) return part.toUpperCase();
+    if (HOTKEY_KEY_ALIASES[low]) return HOTKEY_KEY_ALIASES[low];
+    return '';
+  }
+
+  function normalizeHotkeyString(raw) {
+    const text = String(raw || '').trim();
+    if (!text || text.length > 40) return '';
+    const parts = text.split('+').map((p) => p.trim()).filter(Boolean);
+    if (!parts.length || parts.length > 5) return '';
+    const mods = { Ctrl: false, Alt: false, Shift: false, Meta: false };
+    let mainKey = '';
+    for (const part of parts) {
+      const low = part.toLowerCase();
+      if (low === 'ctrl' || low === 'control') {
+        mods.Ctrl = true;
+      } else if (low === 'alt' || low === 'option') {
+        mods.Alt = true;
+      } else if (low === 'shift') {
+        mods.Shift = true;
+      } else if (low === 'meta' || low === 'cmd' || low === 'command' || low === 'win' || low === 'super') {
+        mods.Meta = true;
+      } else if (!mainKey) {
+        mainKey = mapSingleKeyToken(part);
+        if (!mainKey) return '';
+      } else {
+        return '';
+      }
+    }
+    if (!mainKey) return '';
+    const hasMod = mods.Ctrl || mods.Alt || mods.Shift || mods.Meta;
+    const isBareAllowed = BARE_HOTKEY_KEYS.has(mainKey);
+    const isComboAllowed = isBareAllowed || EXTRA_COMBO_HOTKEY_KEYS.has(mainKey) || /^[A-Z0-9]$/.test(mainKey);
+    if (!isComboAllowed) return '';
+    if (!hasMod && !isBareAllowed) return '';
+    const orderedMods = ['Ctrl', 'Alt', 'Shift', 'Meta'].filter((m) => mods[m]);
+    return orderedMods.length ? `${orderedMods.join('+')}+${mainKey}` : mainKey;
+  }
+
+  function parseHotkeySpec(raw) {
+    const norm = normalizeHotkeyString(raw);
+    if (!norm) return null;
+    const parts = norm.split('+');
+    const key = parts[parts.length - 1];
+    const modSet = new Set(parts.slice(0, -1));
+    return {
+      canonical: norm,
+      ctrl: modSet.has('Ctrl'),
+      alt: modSet.has('Alt'),
+      shift: modSet.has('Shift'),
+      meta: modSet.has('Meta'),
+      key,
+    };
+  }
+
+  function extractMainKeyFromEvent(ev) {
+    if (!ev) return '';
+    const code = String(ev.code || '');
+    if (code) {
+      const fromCode = mapSingleKeyToken(code);
+      if (fromCode) return fromCode;
+    }
+    const key = String(ev.key || '');
+    if (key === ' ') return 'Space';
+    return mapSingleKeyToken(key);
+  }
+
+  function eventToHotkeyString(ev) {
+    if (!ev) return { ok: false, reason: 'invalid' };
+    const k = String(ev.key || '');
+    const c = String(ev.code || '');
+    if (k === 'Escape' || c === 'Escape') return { ok: false, reason: 'cancel' };
+    if (
+      k === 'Control' || k === 'Alt' || k === 'Shift' || k === 'Meta' ||
+      /^(Control|Alt|Shift|Meta)(Left|Right)$/.test(c)
+    ) {
+      return { ok: false, reason: 'modifier_only' };
+    }
+    const mainKey = extractMainKeyFromEvent(ev);
+    if (!mainKey) return { ok: false, reason: 'unsupported' };
+    const mods = [];
+    if (ev.ctrlKey) mods.push('Ctrl');
+    if (ev.altKey) mods.push('Alt');
+    if (ev.shiftKey) mods.push('Shift');
+    if (ev.metaKey) mods.push('Meta');
+    if (!mods.length && !BARE_HOTKEY_KEYS.has(mainKey)) {
+      return { ok: false, reason: 'need_modifier' };
+    }
+    const spec = normalizeHotkeyString(mods.length ? `${mods.join('+')}+${mainKey}` : mainKey);
+    if (!spec) return { ok: false, reason: 'unsupported' };
+    return { ok: true, hotkey: spec };
+  }
+
+  function matchesHotkeyEvent(ev, hotkeyRaw) {
+    const parsed = parseHotkeySpec(hotkeyRaw);
+    if (!parsed || !ev) return false;
+    if (
+      Boolean(ev.ctrlKey) !== parsed.ctrl ||
+      Boolean(ev.altKey) !== parsed.alt ||
+      Boolean(ev.shiftKey) !== parsed.shift ||
+      Boolean(ev.metaKey) !== parsed.meta
+    ) {
+      return false;
+    }
+    return extractMainKeyFromEvent(ev) === parsed.key;
+  }
+
+  function isHotkeyReleaseEvent(ev, hotkeyRaw) {
+    const parsed = parseHotkeySpec(hotkeyRaw);
+    if (!parsed || !ev) return false;
+    const k = String(ev.key || '');
+    const c = String(ev.code || '');
+    if (parsed.ctrl && (k === 'Control' || /^Control/.test(c))) return true;
+    if (parsed.alt && (k === 'Alt' || /^Alt/.test(c))) return true;
+    if (parsed.shift && (k === 'Shift' || /^Shift/.test(c))) return true;
+    if (parsed.meta && (k === 'Meta' || /^Meta/.test(c))) return true;
+    return extractMainKeyFromEvent(ev) === parsed.key;
+  }
+
+  function formatHotkeyLabel(hotkeyRaw, { compact = false } = {}) {
+    const parsed = parseHotkeySpec(hotkeyRaw);
+    if (!parsed) return String(hotkeyRaw || 'Tab');
+    const mac = isMacPlatform();
+    const parts = [];
+    if (parsed.ctrl) parts.push(mac ? '⌃' : 'Ctrl');
+    if (parsed.alt) parts.push(mac ? '⌥' : 'Alt');
+    if (parsed.shift) parts.push(mac ? '⇧' : 'Shift');
+    if (parsed.meta) parts.push(mac ? '⌘' : 'Win');
+    parts.push(HOTKEY_DISPLAY_MAP[parsed.key] || parsed.key);
+    return mac && compact ? parts.join('') : parts.join('+');
   }
 
   function buttonToButtonsMask(button) {
@@ -662,8 +939,16 @@
     const animVid = cfg.videoPreviewAnimated !== false;
     const onlyOpened = cfg.childSourceScope === 'opened_only';
     const closeOnSel = Boolean(cfg.tabCloseOnSelect);
-    const hotkey = String(cfg.tabCustomHotkey || 'Tab');
+    const tabHoldMode = cfg.tabTriggerAction === 'hold';
+    const hotkeySpec = normalizeHotkeyString(cfg.tabCustomHotkey || 'Tab') || 'Tab';
+    const hotkey = formatHotkeyLabel(hotkeySpec, { compact: true });
     const triggerBtnShort = resolveWheelTriggerButton(cfg).shortLabel;
+    const wheelUseHotkeyCaption = cfg.middleMode === 'off' && cfg.tabTriggerEnabled !== false && cfg.tabMode === modeKey;
+    const wheelTriggerCaption = wheelUseHotkeyCaption
+      ? (tabHoldMode ? `按住 ${hotkey}` : `按 ${hotkey}`)
+      : /^[A-Za-z]/.test(triggerBtnShort)
+      ? `按住 ${triggerBtnShort}`
+      : `按住${triggerBtnShort}`;
     const sectors = [4, 6, 8].includes(Number(cfg.wheelSectors)) ? Number(cfg.wheelSectors) : 8;
 
     if (modeKey === 'bilateral_wheel') {
@@ -779,7 +1064,7 @@
                  ${firstExtBadge ? `<rect x="${panelX + panelW - 46}" y="70" width="34" height="14" rx="4" fill="var(--aw-card)" stroke="var(--aw-border)"/><text x="${panelX + panelW - 29}" y="80" fill="var(--aw-accent)" font-size="8.5" font-weight="600" text-anchor="middle">${firstExtBadge}</text>` : ''}
                  <text x="${panelX + panelW / 2}" y="129" fill="var(--aw-fg)" font-size="10.5" font-weight="600" text-anchor="middle">${delayMs}ms 悬停快览</text>`
               : `<text x="${panelX + panelW / 2}" y="93" fill="var(--aw-fg-muted)" font-size="10.5" text-anchor="middle">快览已关闭</text>
-                 <text x="${panelX + panelW / 2}" y="129" fill="var(--aw-fg-muted)" font-size="10" text-anchor="middle">松手${esc(triggerBtnShort)}即打开</text>`
+                 <text x="${panelX + panelW / 2}" y="129" fill="var(--aw-fg-muted)" font-size="10" text-anchor="middle">${wheelUseHotkeyCaption && !tabHoldMode ? '点击目标即打开' : `松手${esc(wheelUseHotkeyCaption ? hotkey : triggerBtnShort)}即打开`}</text>`
           }
         </g>
         <!-- Animated cursor dot & release ripple -->
@@ -787,12 +1072,13 @@
           <circle cx="${cx}" cy="${cy}" r="8" fill="none" stroke="var(--aw-accent)" stroke-width="1.4" class="aw-anim-bi-ripple"/>
           <circle cx="${cx}" cy="${cy}" r="4.5" fill="var(--aw-accent)"/>
         </g>
-        <text x="160" y="166" fill="var(--aw-fg-muted)" font-size="10.5" text-anchor="middle">按住${esc(triggerBtnShort)} · ${dirCaption} · 共 ${totalCats} 分类扇区</text>
+        <text x="160" y="166" fill="var(--aw-fg-muted)" font-size="10.5" text-anchor="middle">${esc(wheelTriggerCaption)} · ${dirCaption} · 共 ${totalCats} 分类扇区</text>
       </svg>`;
     }
 
     if (modeKey === 'ae_tree') {
-      const keyW = hotkey.length > 3 ? 46 : 34;
+      const keyFontSize = hotkey.length > 9 ? 8.6 : hotkey.length > 6 ? 9.2 : 10;
+      const keyW = Math.max(30, Math.min(118, Math.round(hotkey.length * (keyFontSize * 0.66) + 14)));
       const scopeXAll = 198;
       const scopeXOpen = 248;
       return `
@@ -808,7 +1094,7 @@
         <!-- Animated keycap & scope switch -->
         <g class="aw-anim-keycap">
           <rect x="14" y="12" width="${keyW}" height="19" rx="5" fill="var(--aw-card)" stroke="var(--aw-accent)" stroke-width="1.2"/>
-          <text x="${14 + keyW / 2}" y="25" fill="var(--aw-accent)" font-size="10" font-weight="600" text-anchor="middle">${esc(hotkey)}</text>
+          <text x="${14 + keyW / 2}" y="25" fill="var(--aw-accent)" font-size="${keyFontSize}" font-weight="600" text-anchor="middle">${esc(hotkey)}</text>
         </g>
         <rect x="194" y="12" width="108" height="19" rx="6" fill="var(--aw-hover)" stroke="var(--aw-border)"/>
         <rect x="${onlyOpened ? scopeXOpen : scopeXAll}" y="14" width="${onlyOpened ? 50 : 48}" height="15" rx="4.5" fill="var(--aw-card)" stroke="var(--aw-border)"/>
@@ -862,7 +1148,7 @@
         </g>
 
         <circle class="aw-anim-cursor-tree" cx="148" cy="100" r="4.5" fill="var(--aw-accent)"/>
-        <text x="160" y="166" fill="var(--aw-fg-muted)" font-size="10.5" text-anchor="middle">${esc(hotkey)} ${closeOnSel ? '跳转即收' : '常驻对比'} · 悬停点亮整支与快览</text>
+        <text x="160" y="166" fill="var(--aw-fg-muted)" font-size="10.5" text-anchor="middle">${tabHoldMode ? `按住 ${esc(hotkey)} 悬停松开确认` : `${esc(hotkey)} ${closeOnSel ? '跳转即收' : '常驻对比'}`} · 悬停点亮整支与快览</text>
       </svg>`;
     }
 
@@ -904,7 +1190,17 @@
     ICONS,
     DEFAULT_CATEGORY_RULES,
     WHEEL_TRIGGER_BUTTONS,
+    WHEEL_TRIGGER_MODIFIERS,
+    WHEEL_HOLD_SENSITIVITIES,
+    isMacPlatform,
     resolveWheelTriggerButton,
+    matchesMouseTriggerModifier,
+    normalizeHotkeyString,
+    parseHotkeySpec,
+    eventToHotkeyString,
+    matchesHotkeyEvent,
+    isHotkeyReleaseEvent,
+    formatHotkeyLabel,
     buttonToButtonsMask,
     compareSemverClient,
     computeUpdateStateClient,

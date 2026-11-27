@@ -60,6 +60,7 @@
   let bgUpdateTimer = null;
   let suppressAuxTimer = null;
   let suppressCtxTimer = null;
+  let suppressClickTimer = null;
   let menuEnhanceRaf = 0;
   let menuEnhanceTimers = [];
   let lastObservedTabKey = '';
@@ -70,6 +71,8 @@
   let storeUnsubscribe = null;
   let suppressNextAuxClick = false;
   let suppressNextContextMenu = false;
+  let suppressNextClick = false;
+  let lastPointerPos = null;
   let bootMeta = {
     version: BOOT.version || '',
     repoUrl: BOOT.repoUrl || 'https://github.com/Curelove/agy-anchor-wheel',
@@ -946,7 +949,7 @@
     }
   }
 
-  function openBilateralForContext(ctx, x, y, { holdMode = false, holdButton = 1, persistOnScroll = false, fromTabMode = false } = {}) {
+  function openBilateralForContext(ctx, x, y, { holdMode = false, holdButton = 1, holdHotkey = '', persistOnScroll = false, fromTabMode = false } = {}) {
     if (!ctx?.current) return false;
     ensureSharedInstances();
     if (!bilateralInstance) return false;
@@ -961,6 +964,7 @@
       y,
       holdMode,
       holdButton,
+      holdHotkey,
       persistOnScroll,
       closeOnSelect: fromTabMode ? Boolean(settings.tabCloseOnSelect) : false,
       parentDirection: settings.parentDirection || 'left',
@@ -978,7 +982,7 @@
     return true;
   }
 
-  function openAeTreeForContext(ctx, { fromTabMode = true } = {}) {
+  function openAeTreeForContext(ctx, { fromTabMode = true, holdMode = false, holdHotkey = '' } = {}) {
     if (!ctx?.current) return false;
     ensureSharedInstances();
     if (!aeTreeInstance) return false;
@@ -988,12 +992,14 @@
     bilateralInstance?.close?.();
     const col = getRightPaneColumn();
     const anchorRect = col ? col.getBoundingClientRect() : null;
-    activeTabTriggerMode = Boolean(fromTabMode);
+    activeTabTriggerMode = Boolean(fromTabMode && !holdMode);
     aeTreeInstance.open({
       context: ctx,
       anchorRect,
       scope: navScopeOverride || ctx.childSourceScope || settings.childSourceScope || 'opened_and_outlinks',
       closeOnSelect: Boolean(settings.tabCloseOnSelect),
+      holdMode,
+      holdHotkey,
       onSelect: (picked) => void onNavigatorSelect(picked, fromTabMode),
       onSwitchScope: async (nextScope) => {
         navScopeOverride = nextScope;
@@ -1007,7 +1013,7 @@
     return true;
   }
 
-  function openClassicWheelForTarget(target, x, y, { holdMode = false, holdButton = 1, persistOnScroll = false, fromTabMode = false } = {}) {
+  function openClassicWheelForTarget(target, x, y, { holdMode = false, holdButton = 1, holdHotkey = '', persistOnScroll = false, fromTabMode = false } = {}) {
     if (!target || !target.group) return false;
     ensureSharedInstances();
     if (!wheelInstance) return false;
@@ -1023,6 +1029,7 @@
       y,
       holdMode,
       holdButton,
+      holdHotkey,
       persistOnScroll,
       closeOnSelect: holdMode || !fromTabMode || Boolean(settings.tabCloseOnSelect),
       sectors: settings.wheelSectors || 8,
@@ -1080,12 +1087,19 @@
             if (linksBtn) openBacklinksPopover(linksBtn, 'outlinks');
           }
         : null,
+      onClose: () => {
+        if (!aeTreeInstance?.isOpen?.() && !bilateralInstance?.isOpen?.()) activeTabTriggerMode = false;
+      },
     });
     return true;
   }
 
-  function triggerTabNavigator(forcedMode = '') {
-    if (isAnyTabNavigatorOpen()) {
+  function triggerTabNavigator(forcedMode = '', { holdMode = false, holdHotkey = '' } = {}) {
+    if (holdMode) {
+      if (aeTreeInstance?.isOpen?.() || bilateralInstance?.isOpen?.() || wheelInstance?.isOpen?.()) {
+        return true;
+      }
+    } else if (isAnyTabNavigatorOpen()) {
       closeAllNavigators();
       return true;
     }
@@ -1093,19 +1107,36 @@
     if (mode === 'off') return false;
     const col = getRightPaneColumn();
     const rect = col ? col.getBoundingClientRect() : { left: W.innerWidth - 240, top: 180, width: 360, height: 420 };
-    const cx = rect.left + rect.width / 2;
-    const cy = rect.top + Math.min(240, rect.height / 2);
+    const usePointer =
+      holdMode &&
+      lastPointerPos &&
+      lastPointerPos.x >= rect.left - 16 &&
+      lastPointerPos.x <= rect.left + rect.width + 16 &&
+      lastPointerPos.y >= rect.top - 16 &&
+      lastPointerPos.y <= rect.top + rect.height + 16;
+    const cx = usePointer ? lastPointerPos.x : rect.left + rect.width / 2;
+    const cy = usePointer ? lastPointerPos.y : rect.top + Math.min(240, rect.height / 2);
 
     if (mode === 'classic_wheel') {
       const target = getWheelTargetGroup();
       if (!target) return false;
-      return openClassicWheelForTarget(target, cx, cy, { holdMode: false, persistOnScroll: true, fromTabMode: true });
+      return openClassicWheelForTarget(target, cx, cy, {
+        holdMode,
+        holdHotkey,
+        persistOnScroll: !holdMode,
+        fromTabMode: true,
+      });
     }
     const syncCtx = getSyncNavContext(navScopeOverride);
     if (!syncCtx?.current) return false;
     const opened = mode === 'bilateral_wheel'
-      ? openBilateralForContext(syncCtx, cx, cy, { holdMode: false, persistOnScroll: true, fromTabMode: true })
-      : openAeTreeForContext(syncCtx, { fromTabMode: true });
+      ? openBilateralForContext(syncCtx, cx, cy, {
+          holdMode,
+          holdHotkey,
+          persistOnScroll: !holdMode,
+          fromTabMode: true,
+        })
+      : openAeTreeForContext(syncCtx, { fromTabMode: true, holdMode, holdHotkey });
 
     // Background refresh to ensure full backend lineage + categorized outlinks are up-to-date
     void fetchNavContext(navScopeOverride).then((fresh) => {
@@ -2650,7 +2681,10 @@
       const treeBtn = markOwned(D.createElement('button'));
       treeBtn.className = 'aw-status-pill';
       treeBtn.setAttribute('data-aw-role', 'tree-btn');
-      treeBtn.title = `常驻层级导览 (默认按 ${settings.tabCustomHotkey || 'Tab'} 呼出与关闭)`;
+      const hkDisplay = S?.formatHotkeyLabel ? S.formatHotkeyLabel(settings.tabCustomHotkey || 'Tab') : (settings.tabCustomHotkey || 'Tab');
+      treeBtn.title = settings.tabTriggerAction === 'hold'
+        ? `层级导览 (按住 ${hkDisplay} 呼出、松开确认)`
+        : `常驻层级导览 (按 ${hkDisplay} 呼出与关闭)`;
       treeBtn.innerHTML = `${S.ICONS.tree}<span>层级</span>`;
       treeBtn.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -3116,7 +3150,15 @@
   }
 
   function onCaptureClick(ev) {
-    if (destroyed || ev.button !== 0 || ev.altKey || ev.ctrlKey || ev.metaKey || ev.shiftKey) return;
+    if (destroyed) return;
+    if (suppressNextClick && ev.button === 0) {
+      suppressNextClick = false;
+      ev.preventDefault();
+      ev.stopPropagation();
+      ev.stopImmediatePropagation();
+      return;
+    }
+    if (ev.button !== 0 || ev.altKey || ev.ctrlKey || ev.metaKey || ev.shiftKey) return;
     if (ev.target?.closest?.('[data-testid="more-actions-overflow"]')) {
       const col = getRightPaneColumn();
       if (col && col.contains(ev.target)) {
@@ -3146,10 +3188,21 @@
   function getWheelTriggerMeta() {
     if (S?.resolveWheelTriggerButton) return S.resolveWheelTriggerButton(settings);
     const id = settings?.wheelTriggerButton || (settings?.wheelTrigger === 'right_drag' ? 'right' : 'middle');
-    if (id === 'right') return { id: 'right', button: 2, buttonsMask: 2, shortLabel: '右键', holdMs: 135, dragPx: 8 };
-    if (id === 'side_back') return { id: 'side_back', button: 3, buttonsMask: 8, shortLabel: '后退侧键', holdMs: 65, dragPx: 5 };
-    if (id === 'side_forward') return { id: 'side_forward', button: 4, buttonsMask: 16, shortLabel: '前进侧键', holdMs: 65, dragPx: 5 };
-    return { id: 'middle', button: 1, buttonsMask: 4, shortLabel: '中键', holdMs: 115, dragPx: 8 };
+    const mod = settings?.wheelTriggerModifier || (id === 'left' ? 'alt' : 'none');
+    if (id === 'right') return { id: 'right', button: 2, buttonsMask: 2, modifier: mod, shortLabel: '右键', holdMs: 135, dragPx: 8 };
+    if (id === 'side_back') return { id: 'side_back', button: 3, buttonsMask: 8, modifier: mod, shortLabel: '后退侧键', holdMs: 65, dragPx: 5 };
+    if (id === 'side_forward') return { id: 'side_forward', button: 4, buttonsMask: 16, modifier: mod, shortLabel: '前进侧键', holdMs: 65, dragPx: 5 };
+    if (id === 'left') return { id: 'left', button: 0, buttonsMask: 1, modifier: mod === 'none' ? 'alt' : mod, shortLabel: 'Alt+左键', holdMs: 115, dragPx: 8 };
+    return { id: 'middle', button: 1, buttonsMask: 4, modifier: mod, shortLabel: '中键', holdMs: 115, dragPx: 8 };
+  }
+
+  function matchesWheelTriggerMod(ev, trig) {
+    if (S?.matchesMouseTriggerModifier) return S.matchesMouseTriggerModifier(ev, trig?.modifier || 'none');
+    const mod = trig?.modifier || 'none';
+    if (mod === 'alt') return Boolean(ev.altKey && !ev.ctrlKey && !ev.shiftKey && !ev.metaKey);
+    if (mod === 'shift') return Boolean(ev.shiftKey && !ev.altKey && !ev.ctrlKey && !ev.metaKey);
+    if (mod === 'ctrl') return Boolean(ev.ctrlKey && !ev.altKey && !ev.shiftKey && !ev.metaKey);
+    return !ev.altKey && !ev.ctrlKey && !ev.shiftKey && !ev.metaKey;
   }
 
   function armSuppressAuxClick(ms = 220) {
@@ -3170,6 +3223,15 @@
     }, ms);
   }
 
+  function armSuppressClick(ms = 240) {
+    suppressNextClick = true;
+    clearTimeout(suppressClickTimer);
+    suppressClickTimer = setTimeout(() => {
+      suppressNextClick = false;
+      suppressClickTimer = null;
+    }, ms);
+  }
+
   function onCaptureMouseDown(ev) {
     if (destroyed) return;
     if (!isInsideRightContent(ev.target)) {
@@ -3178,18 +3240,28 @@
     }
     const midMode = settings.middleMode || 'bilateral_wheel';
     const trig = getWheelTriggerMeta();
+    const noMod = !ev.altKey && !ev.ctrlKey && !ev.shiftKey && !ev.metaKey;
     if (ev.button === 1) {
       if (
-        extractLinkMetaFromTarget(ev.target) ||
-        (activeIsDirectory && extractDirectoryRowMetaFromTarget(ev.target)) ||
-        (midMode !== 'off' && trig.button === 1)
+        (noMod && (extractLinkMetaFromTarget(ev.target) || (activeIsDirectory && extractDirectoryRowMetaFromTarget(ev.target)))) ||
+        (midMode !== 'off' && trig.button === 1 && matchesWheelTriggerMod(ev, trig))
       ) {
         ev.preventDefault();
       }
       return;
     }
-    if ((ev.button === 3 || ev.button === 4) && midMode !== 'off' && trig.button === ev.button) {
+    if ((ev.button === 3 || ev.button === 4) && midMode !== 'off' && trig.button === ev.button && matchesWheelTriggerMod(ev, trig)) {
       ev.preventDefault();
+      return;
+    }
+    if (ev.button === 0 && midMode !== 'off' && trig.button === 0 && trig.modifier !== 'none' && matchesWheelTriggerMod(ev, trig)) {
+      if (
+        !extractLinkMetaFromTarget(ev.target) &&
+        !(activeIsDirectory && extractDirectoryRowMetaFromTarget(ev.target)) &&
+        !ev.target?.closest?.('button, a, input, select, textarea, summary, label')
+      ) {
+        ev.preventDefault();
+      }
     }
   }
 
@@ -3204,13 +3276,14 @@
     }
     const midMode = settings.middleMode || 'bilateral_wheel';
     const trig = getWheelTriggerMeta();
-    if ((ev.button === 3 || ev.button === 4) && midMode !== 'off' && trig.button === ev.button && isInsideRightContent(ev.target)) {
+    if ((ev.button === 3 || ev.button === 4) && midMode !== 'off' && trig.button === ev.button && matchesWheelTriggerMod(ev, trig) && isInsideRightContent(ev.target)) {
       ev.preventDefault();
       ev.stopPropagation();
       ev.stopImmediatePropagation();
       return;
     }
     if (ev.button !== 1) return;
+    if (ev.altKey || ev.ctrlKey || ev.shiftKey || ev.metaKey) return;
     if (!isInsideRightContent(ev.target)) return;
     let meta = extractLinkMetaFromTarget(ev.target);
     if (!meta && activeIsDirectory) {
@@ -3233,6 +3306,8 @@
       ev.stopImmediatePropagation();
       return;
     }
+    // Shift + Right-click acts as an explicit escape hatch to always open the host's native context menu
+    if (ev.shiftKey && !ev.altKey && !ev.ctrlKey && !ev.metaKey) return;
     const ctxTarget = extractContextTargetFromEvent(ev.target);
     if (!ctxTarget) return;
     ev.preventDefault();
@@ -3319,13 +3394,19 @@
         suppressNextContextMenu = true;
         clearTimeout(suppressCtxTimer);
         suppressCtxTimer = null;
+      } else if (origin.button === 0) {
+        suppressNextClick = true;
+        clearTimeout(suppressClickTimer);
+        suppressClickTimer = null;
       }
     }
     return opened;
   }
 
   function onPointerDown(ev) {
-    if (destroyed || !isInsideRightContent(ev.target)) return;
+    if (destroyed) return;
+    lastPointerPos = { x: ev.clientX, y: ev.clientY };
+    if (!isInsideRightContent(ev.target)) return;
     if (ev.target?.closest?.('[data-aw-owned="1"]')) {
       const allowPassthrough = Boolean(
         ev.target?.closest?.('[data-aw-wheel-passthrough="1"]') &&
@@ -3335,15 +3416,24 @@
     }
     const midMode = settings.middleMode || 'bilateral_wheel';
     const trig = getWheelTriggerMeta();
-    if (midMode === 'off' || ev.button !== trig.button) return;
-    // Middle-click on links preserves background tab opening; right-click or side-button hold can still trigger wheel
-    if (ev.button === 1 && extractLinkMetaFromTarget(ev.target)) return;
+    if (midMode === 'off' || ev.button !== trig.button || !matchesWheelTriggerMod(ev, trig)) return;
+    // Middle-click on links preserves background tab opening; modified left-click avoids hijacking links/controls
+    if (ev.button === 1 && trig.modifier === 'none' && extractLinkMetaFromTarget(ev.target)) return;
+    if (
+      ev.button === 0 &&
+      (extractLinkMetaFromTarget(ev.target) ||
+        (activeIsDirectory && extractDirectoryRowMetaFromTarget(ev.target)) ||
+        ev.target?.closest?.('button, a, input, select, textarea, summary, label'))
+    ) {
+      return;
+    }
     if (ev.button !== 2) ev.preventDefault();
 
     const origin = {
       x: ev.clientX,
       y: ev.clientY,
       button: trig.button,
+      modifier: trig.modifier,
       dragPx: trig.dragPx,
       opened: false,
       inRightContent: true,
@@ -3359,6 +3449,9 @@
   }
 
   function onPointerMove(ev) {
+    if (!destroyed) {
+      lastPointerPos = { x: ev.clientX, y: ev.clientY };
+    }
     if (!holdOrigin || holdOrigin.opened) return;
     const threshold = Number(holdOrigin.dragPx || 8);
     if (Math.hypot(ev.clientX - holdOrigin.x, ev.clientY - holdOrigin.y) >= threshold) {
@@ -3381,6 +3474,8 @@
         armSuppressContextMenu(280);
       } else if (ev.button === 1 || ev.button === 3 || ev.button === 4) {
         armSuppressAuxClick(220);
+      } else if (ev.button === 0) {
+        armSuppressClick(240);
       }
       ev.preventDefault();
       return;
@@ -3389,7 +3484,12 @@
     if (ev.button === 3 || ev.button === 4) {
       const midMode = settings.middleMode || 'bilateral_wheel';
       const trig = getWheelTriggerMeta();
-      if (midMode !== 'off' && trig.button === ev.button && (prevOrigin?.inRightContent || isInsideRightContent(ev.target))) {
+      if (
+        midMode !== 'off' &&
+        trig.button === ev.button &&
+        (prevOrigin?.button === ev.button || matchesWheelTriggerMod(ev, trig)) &&
+        (prevOrigin?.inRightContent || isInsideRightContent(ev.target))
+      ) {
         ev.preventDefault();
         return;
       }
@@ -3415,17 +3515,9 @@
   function matchesTabHotkey(ev) {
     if (settings.tabTriggerEnabled === false || settings.tabMode === 'off') return false;
     const hk = settings.tabCustomHotkey || 'Tab';
+    if (S?.matchesHotkeyEvent) return S.matchesHotkeyEvent(ev, hk);
     if (hk === 'Tab') {
       return ev.key === 'Tab' && !ev.altKey && !ev.ctrlKey && !ev.metaKey && !ev.shiftKey;
-    }
-    if (hk === 'Alt+Q') {
-      return ev.altKey && !ev.ctrlKey && !ev.metaKey && ev.key.toLowerCase() === 'q';
-    }
-    if (hk === 'Alt+W') {
-      return ev.altKey && !ev.ctrlKey && !ev.metaKey && ev.key.toLowerCase() === 'w';
-    }
-    if (hk === 'F2') {
-      return ev.key === 'F2' && !ev.altKey && !ev.ctrlKey && !ev.metaKey;
     }
     return false;
   }
@@ -3449,7 +3541,12 @@
         ev.preventDefault();
         ev.stopPropagation();
         ev.stopImmediatePropagation();
-        triggerTabNavigator();
+        if (ev.repeat) return;
+        const isHoldAction = (settings.tabTriggerAction || 'toggle') === 'hold';
+        triggerTabNavigator('', {
+          holdMode: isHoldAction,
+          holdHotkey: isHoldAction ? (settings.tabCustomHotkey || 'Tab') : '',
+        });
         return;
       }
     }
@@ -3460,14 +3557,6 @@
     } else if ((ev.altKey && ev.key === 'ArrowRight') || (ev.metaKey && !ev.ctrlKey && !ev.altKey && ev.key === ']')) {
       ev.preventDefault();
       void stepHistory('forward');
-    } else if (ev.altKey && ev.key.toLowerCase() === 'q' && (settings.tabCustomHotkey || 'Tab') !== 'Alt+Q') {
-      const target = getWheelTargetGroup();
-      if (target) {
-        ev.preventDefault();
-        const col = getRightPaneColumn();
-        const rect = col ? col.getBoundingClientRect() : { left: W.innerWidth - 220, top: 200, width: 320 };
-        openClassicWheelForTarget(target, rect.left + rect.width / 2, rect.top + 180, { holdMode: false });
-      }
     }
   }
 
@@ -3612,6 +3701,10 @@
         richDocAutoStrategy: settings.richDocAutoStrategy || 'auto_yield',
         preventPreviewTabOverwrite: settings.preventPreviewTabOverwrite !== false,
         wheelTriggerButton: settings.wheelTriggerButton || 'middle',
+        wheelTriggerModifier: settings.wheelTriggerModifier || 'none',
+        wheelHoldSensitivity: settings.wheelHoldSensitivity || 'balanced',
+        tabCustomHotkey: settings.tabCustomHotkey || 'Tab',
+        tabTriggerAction: settings.tabTriggerAction || 'toggle',
         updateShouldNotify: updState.shouldNotify,
         updateIgnored: updState.isIgnored,
         ignoredUpdateVersion: settings.ignoredUpdateVersion || '',
@@ -3659,6 +3752,7 @@
       clearTimeout(docProbeTimer);
       clearTimeout(suppressAuxTimer);
       clearTimeout(suppressCtxTimer);
+      clearTimeout(suppressClickTimer);
       if (menuEnhanceRaf) {
         cancelAnimationFrame(menuEnhanceRaf);
         menuEnhanceRaf = 0;
@@ -3672,6 +3766,8 @@
       docProbeTimer = null;
       suppressAuxTimer = null;
       suppressCtxTimer = null;
+      suppressClickTimer = null;
+      lastPointerPos = null;
       for (const rec of pendingRpc.values()) {
         clearTimeout(rec.timer);
         try { rec.resolve({ ok: false, destroyed: true }); } catch {}

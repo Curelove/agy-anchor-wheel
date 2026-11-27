@@ -33,6 +33,7 @@
 
     function onWindowBlur() {
       previewCtrl.hide();
+      if (state?.holdMode) close();
     }
 
     function close() {
@@ -40,6 +41,7 @@
       try { doc.defaultView?.removeEventListener?.('blur', onWindowBlur); } catch {}
       if (!wrapperEl) return;
       doc.removeEventListener('keydown', onKeyDown, true);
+      doc.removeEventListener('keyup', onKeyUp, true);
       const cb = state?.onClose;
       try { wrapperEl.remove(); } catch {}
       wrapperEl = null;
@@ -52,6 +54,22 @@
       if (ev.key === 'Escape') {
         ev.preventDefault();
         ev.stopPropagation();
+        close();
+      }
+    }
+
+    function onKeyUp(ev) {
+      if (!state || !state.holdMode || !state.holdHotkey) return;
+      if (!S?.isHotkeyReleaseEvent?.(ev, state.holdHotkey)) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      ev.stopImmediatePropagation?.();
+      const target = state.hoveredPickItem;
+      if (target && target.path) {
+        const st = state;
+        close();
+        st.onSelect?.(target);
+      } else {
         close();
       }
     }
@@ -184,9 +202,13 @@
         nodeCard.title = row.path;
         if (!row.isCurrent) {
           nodeCard.addEventListener('mouseenter', () => {
+            if (state) state.hoveredPickItem = row;
             previewCtrl.scheduleShow(row, nodeCard.getBoundingClientRect());
           });
-          nodeCard.addEventListener('mouseleave', () => previewCtrl.hide());
+          nodeCard.addEventListener('mouseleave', () => {
+            if (state && state.hoveredPickItem === row) state.hoveredPickItem = null;
+            previewCtrl.hide();
+          });
           nodeCard.addEventListener('click', (e) => {
             e.stopPropagation();
             handlePick(row);
@@ -232,9 +254,13 @@
             `;
             card.title = child.path;
             card.addEventListener('mouseenter', () => {
+              if (state) state.hoveredPickItem = child;
               previewCtrl.scheduleShow(child, card.getBoundingClientRect());
             });
-            card.addEventListener('mouseleave', () => previewCtrl.hide());
+            card.addEventListener('mouseleave', () => {
+              if (state && state.hoveredPickItem === child) state.hoveredPickItem = null;
+              previewCtrl.hide();
+            });
             card.addEventListener('click', (e) => {
               e.stopPropagation();
               handlePick(child);
@@ -298,7 +324,8 @@
       foot.className = 'aw-tree-foot';
       const previewOn = options.isPreviewEnabled ? Boolean(options.isPreviewEnabled()) : true;
       const delayMs = Math.max(0, Math.min(1500, Number(options.getDelayMs?.() ?? 250)));
-      const hotkeyLabel = String(options.getHotkey?.() || 'Tab');
+      const rawHotkey = String(options.getHotkey?.() || 'Tab');
+      const hotkeyLabel = S?.formatHotkeyLabel ? S.formatHotkeyLabel(rawHotkey, { compact: true }) : rawHotkey;
       const prevHint = previewOn ? `悬停 ${delayMs}ms 看开头预览` : '悬停快览已关闭';
       const dirFootParts = [];
       if (curIsDir && curDirMeta) {
@@ -306,7 +333,9 @@
         if (curDirMeta.skippedSubdirCount > 0) dirFootParts.push(`已略过 ${curDirMeta.skippedSubdirCount} 个子文件夹`);
       }
       const dirFootSuffix = dirFootParts.length ? ` · ${dirFootParts.join(' · ')}` : '';
-      foot.textContent = state.closeOnSelect
+      foot.textContent = state.holdMode
+        ? `${prevHint} · 悬停目标松开 ${hotkeyLabel} 跳转 · 空白处松开收起${dirFootSuffix}`
+        : state.closeOnSelect
         ? `${prevHint} · 点击跳转并收起${dirFootSuffix}`
         : `${prevHint} · 点击跳转保持常驻 · 按 ${hotkeyLabel} 关闭${dirFootSuffix}`;
       panel.appendChild(foot);
@@ -317,6 +346,8 @@
       anchorRect = null,
       scope = 'opened_and_outlinks',
       closeOnSelect = false,
+      holdMode = false,
+      holdHotkey = '',
       onSelect,
       onSwitchScope,
       onClose,
@@ -352,6 +383,9 @@
         context,
         scope,
         closeOnSelect: Boolean(closeOnSelect),
+        holdMode: Boolean(holdMode),
+        holdHotkey: String(holdHotkey || ''),
+        hoveredPickItem: null,
         expandedCounts: {},
         onSelect,
         onSwitchScope,
@@ -364,6 +398,7 @@
         if (wrapperEl) wrapperEl.setAttribute('data-open', '1');
       });
       doc.addEventListener('keydown', onKeyDown, true);
+      doc.addEventListener('keyup', onKeyUp, true);
       try { doc.defaultView?.addEventListener?.('blur', onWindowBlur); } catch {}
     }
 
