@@ -141,7 +141,7 @@
       head.innerHTML = `
         <div class="aw-tree-head-title">${S.ICONS.tree}<span>层级导览</span></div>
         <div class="aw-tray" style="padding:2px">
-          <button type="button" class="aw-tray-btn" data-aw-tree-scope="opened_and_outlinks" data-active="${scope !== 'opened_only' ? '1' : '0'}">${curIsDir ? '全部文件' : '全部出链'}</button>
+          <button type="button" class="aw-tray-btn" data-aw-tree-scope="opened_and_outlinks" data-active="${scope !== 'opened_only' ? '1' : '0'}">${curIsDir ? '全部文件' : '全部链接'}</button>
           <button type="button" class="aw-tray-btn" data-aw-tree-scope="opened_only" data-active="${scope === 'opened_only' ? '1' : '0'}">仅已开</button>
         </div>
         <button type="button" class="aw-tray-btn" data-aw-tree-close="1" title="关闭 (Tab / Esc)">${S.ICONS.close}</button>
@@ -196,7 +196,7 @@
           if (state.justUpdated) nodeCard.setAttribute('data-pulse', '1');
         }
         nodeCard.innerHTML = `
-          <span class="aw-tree-role">${S.esc(row.roleLabel)}${row.inferred ? ' · 推' : ''}</span>
+          <span class="aw-tree-role">${S.esc(row.roleLabel)}${row.inferred ? '（自动识别）' : ''}</span>
           <span class="aw-tree-node-label">${S.pickIconForItem(row)}<span>${S.esc(S.baseDisplayName(row.title))}</span></span>
         `;
         nodeCard.title = row.path;
@@ -326,7 +326,7 @@
       const delayMs = Math.max(0, Math.min(1500, Number(options.getDelayMs?.() ?? 250)));
       const rawHotkey = String(options.getHotkey?.() || 'Tab');
       const hotkeyLabel = S?.formatHotkeyLabel ? S.formatHotkeyLabel(rawHotkey, { compact: true }) : rawHotkey;
-      const prevHint = previewOn ? `悬停 ${delayMs}ms 看开头预览` : '悬停快览已关闭';
+      const prevHint = previewOn ? `悬停 ${delayMs}ms 查看开头预览` : '悬停预览已关闭';
       const dirFootParts = [];
       if (curIsDir && curDirMeta) {
         if (curDirMeta.truncated) dirFootParts.push(`已展示前 ${curDirMeta.maxFiles}/${curDirMeta.totalFiles} 文件`);

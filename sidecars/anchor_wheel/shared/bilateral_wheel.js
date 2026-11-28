@@ -66,12 +66,20 @@
     let backdropEl = null;
     let activeState = null;
     let closeHoverTimer = null;
+    let soundwaveInst = null;
+
+    function destroySoundwave() {
+      if (!soundwaveInst) return;
+      try { soundwaveInst.destroy(); } catch {}
+      soundwaveInst = null;
+    }
 
     function onWindowBlur() {
       close();
     }
 
     function close() {
+      destroySoundwave();
       previewCtrl.hide();
       clearTimeout(closeHoverTimer);
       closeHoverTimer = null;
@@ -96,6 +104,7 @@
       clearTimeout(closeHoverTimer);
       closeHoverTimer = null;
       if (shouldClose) {
+        destroySoundwave();
         try { doc.defaultView?.removeEventListener?.('blur', onWindowBlur); } catch {}
         backdropEl && doc.removeEventListener('pointermove', onPointerMove, true);
         backdropEl && doc.removeEventListener('pointerup', onPointerUp, true);
@@ -215,6 +224,7 @@
 
       collapseSubFan();
       st.activeCatIdx = catIdx;
+      soundwaveInst?.setSubmenuAngle?.(st.catAngles[catIdx]);
 
       const stage = backdropEl.querySelector('.aw-bi-stage');
       if (!stage) return;
@@ -313,6 +323,7 @@
       activeState.activeCatIdx = -1;
       activeState.railCatIdx = -1;
       activeState.hoverCommitItem = null;
+      soundwaveInst?.setSubmenuAngle?.(null);
       backdropEl.querySelector('.aw-bi-sublist')?.remove();
       backdropEl.querySelector('.aw-bi-rail')?.remove();
     }
@@ -372,6 +383,7 @@
         return;
       }
       const targetEl = doc.elementFromPoint(ev.clientX, ev.clientY);
+      soundwaveInst?.setPointerOffset?.(ev.clientX - st.cx, ev.clientY - st.cy);
 
       // Update magnetic aim ring on hub rim toward pointer angle
       const aimEl = backdropEl.querySelector('.aw-wheel-aim');
@@ -552,6 +564,7 @@
 
     function renderWheel() {
       if (!activeState || !backdropEl) return;
+      destroySoundwave();
       backdropEl.innerHTML = '';
       const st = activeState;
       const ctx = st.context || {};
@@ -587,7 +600,14 @@
 
       // Parent half-arc
       const parentArc = doc.createElementNS(SVG_NS, 'path');
-      parentArc.setAttribute('d', sectorPath(CX, CY, R_INNER + 6, R_OUTER, st.parentCenterDeg - 78, st.parentCenterDeg + 78, 2));
+      const pA0 = st.parentCenterDeg - 78;
+      const pA1 = st.parentCenterDeg + 78;
+      parentArc.setAttribute('d', sectorPath(CX, CY, R_INNER + 6, R_OUTER, pA0, pA1, 2));
+      parentArc.setAttribute('data-aw-a0', String(pA0));
+      parentArc.setAttribute('data-aw-a1', String(pA1));
+      parentArc.setAttribute('data-aw-gap', '2');
+      parentArc.setAttribute('data-aw-rin', String(R_INNER + 6));
+      parentArc.setAttribute('data-aw-rout', String(R_OUTER));
       parentArc.setAttribute('class', 'aw-wheel-sector aw-bi-parent-arc');
       if (!st.parent?.path) parentArc.setAttribute('data-empty', '1');
       if (st.parent?.path) {
@@ -624,6 +644,11 @@
         const a1 = a0 + st.catStep;
         const pathEl = doc.createElementNS(SVG_NS, 'path');
         pathEl.setAttribute('d', sectorPath(CX, CY, R_INNER + 6, R_OUTER, a0, a1, sectorGap));
+        pathEl.setAttribute('data-aw-a0', String(a0));
+        pathEl.setAttribute('data-aw-a1', String(a1));
+        pathEl.setAttribute('data-aw-gap', String(sectorGap));
+        pathEl.setAttribute('data-aw-rin', String(R_INNER + 6));
+        pathEl.setAttribute('data-aw-rout', String(R_OUTER));
         pathEl.setAttribute('class', 'aw-wheel-sector aw-bi-cat-arc');
         const nItems = cat.items?.length || 0;
         if (!nItems) pathEl.setAttribute('data-empty', '1');
@@ -724,7 +749,7 @@
         const scope = st.scope || ctx.childSourceScope || 'opened_and_outlinks';
         bar.innerHTML = `
           <div class="aw-tray" style="padding:1px">
-            <button type="button" class="aw-tray-btn" data-aw-bi-scope="opened_and_outlinks" data-active="${scope !== 'opened_only' ? '1' : '0'}">${curIsDir ? '全部文件' : '全部出链'}</button>
+            <button type="button" class="aw-tray-btn" data-aw-bi-scope="opened_and_outlinks" data-active="${scope !== 'opened_only' ? '1' : '0'}">${curIsDir ? '全部文件' : '全部链接'}</button>
             <button type="button" class="aw-tray-btn" data-aw-bi-scope="opened_only" data-active="${scope === 'opened_only' ? '1' : '0'}">仅已开</button>
           </div>
           <button type="button" class="aw-wheel-toolbar-btn" data-aw-bi-close="1">关闭</button>
@@ -741,6 +766,17 @@
       }
 
       backdropEl.appendChild(stage);
+      if (options.isSoundwaveEnabled?.() && globalThis.AnchorWheelSoundwave?.mountWheelSoundwave) {
+        stage.setAttribute('data-aw-soundwave', '1');
+        soundwaveInst = globalThis.AnchorWheelSoundwave.mountWheelSoundwave(stage, {
+          document: doc,
+          svgEl: svg,
+          rInner: R_INNER,
+          rOuter: R_OUTER,
+          getScale: () => st.scale || 1,
+          getTheme: options.getTheme,
+        });
+      }
     }
 
     function open({

@@ -20,6 +20,7 @@
   const PORTAL_ID = 'aw-native-portal';
   const OVERLAY_ID = 'aw-native-encoding-overlay';
   const DOC_OVERLAY_ID = 'aw-native-doc-overlay';
+  const EDITOR_OVERLAY_ID = 'aw-native-editor-overlay';
   const UPDATE_PUSH_ID = 'aw-native-update-push';
   const GUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 
@@ -39,6 +40,9 @@
   let activeTabTriggerMode = false;
   let encodingOverlayVisible = false;
   let docOverlayVisible = false;
+  let editorOverlayVisible = false;
+  let editorInstance = null;
+  let editorRenderSeq = 0;
   let docOverlayDismissedKey = '';
   let docOverlayManualForceKey = '';
   let docRenderSeq = 0;
@@ -96,6 +100,7 @@
     applyThemeAttr(D.getElementById(PORTAL_ID));
     applyThemeAttr(D.getElementById(OVERLAY_ID));
     applyThemeAttr(D.getElementById(DOC_OVERLAY_ID));
+    applyThemeAttr(D.getElementById(EDITOR_OVERLAY_ID));
     applyThemeAttr(D.getElementById(UPDATE_PUSH_ID));
   }
 
@@ -169,7 +174,7 @@
     const nulIdx = s.lastIndexOf('\u0000');
     if (nulIdx !== -1) s = s.slice(nulIdx + 1).trim();
     if (!s) return '';
-    s = s.replace(/#L\d+(?:-L?\d+)?$/i, '');
+    s = s.replace(/#L\d+(?::\d+)?(?:-(?:L?\d+)(?::\d+)?)?$/i, '');
     if (/^antigravity-ide:\/\/file/i.test(s)) s = 'file://' + s.replace(/^antigravity-ide:\/\/file/i, '');
     if (/^vscode-file:\/\/vscode-app/i.test(s)) s = 'file://' + s.replace(/^vscode-file:\/\/vscode-app/i, '');
     if (/^file:\/\//i.test(s)) {
@@ -863,9 +868,15 @@
 
   function ensureSharedInstances() {
     const getTheme = () => settings?.theme || 'auto';
+    const isSoundwaveOn = () =>
+      Boolean(
+        W.AnchorWheelSoundwave?.isSoundwaveActiveForSettings
+          ? W.AnchorWheelSoundwave.isSoundwaveActiveForSettings(settings)
+          : settings?.theme === 'soundwave' || settings?.wheelSoundwaveEnabled
+      );
     const getHotkey = () => settings?.tabCustomHotkey || 'Tab';
     if (!wheelInstance && W.AnchorWheelUI) {
-      wheelInstance = W.AnchorWheelUI.createRadialWheel({ document: D, mountRoot: D.body, getTheme });
+      wheelInstance = W.AnchorWheelUI.createRadialWheel({ document: D, mountRoot: D.body, getTheme, isSoundwaveEnabled: isSoundwaveOn });
     }
     if (!bilateralInstance && W.AnchorWheelBilateral) {
       bilateralInstance = W.AnchorWheelBilateral.createBilateralWheel({
@@ -873,6 +884,7 @@
         mountRoot: D.body,
         fetchPreview,
         getTheme,
+        isSoundwaveEnabled: isSoundwaveOn,
         getDelayMs: () => settings.hoverPreviewDelayMs ?? 250,
         getAnimated: () => settings.videoPreviewAnimated !== false,
         isPreviewEnabled: () => settings.hoverPreviewEnabled !== false,
@@ -883,6 +895,7 @@
         document: D,
         mountRoot: D.body,
         getTheme,
+        isSoundwaveEnabled: isSoundwaveOn,
       });
     }
     if (!aeTreeInstance && W.AnchorWheelTree) {
@@ -1366,7 +1379,7 @@
       isLiveFallback,
       emptyHint: isLiveFallback
         ? (group.children?.length ? '当前已打开标签' : '点击下方设为母页或点 MD 链接')
-        : '点击 MD 链接即收编进本组',
+        : '点击文档内链接即可加入本组',
       onSelect: async (picked) => {
         if (!isLiveFallback) {
           await callRpc('sessionOp', { op: 'touchChild', groupId: group.id, path: picked.path });
@@ -1407,7 +1420,7 @@
             if (res.ok && res.session) session = res.session;
             applyNonDestructiveTabFolding();
             renderStrip();
-            showToast(`已设为优先母页：${baseName(activeFilePath)}`);
+            showToast(`已固定为母页：${baseName(activeFilePath)}`);
           }
         : null,
       onShowOutlinks: activeFilePath
@@ -1732,6 +1745,289 @@
     }
     showToast(`打开系统文件夹失败：${res?.error || (isDirectory ? '无法访问目录' : '无法定位文件')}`);
     return false;
+  }
+
+  async function copyTextToClipboardUi(text, successMsg = '已复制内容') {
+    const val = String(text ?? '');
+    if (!val) return false;
+    try {
+      if (W.navigator?.clipboard?.writeText) {
+        await W.navigator.clipboard.writeText(val);
+        if (successMsg) showToast(successMsg);
+        return true;
+      }
+    } catch {}
+    try {
+      const ta = markOwned(D.createElement('textarea'));
+      ta.value = val;
+      ta.style.cssText = 'position:fixed;left:-9999px;top:-9999px;opacity:0;';
+      D.body.appendChild(ta);
+      ta.select();
+      D.execCommand('copy');
+      ta.remove();
+      if (successMsg) showToast(successMsg);
+      return true;
+    } catch {
+      showToast('复制失败');
+      return false;
+    }
+  }
+
+  function computeDisplayRelativePath(absPath) {
+    const clean = String(absPath || '').trim().replace(/\\/g, '/');
+    if (!clean) return '';
+    const { reduxStore } = discoverHostBridge();
+    const roots = discoverWorkspaceRoots(reduxStore);
+    for (const r of roots) {
+      const normRoot = String(r || '').replace(/\\/g, '/').replace(/\/+$/, '');
+      if (!normRoot) continue;
+      if (clean.toLowerCase().startsWith(normRoot.toLowerCase() + '/')) {
+        return clean.slice(normRoot.length + 1);
+      }
+    }
+    return clean;
+  }
+
+  function insertTextIntoHostChatComposer(snippet) {
+    const text = String(snippet || '');
+    if (!text) return false;
+    const ce =
+      D.querySelector('[data-testid="agent-input-box"] [contenteditable="true"]') ||
+      D.querySelector('#antigravity\\.agentSidePanelInputBox [contenteditable="true"]') ||
+      D.querySelector('[data-testid="agent-input-box"] textarea');
+    if (!ce) return false;
+
+    const existing = String('value' in ce ? ce.value : ce.textContent || '');
+    const needsNewline = existing.length > 0 && !/\n$/.test(existing) && text.includes('\n');
+    const needsSpace = !needsNewline && existing.length > 0 && !/\s$/.test(existing);
+    const payload = `${needsNewline ? '\n' : needsSpace ? ' ' : ''}${text}`;
+
+    try { ce.focus?.(); } catch {}
+
+    if ('value' in ce && typeof ce.value === 'string') {
+      const start = typeof ce.selectionStart === 'number' ? ce.selectionStart : ce.value.length;
+      const end = typeof ce.selectionEnd === 'number' ? ce.selectionEnd : ce.value.length;
+      ce.value = ce.value.slice(0, start) + payload + ce.value.slice(end);
+      try {
+        ce.dispatchEvent(new Event('input', { bubbles: true }));
+      } catch {}
+      return true;
+    }
+
+    let inserted = false;
+    try {
+      if (typeof D.execCommand === 'function') {
+        const before = ce.textContent;
+        const ok = D.execCommand('insertText', false, payload);
+        if (ok && ce.textContent !== before) inserted = true;
+      }
+    } catch {}
+
+    if (!inserted) {
+      ce.textContent = existing + payload;
+      try {
+        const EvCtor = W.InputEvent || W.Event;
+        if (typeof EvCtor === 'function') {
+          ce.dispatchEvent(new EvCtor('input', { bubbles: true, cancelable: false, data: payload, inputType: 'insertText' }));
+        }
+      } catch {}
+    }
+    return true;
+  }
+
+  function resolveSelectionLineRangeInRightPane(sel) {
+    if (!sel || sel.rangeCount === 0) return { lineStart: null, lineEnd: null };
+    const findLineFromNode = (node) => {
+      let el = node && node.nodeType === 1 ? node : node?.parentElement;
+      for (let d = 0; d < 6 && el; d++, el = el.parentElement) {
+        const attr =
+          el.getAttribute?.('data-line-number') ||
+          el.getAttribute?.('data-aw-line') ||
+          el.getAttribute?.('data-line') ||
+          '';
+        if (/^\d+$/.test(attr)) return Number(attr);
+        const prevNum = el.previousElementSibling?.getAttribute?.('data-line-number') || '';
+        if (/^\d+$/.test(prevNum)) return Number(prevNum);
+      }
+      return null;
+    };
+    const r = sel.getRangeAt(0);
+    const sLine = findLineFromNode(r.startContainer);
+    const eLine = findLineFromNode(r.endContainer);
+    if (sLine && eLine) {
+      return { lineStart: Math.min(sLine, eLine), lineEnd: Math.max(sLine, eLine) };
+    }
+    if (sLine || eLine) {
+      const single = sLine || eLine;
+      return { lineStart: single, lineEnd: single };
+    }
+    return { lineStart: null, lineEnd: null };
+  }
+
+  function extractRightSelectionContext(rawEl) {
+    if (settings.rightPaneSelectionMenuEnabled === false) return null;
+    const el = rawEl && rawEl.nodeType === 1 ? rawEl : rawEl?.parentElement;
+    if (!el || !isInsideRightContent(el)) return null;
+    // Yield completely inside editable fields, Companion menus, file pills, links, tree items & breadcrumbs
+    if (
+      el.closest?.(
+        'textarea, input, select, [contenteditable="true"], .monaco-editor, .cm-editor, .ag-omni-menu, .ag-omni-autolink, [role="treeitem"], button.inline-pill, [data-testid="entity-pill"], a[href], div[data-uri], .aw-editor-shell'
+      )
+    ) {
+      return null;
+    }
+    if (extractLinkMetaFromTarget(el) || extractContextTargetFromEvent(el)) return null;
+
+    let sel = null;
+    let selectedText = '';
+    try {
+      sel = W.getSelection?.() || null;
+      selectedText = String(sel?.toString?.() || '');
+    } catch {}
+    if (!selectedText || !selectedText.trim()) return null;
+
+    const col = getRightPaneColumn();
+    const contentWrap = getContentContainer(col);
+    if (contentWrap && sel?.anchorNode && !contentWrap.contains(sel.anchorNode)) {
+      return null;
+    }
+
+    const { lineStart, lineEnd } = resolveSelectionLineRangeInRightPane(sel);
+    return {
+      selectedText,
+      filePath: activeFilePath || '',
+      title: activeFilePath ? baseName(activeFilePath) : '当前侧边栏内容',
+      lineStart,
+      lineEnd,
+      canEdit: Boolean(
+        activeFilePath &&
+        !activeIsDirectory &&
+        W.AnchorWheelEditor?.isEditableTextPath?.(activeFilePath)
+      ),
+    };
+  }
+
+  function formatSelectionQuoteForComposer({ selectedText, filePath, lineStart, lineEnd }) {
+    const cleanTxt = String(selectedText || '').replace(/\r\n/g, '\n').trimEnd();
+    const relPath = filePath ? computeDisplayRelativePath(filePath) : '';
+    const lineSuffix = lineStart
+      ? lineEnd && lineEnd > lineStart
+        ? `#L${lineStart}-L${lineEnd}`
+        : `#L${lineStart}`
+      : '';
+    const refHead = relPath ? `@${relPath}${lineSuffix}` : '';
+    if (!cleanTxt.includes('\n') && cleanTxt.length <= 90) {
+      return refHead ? `${refHead} 「${cleanTxt.trim()}」 ` : `「${cleanTxt.trim()}」 `;
+    }
+    const ext = filePath ? (filePath.split('.').pop() || '').toLowerCase() : '';
+    const lang = /^[a-z0-9]{1,12}$/.test(ext) ? ext : '';
+    return [
+      refHead ? `参考 ${refHead} 中的片段：` : '参考以下片段：',
+      `\`\`\`${lang}`,
+      cleanTxt.slice(0, 4000),
+      '```',
+      '',
+    ].join('\n');
+  }
+
+  function openRightSelectionContextMenu(selCtx, x, y) {
+    if (!selCtx?.selectedText) return false;
+    closeAllNavigators();
+    closePopover();
+    activePopoverName = 'sel-ctx-menu';
+
+    const portal = getPortalRoot();
+    const menu = markOwned(D.createElement('div'));
+    menu.className = 'aw-ctx-menu';
+    menu.setAttribute('data-aw-role', 'selection-ctx-menu');
+    menu.setAttribute('role', 'menu');
+    menu.addEventListener('click', (ev) => ev.stopPropagation());
+    menu.addEventListener('mousedown', (ev) => ev.stopPropagation());
+    menu.addEventListener('contextmenu', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+    });
+
+    const esc = (s) => (S?.esc ? S.esc(s) : String(s || ''));
+    const lineHint = selCtx.lineStart
+      ? selCtx.lineEnd && selCtx.lineEnd > selCtx.lineStart
+        ? ` · 第 ${selCtx.lineStart}-${selCtx.lineEnd} 行`
+        : ` · 第 ${selCtx.lineStart} 行`
+      : '';
+    const header = markOwned(D.createElement('div'));
+    header.className = 'aw-ctx-header';
+    header.innerHTML = `${S.pickIconForItem(selCtx.filePath || selCtx.title)}<span class="aw-ctx-header-name">${esc(selCtx.title)}${esc(lineHint)}</span>`;
+    menu.appendChild(header);
+
+    const addItem = (role, iconHtml, text, kbdHint, onClick) => {
+      const btn = markOwned(D.createElement('button'));
+      btn.type = 'button';
+      btn.className = 'aw-host-menuitem';
+      btn.setAttribute('role', 'menuitem');
+      btn.setAttribute('data-aw-sel-act', role);
+      btn.innerHTML = `${iconHtml}<span class="aw-host-menuitem-label">${esc(text)}</span>${kbdHint ? `<span class="aw-ctx-kbd">${esc(kbdHint)}</span>` : ''}`;
+      btn.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        closePopover();
+        void onClick();
+      });
+      menu.appendChild(btn);
+    };
+
+    const quoteIcon =
+      W.AnchorWheelEditor?.EDITOR_ICONS?.sendAi ||
+      '<svg class="aw-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>';
+    const editIcon =
+      W.AnchorWheelEditor?.EDITOR_ICONS?.edit ||
+      '<svg class="aw-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>';
+
+    addItem('copy-selection', S.ICONS.copy, '复制选中内容', S.isMacPlatform?.() ? '⌘C' : 'Ctrl+C', () =>
+      copyTextToClipboardUi(selCtx.selectedText, '已复制选中内容')
+    );
+
+    addItem('quote-to-chat', quoteIcon, '引用选中片段到输入框', '@', async () => {
+      const formatted = formatSelectionQuoteForComposer(selCtx);
+      if (insertTextIntoHostChatComposer(formatted)) {
+        showToast('已将选中片段填入对话输入框');
+      } else {
+        await copyTextToClipboardUi(formatted, '已复制引用片段，可直接粘贴到对话框');
+      }
+    });
+
+    if (selCtx.canEdit) {
+      const sep = markOwned(D.createElement('div'));
+      sep.className = 'aw-ctx-sep';
+      menu.appendChild(sep);
+      addItem('edit-locate', editIcon, '进入编辑并定位到此段', '', () =>
+        openEditorOverlay({
+          initialLocate: {
+            lineStart: selCtx.lineStart,
+            selectionText: selCtx.selectedText,
+          },
+        })
+      );
+    }
+
+    if (selCtx.filePath && isLocalAbsolutePath(selCtx.filePath)) {
+      const sep2 = markOwned(D.createElement('div'));
+      sep2.className = 'aw-ctx-sep';
+      menu.appendChild(sep2);
+      addItem('copy-path', S.ICONS.file, '复制文件路径', '', () =>
+        copyPathToClipboard(selCtx.filePath, selCtx.title)
+      );
+    }
+
+    menu.style.left = `${Math.max(8, x)}px`;
+    menu.style.top = `${Math.max(8, y)}px`;
+    portal.appendChild(menu);
+
+    const r = menu.getBoundingClientRect();
+    const vw = W.innerWidth || 1200;
+    const vh = W.innerHeight || 800;
+    menu.style.left = `${Math.max(8, Math.min(vw - r.width - 8, x))}px`;
+    menu.style.top = `${Math.max(8, Math.min(vh - r.height - 8, y))}px`;
+    return true;
   }
 
   async function copyPathToClipboard(text, label = '') {
@@ -2091,7 +2387,7 @@
     const backInit = activeFileLinks.backlinks || [];
     const dirInit = isDirMode && Array.isArray(cachedNavContext?.current?.children) ? cachedNavContext.current.children : [];
     const outInit = isDirMode ? dirInit : activeFileLinks.outlinks || [];
-    const secondTabLabel = isDirMode ? '目录文件' : '本文出链';
+    const secondTabLabel = isDirMode ? '目录文件' : '文中链接';
     let tab = forcedTab || (isDirMode ? (dirInit.length > 0 ? 'outlinks' : 'backlinks') : backInit.length > 0 ? 'backlinks' : outInit.length > 0 ? 'outlinks' : 'backlinks');
     let filterText = '';
     const esc = (s) => (S?.esc ? S.esc(s) : String(s || ''));
@@ -2180,7 +2476,7 @@
               </button>`;
               })
               .join('')
-          : `<div class="aw-link-row-snippet">${out.length ? '无匹配的出链记录。' : '当前文档暂无本地出链。'}</div>`;
+          : `<div class="aw-link-row-snippet">${out.length ? '无匹配的链接记录。' : '当前文档暂无本地链接。'}</div>`;
       }
 
       for (const jBtn of bodyEl.querySelectorAll('[data-aw-jump]')) {
@@ -2346,12 +2642,17 @@
     if (!el || el.nodeType !== 1 || el.getAttribute?.('data-aw-owned') === '1') return false;
     if (!el.querySelector?.('[data-testid="more-actions-overflow"]')) return false;
     if (
+      el.matches?.(
+        '.file-viewer-root, [data-viewer-tab-id], [data-active-file-uri], .monaco-editor, .cm-editor, .markdown-body'
+      ) ||
       el.querySelector?.(
-        '[data-testid="binary-file-no-preview"], [data-testid="artifact-pdf-no-preview"], [data-testid*="no-preview"], [data-omni-aux-error], pre, code, iframe, canvas, table, .monaco-editor, .cm-editor, .markdown-body'
+        '[data-testid="binary-file-no-preview"], [data-testid="artifact-pdf-no-preview"], [data-testid*="no-preview"], [data-omni-aux-error], .file-viewer-root, .code-line, [data-viewer-tab-id], [data-active-file-uri], [data-testid="code-gutter"], [data-line-number], pre, code, iframe, canvas, table, .monaco-editor, .cm-editor, .markdown-body'
       )
     ) {
       return false;
     }
+    const rect = el.getBoundingClientRect?.();
+    if (rect && rect.height > 96) return false;
     const txt = (el.textContent || '').slice(0, 900);
     if (UNSUPPORTED_HOST_TEXT_RE.test(txt)) return false;
     return true;
@@ -2474,7 +2775,11 @@
         )
       ) {
         hasRichVisual = true;
-      } else if (tag === 'PRE' || tag === 'CODE' || el.matches?.('.monaco-editor, .cm-editor, [data-line-number]')) {
+      } else if (
+        tag === 'PRE' ||
+        tag === 'CODE' ||
+        el.matches?.('.monaco-editor, .cm-editor, [data-line-number], .file-viewer-root, .code-line, [data-viewer-tab-id], [data-testid="code-gutter"]')
+      ) {
         hasRawCode = true;
       }
 
@@ -2562,6 +2867,111 @@
     };
     for (const ch of Array.from(rootEl.children || [])) restoreEl(ch);
     for (const desc of Array.from(rootEl.querySelectorAll?.('[data-aw-orig-hidden="1"]') || [])) restoreEl(desc);
+  }
+
+  function closeEditorOverlay({ restoreSiblings = true } = {}) {
+    editorRenderSeq++;
+    try { editorInstance?.destroy?.(); } catch {}
+    editorInstance = null;
+    const existing = D.getElementById(EDITOR_OVERLAY_ID);
+    if (existing) {
+      try { existing.remove(); } catch {}
+    }
+    editorOverlayVisible = false;
+    if (restoreSiblings && !docOverlayVisible && !encodingOverlayVisible) {
+      restoreNativeContentSiblings(getContentContainer(getRightPaneColumn()));
+    }
+  }
+
+  async function openEditorOverlay({ initialLocate = null } = {}) {
+    if (!activeFilePath || activeIsDirectory || !W.AnchorWheelEditor?.mountTextEditor) return false;
+    if (!W.AnchorWheelEditor.isEditableTextPath(activeFilePath)) {
+      showToast('当前文件类型不支持在侧边栏作为纯文本直接编辑');
+      return false;
+    }
+    const col = getRightPaneColumn();
+    const contentWrap = getContentContainer(col);
+    if (!contentWrap) return false;
+
+    if (editorOverlayVisible && editorInstance) {
+      if (initialLocate) editorInstance.locateSelection?.(initialLocate);
+      return true;
+    }
+
+    // Close doc/encoding overlays cleanly before mounting editor
+    if (docOverlayVisible) closeDocOverlay({ dismiss: false });
+    if (encodingOverlayVisible) {
+      D.getElementById(OVERLAY_ID)?.remove();
+      encodingOverlayVisible = false;
+    }
+
+    const targetPath = activeFilePath;
+    const targetKey = normKey(targetPath);
+    const mySeq = ++editorRenderSeq;
+    const { mountParent } = resolveDocMountLayout(contentWrap);
+    if (!mountParent) return false;
+
+    let host = D.getElementById(EDITOR_OVERLAY_ID);
+    if (!host || host.parentElement !== mountParent) {
+      try { host?.remove(); } catch {}
+      host = markOwned(D.createElement('div'));
+      host.id = EDITOR_OVERLAY_ID;
+      host.className = 'aw-doc-overlay-host aw-editor-overlay-host';
+      mountParent.appendChild(host);
+    }
+    applyThemeAttr(host);
+    hideNativeContentSiblings(mountParent, new Set([EDITOR_OVERLAY_ID]));
+    editorOverlayVisible = true;
+    host.innerHTML = `<div class="aw-doc-loading-card">正在打开编辑视图：${S?.esc ? S.esc(baseName(targetPath)) : baseName(targetPath)} ...</div>`;
+    renderStrip();
+
+    const res = await callRpc('openForEdit', { path: targetPath }, 10000);
+    if (destroyed || mySeq !== editorRenderSeq || normKey(activeFilePath) !== targetKey) {
+      return false;
+    }
+    if (!res || !res.ok) {
+      closeEditorOverlay({ restoreSiblings: true });
+      renderStrip();
+      showToast(res?.error || '无法在侧边栏打开编辑视图');
+      return false;
+    }
+
+    try { editorInstance?.destroy?.(); } catch {}
+    editorInstance = W.AnchorWheelEditor.mountTextEditor(host, res, {
+      initialLocate,
+      getDisplayPath: (p) => computeDisplayRelativePath(p),
+      onSave: (payload) => callRpc('saveEditedFile', payload, 10000),
+      onReload: (p) => callRpc('openForEdit', { path: p }, 10000),
+      onNotify: (msg) => showToast(msg),
+      onCopyText: (txt, msg) => copyTextToClipboardUi(txt, msg),
+      onSendToAi: async (promptText) => {
+        if (insertTextIntoHostChatComposer(promptText)) {
+          showToast('已将此文档的修改记录填入对话输入框');
+        } else {
+          await copyTextToClipboardUi(promptText, '已复制修改记录，可直接粘贴给 AI');
+        }
+      },
+      onExit: ({ saved }) => {
+        closeEditorOverlay({ restoreSiblings: true });
+        renderStrip();
+        if (saved) {
+          void refreshState();
+        }
+      },
+    });
+    try {
+      mountParent.scrollTop = 0;
+      contentWrap.scrollTop = 0;
+    } catch {}
+    if (!initialLocate) {
+      requestAnimationFrame(() => {
+        if (!destroyed && editorOverlayVisible) {
+          editorInstance?.focus?.({ preventScroll: true });
+        }
+      });
+    }
+    renderStrip();
+    return true;
   }
 
   function closeDocOverlay({ dismiss = false } = {}) {
@@ -2837,7 +3247,10 @@
       onSave: async (next) => {
         const res = await callRpc('updateSettings', { settings: next });
         if (res.ok && res.settings) {
-          settings = res.settings;
+          settings = {
+            ...res.settings,
+            wheelSoundwaveByTheme: res.settings.wheelSoundwaveByTheme || next.wheelSoundwaveByTheme,
+          };
         } else {
           settings = { ...settings, ...next };
         }
@@ -2924,7 +3337,7 @@
     if (activeGrp) {
       const pill = markOwned(D.createElement('button'));
       pill.className = 'aw-anchor-pill';
-      pill.title = `优先母页：${activeGrp.anchorPath}\n点击回母页，点数字呼出轮盘；支持直接拖入文件链接`;
+      pill.title = `本组母页：${activeGrp.anchorPath}\n点击回母页，点数字呼出轮盘；支持直接拖入文件链接`;
       pill.innerHTML = `${S.ICONS.anchor}<span class="aw-anchor-pill-name"></span><span class="aw-count-badge">${activeGrp.children?.length || 0}</span>`;
       pill.querySelector('.aw-anchor-pill-name').textContent = baseName(activeGrp.anchorTitle || activeGrp.anchorPath);
 
@@ -2975,7 +3388,7 @@
       const pinBtn = markOwned(D.createElement('button'));
       pinBtn.className = 'aw-status-pill';
       pinBtn.textContent = '设为母页';
-      pinBtn.title = activeIsDirectory ? '把当前文件夹钉为优先母页，折叠收编打开的子文件' : '把当前文档钉为优先母页，折叠收编关联子标签';
+      pinBtn.title = activeIsDirectory ? '将当前文件夹固定为母页，自动折叠组内子文件标签' : '将当前文档固定为母页，自动折叠组内关联子标签';
       pinBtn.addEventListener('click', async () => {
         const res = await callRpc('sessionOp', {
           op: 'pinAnchor',
@@ -2992,7 +3405,7 @@
       const unpinBtn = markOwned(D.createElement('button'));
       unpinBtn.className = 'aw-status-pill';
       unpinBtn.textContent = '解绑';
-      unpinBtn.title = '取消当前优先母页分组，释放全部折叠标签';
+      unpinBtn.title = '取消当前母页分组，释放全部折叠标签';
       unpinBtn.addEventListener('click', async () => {
         const res = await callRpc('sessionOp', { op: 'unpinGroup', groupId: roleInfo.group.id });
         if (res.ok && res.session) session = res.session;
@@ -3007,6 +3420,42 @@
     strip.appendChild(spacer);
 
     if (activeFilePath) {
+      if (
+        !activeIsDirectory &&
+        W.AnchorWheelEditor?.isEditableTextPath?.(activeFilePath) &&
+        !getActiveRichDocMeta()?.isBinaryDoc
+      ) {
+        const editBtn = markOwned(D.createElement('button'));
+        editBtn.className = 'aw-status-pill';
+        editBtn.setAttribute('data-aw-role', 'edit-btn');
+        if (editorOverlayVisible) editBtn.setAttribute('data-has-links', '1');
+        const editIco =
+          W.AnchorWheelEditor?.EDITOR_ICONS?.edit ||
+          '<svg class="aw-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>';
+        editBtn.innerHTML = `${editIco}<span>${editorOverlayVisible ? '正在编辑' : '编辑'}</span>`;
+        editBtn.title = editorOverlayVisible
+          ? '退出侧边栏编辑并返回官方默认页面'
+          : '在侧边栏直接编辑此文档（自动保存并记录差异供 AI 查看）';
+        editBtn.addEventListener('mousedown', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+        });
+        editBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          if (editorOverlayVisible) {
+            const exitBtn = D.querySelector(`#${EDITOR_OVERLAY_ID} #aw-ed-exit`);
+            if (exitBtn) exitBtn.click();
+            else {
+              closeEditorOverlay({ restoreSiblings: true });
+              renderStrip();
+            }
+          } else {
+            void openEditorOverlay();
+          }
+        });
+        strip.appendChild(editBtn);
+      }
+
       const treeBtn = markOwned(D.createElement('button'));
       treeBtn.className = 'aw-status-pill';
       treeBtn.setAttribute('data-aw-role', 'tree-btn');
@@ -3030,8 +3479,8 @@
         linksBtn.textContent = backCount > 0 ? `被 ${backCount} 引用 · ${dirCount} 文件` : `目录 ${dirCount} 文件`;
         linksBtn.title = '查看文件夹直属文件与反向引用';
       } else {
-        linksBtn.textContent = backCount > 0 ? `被 ${backCount} 引用` : `出链 ${outCount}`;
-        linksBtn.title = '查看反向引用与文档出链';
+        linksBtn.textContent = backCount > 0 ? `被 ${backCount} 引用` : `链接 ${outCount}`;
+        linksBtn.title = '查看反向引用与文中本地链接';
       }
       linksBtn.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -3140,6 +3589,8 @@
     const switchedConv = Boolean(lastConversationId && curCid !== lastConversationId);
     if (switchedConv) {
       // Isolate session state cleanly when user switches Antigravity conversations
+      if (editorInstance?.isDirty?.()) void editorInstance.flushIfValid?.();
+      closeEditorOverlay({ restoreSiblings: true });
       closeDocOverlay({ dismiss: false });
       docOverlayDismissedKey = '';
       docOverlayManualForceKey = '';
@@ -3204,6 +3655,8 @@
     const prevIsDir = activeIsDirectory;
     const changedFile = !isSameFilePath(curFile, activeFilePath) || curIsDir !== activeIsDirectory;
     if (changedFile) {
+      if (editorInstance?.isDirty?.()) void editorInstance.flushIfValid?.();
+      closeEditorOverlay({ restoreSiblings: true });
       const oldOv = D.getElementById(OVERLAY_ID);
       if (oldOv) void toggleEncodingRepairOverlay('');
       closeDocOverlay({ dismiss: false });
@@ -3760,6 +4213,14 @@
     }
     // Shift + Right-click acts as an explicit escape hatch to always open the host's native context menu
     if (ev.shiftKey && !ev.altKey && !ev.ctrlKey && !ev.metaKey) return;
+    const selCtx = extractRightSelectionContext(ev.target);
+    if (selCtx) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      ev.stopImmediatePropagation();
+      openRightSelectionContextMenu(selCtx, ev.clientX, ev.clientY);
+      return;
+    }
     const ctxTarget = extractContextTargetFromEvent(ev.target);
     if (!ctxTarget) return;
     ev.preventDefault();
@@ -4168,7 +4629,13 @@
           scheduleSync();
           return;
         }
-        if (docOverlayVisible && contentEl) {
+        if (editorOverlayVisible && contentEl) {
+          const { mountParent } = resolveDocMountLayout(contentEl);
+          const edOv = D.getElementById(EDITOR_OVERLAY_ID);
+          if (edOv && edOv.parentElement === mountParent) {
+            hideNativeContentSiblings(mountParent, new Set([EDITOR_OVERLAY_ID]));
+          }
+        } else if (docOverlayVisible && contentEl) {
           const { mountParent } = resolveDocMountLayout(contentEl);
           const docOv = D.getElementById(DOC_OVERLAY_ID);
           if (!docOv || docOv.parentElement !== mountParent) {
@@ -4204,6 +4671,7 @@
         activeIsDirectory,
         dirChildCount: activeIsDirectory ? (cachedNavContext?.current?.children?.length || 0) : 0,
         docOverlayVisible,
+        editorOverlayVisible,
         activeDocFormat: lastRenderedDocData?.format || '',
         docOutlineCount: lastRenderedDocData?.outline?.length || 0,
         hostPreviewState: contentWrap ? inspectHostFileViewState(contentWrap) : 'missing',
@@ -4289,6 +4757,7 @@
       try { storeUnsubscribe?.(); } catch {}
       storeUnsubscribe = null;
       domObserver?.disconnect?.();
+      closeEditorOverlay({ restoreSiblings: false });
       closeDocOverlay({ dismiss: false });
       closeAllNavigators();
       closeUpdatePushCard();

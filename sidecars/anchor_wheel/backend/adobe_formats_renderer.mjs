@@ -848,7 +848,7 @@ export function parseAepDocument(filePath, stat, { snippetOnly = false } = {}) {
     { label: '导入素材', value: `${Math.max(state.footage.length, footageItems.length)} 项` },
     { label: '文件夹 / 图层', value: `${folders.length} 目录 · ${state.layers.filter((l) => l.name).length} 图层` },
     { label: '表达式数量', value: `${state.expressions.length} 条` },
-    { label: '工程体积', value: `${formatBytes(stat.size)}${partialRead ? ' (头部快览)' : ''}` },
+    { label: '工程体积', value: `${formatBytes(stat.size)}${partialRead ? ' (头部摘要)' : ''}` },
     { label: '修改时间', value: xmp.modifyDate || xmp.createDate || '—' },
   ]);
 

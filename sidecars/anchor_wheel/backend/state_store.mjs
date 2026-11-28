@@ -3,6 +3,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { canonicalKey, normalizeFilePath } from './security.mjs';
 
+export const DOC_CODE_SEED_EXTS = Object.freeze([
+  'js', 'mjs', 'cjs', 'ts', 'mts', 'cts', 'tsx', 'jsx', 'vue', 'svelte',
+  'html', 'htm', 'css', 'scss', 'less', 'xml', 'toml', 'ini', 'conf', 'jsonc',
+  'py', 'sh', 'bash', 'ps1', 'bat', 'cmd', 'sql', 'log',
+]);
+
 export const DEFAULT_CATEGORY_RULES = Object.freeze([
   Object.freeze({
     id: 'image',
@@ -14,7 +20,7 @@ export const DEFAULT_CATEGORY_RULES = Object.freeze([
     label: '视频',
     extensions: Object.freeze([
       'mp4', 'm4v', 'mov', 'qt', 'mkv', 'webm', 'avi', 'flv', 'f4v', 'wmv', 'asf',
-      'ts', 'mts', 'm2ts', 'mpg', 'mpeg', 'ogv', '3gp', 'rmvb', 'vob', 'mxf',
+      'mts', 'm2ts', 'mpg', 'mpeg', 'ogv', '3gp', 'rmvb', 'vob', 'mxf',
     ]),
   }),
   Object.freeze({
@@ -24,9 +30,34 @@ export const DEFAULT_CATEGORY_RULES = Object.freeze([
       'md', 'mdx', 'txt', 'pdf', 'docx', 'docm', 'dotx', 'doc', 'xlsx', 'xlsm', 'xltx', 'xls',
       'pptx', 'ppsx', 'potx', 'ppt', 'odt', 'ods', 'odp', 'rtf', 'epub', 'eml', 'ipynb',
       'sqlite', 'sqlite3', 'db', 'srt', 'ass', 'ssa', 'vtt', 'lrc', 'json', 'jsonl', 'ndjson', 'yaml', 'yml', 'csv', 'tsv',
+      'js', 'mjs', 'cjs', 'ts', 'cts', 'tsx', 'jsx', 'vue', 'svelte',
+      'html', 'htm', 'css', 'scss', 'less', 'xml', 'toml', 'ini', 'conf', 'jsonc',
+      'py', 'sh', 'bash', 'ps1', 'bat', 'cmd', 'sql', 'log',
     ]),
   }),
 ]);
+
+export const NON_SOUNDWAVE_THEMES = Object.freeze(['auto', 'obsidian', 'warm', 'crystal', 'alabaster']);
+
+export const DEFAULT_WHEEL_SOUNDWAVE_BY_THEME = Object.freeze({
+  auto: false,
+  obsidian: false,
+  warm: false,
+  crystal: false,
+  alabaster: false,
+});
+
+export function sanitizeWheelSoundwaveByTheme(raw, base = DEFAULT_WHEEL_SOUNDWAVE_BY_THEME) {
+  const src = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  const fallback = base && typeof base === 'object' && !Array.isArray(base) ? base : DEFAULT_WHEEL_SOUNDWAVE_BY_THEME;
+  const out = {};
+  for (const key of NON_SOUNDWAVE_THEMES) {
+    if (typeof src[key] === 'boolean') out[key] = src[key];
+    else if (typeof fallback[key] === 'boolean') out[key] = fallback[key];
+    else out[key] = false;
+  }
+  return out;
+}
 
 export const DEFAULT_MAIN_CHAT_LAYOUT_SLOTS = Object.freeze({
   top_left: 'collapse_left',
@@ -68,9 +99,13 @@ export const DEFAULT_SETTINGS = Object.freeze({
   encodingAutoDetect: true,
   foldChildTabsInNativeBar: true,
   preventPreviewTabOverwrite: true,
+  rightPaneSelectionMenuEnabled: true,
+  wheelSoundwaveEnabled: false,
+  wheelSoundwaveByTheme: DEFAULT_WHEEL_SOUNDWAVE_BY_THEME,
+  docCodeExtsSeeded: true,
   autoCheckUpdates: true,
   ignoredUpdateVersion: '',
-  theme: 'auto', // 'auto' | 'obsidian' | 'warm' | 'crystal' | 'alabaster'
+  theme: 'auto', // 'auto' | 'obsidian' | 'warm' | 'crystal' | 'alabaster' | 'soundwave'
 });
 
 const VALID_TRIGGERS = new Set(['middle_or_badge', 'right_drag', 'hotkey_only', 'badge_only']);
@@ -82,7 +117,7 @@ const VALID_TAB_MODES = new Set(['ae_tree', 'bilateral_wheel', 'classic_wheel', 
 const VALID_TAB_ACTIONS = new Set(['toggle', 'hold']);
 const VALID_CHILD_SCOPES = new Set(['opened_and_outlinks', 'opened_only']);
 const VALID_PARENT_DIRS = new Set(['left', 'top', 'right', 'bottom']);
-const VALID_THEMES = new Set(['auto', 'obsidian', 'warm', 'crystal', 'alabaster']);
+const VALID_THEMES = new Set(['auto', 'obsidian', 'warm', 'crystal', 'alabaster', 'soundwave']);
 const VALID_SECTORS = new Set([4, 6, 8]);
 const VALID_DOC_STRATEGIES = new Set(['auto_yield', 'always_plugin', 'manual_only']);
 const LAYOUT_SLOT_KEYS = Object.freeze(['top_left', 'mid_left', 'bottom_left', 'top_right', 'bottom_right']);
@@ -241,6 +276,7 @@ export function sanitizeSettings(raw, base = DEFAULT_SETTINGS) {
     ...base,
     categoryRules: sanitizeCategoryRules(base.categoryRules, DEFAULT_CATEGORY_RULES),
     mainChatLayoutSlots: sanitizeMainChatLayoutSlots(base.mainChatLayoutSlots, DEFAULT_MAIN_CHAT_LAYOUT_SLOTS),
+    wheelSoundwaveByTheme: sanitizeWheelSoundwaveByTheme(base.wheelSoundwaveByTheme, DEFAULT_WHEEL_SOUNDWAVE_BY_THEME),
   };
   if (src.maxChildrenPerGroup !== undefined) {
     const n = Math.round(Number(src.maxChildrenPerGroup));
@@ -319,12 +355,34 @@ export function sanitizeSettings(raw, base = DEFAULT_SETTINGS) {
   if (typeof src.encodingAutoDetect === 'boolean') next.encodingAutoDetect = src.encodingAutoDetect;
   if (typeof src.foldChildTabsInNativeBar === 'boolean') next.foldChildTabsInNativeBar = src.foldChildTabsInNativeBar;
   if (typeof src.preventPreviewTabOverwrite === 'boolean') next.preventPreviewTabOverwrite = src.preventPreviewTabOverwrite;
+  if (typeof src.rightPaneSelectionMenuEnabled === 'boolean') next.rightPaneSelectionMenuEnabled = src.rightPaneSelectionMenuEnabled;
+  if (typeof src.docCodeExtsSeeded === 'boolean') next.docCodeExtsSeeded = src.docCodeExtsSeeded;
   if (typeof src.autoCheckUpdates === 'boolean') next.autoCheckUpdates = src.autoCheckUpdates;
   if (typeof src.ignoredUpdateVersion === 'string') {
     const cleanVer = src.ignoredUpdateVersion.trim().replace(/^v/i, '').slice(0, 32);
     next.ignoredUpdateVersion = /^[0-9A-Za-z._-]{1,32}$/.test(cleanVer) ? cleanVer : '';
   }
   if (VALID_THEMES.has(src.theme)) next.theme = src.theme;
+  if (src.wheelSoundwaveByTheme && typeof src.wheelSoundwaveByTheme === 'object' && !Array.isArray(src.wheelSoundwaveByTheme)) {
+    next.wheelSoundwaveByTheme = sanitizeWheelSoundwaveByTheme(src.wheelSoundwaveByTheme, next.wheelSoundwaveByTheme);
+  }
+  if (typeof src.wheelSoundwaveEnabled === 'boolean') {
+    next.wheelSoundwaveEnabled = src.wheelSoundwaveEnabled;
+    if (!src.wheelSoundwaveByTheme && next.theme !== 'soundwave') {
+      next.wheelSoundwaveByTheme = {
+        ...next.wheelSoundwaveByTheme,
+        [next.theme || 'auto']: src.wheelSoundwaveEnabled,
+      };
+    }
+  }
+  if (next.theme === 'soundwave') {
+    next.wheelSoundwaveEnabled = true;
+  } else if (
+    (src.wheelSoundwaveByTheme !== undefined || src.theme !== undefined) &&
+    src.wheelSoundwaveEnabled === undefined
+  ) {
+    next.wheelSoundwaveEnabled = Boolean(next.wheelSoundwaveByTheme[next.theme || 'auto']);
+  }
   return next;
 }
 
@@ -539,6 +597,32 @@ export class StateStore {
       if (fs.existsSync(this.settingsFile)) {
         const raw = JSON.parse(fs.readFileSync(this.settingsFile, 'utf8'));
         this.settings = sanitizeSettings(raw, DEFAULT_SETTINGS);
+        // One-time non-destructive migration: add common code/script extensions (.js, .mjs, .ts, .py...)
+        // into the default '文档' category if no existing rule already claims js/mjs.
+        if (raw && typeof raw === 'object' && raw.docCodeExtsSeeded !== true) {
+          const rules = Array.isArray(this.settings.categoryRules) ? this.settings.categoryRules : [];
+          const alreadyHasJs = rules.some(
+            (r) => Array.isArray(r.extensions) && (r.extensions.includes('js') || r.extensions.includes('mjs'))
+          );
+          if (!alreadyHasJs) {
+            const docRule = rules.find((r) => r.id === 'doc' || r.label === '文档');
+            if (docRule) {
+              const claimedElsewhere = new Set();
+              for (const r of rules) {
+                if (r !== docRule && Array.isArray(r.extensions)) {
+                  for (const ext of r.extensions) claimedElsewhere.add(ext);
+                }
+              }
+              const merged = new Set(docRule.extensions || []);
+              for (const ext of DOC_CODE_SEED_EXTS) {
+                if (!claimedElsewhere.has(ext)) merged.add(ext);
+              }
+              docRule.extensions = Array.from(merged);
+            }
+          }
+          this.settings.docCodeExtsSeeded = true;
+          this.#saveSettings();
+        }
       }
     } catch {}
     try {
@@ -616,6 +700,7 @@ export class StateStore {
       extraScanDirs: [...this.settings.extraScanDirs],
       categoryRules: (this.settings.categoryRules || []).map((r) => ({ ...r, extensions: [...(r.extensions || [])] })),
       mainChatLayoutSlots: sanitizeMainChatLayoutSlots(this.settings.mainChatLayoutSlots, DEFAULT_MAIN_CHAT_LAYOUT_SLOTS),
+      wheelSoundwaveByTheme: sanitizeWheelSoundwaveByTheme(this.settings.wheelSoundwaveByTheme, DEFAULT_WHEEL_SOUNDWAVE_BY_THEME),
     };
   }
 

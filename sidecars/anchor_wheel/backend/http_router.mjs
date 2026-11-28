@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { openExternalDocument, renderDocument } from './document_renderer.mjs';
+import { EditService } from './edit_service.mjs';
 import { convertFileToUtf8, inspectFileEncoding } from './encoding.mjs';
 import { renderSlidesWithLocalEngine } from './local_office_exporter.mjs';
 import { buildNavContext, classifyFile, listDirectoryDirectFiles } from './nav_context.mjs';
@@ -51,6 +52,7 @@ export function createRouterHandlers({
   backlinkIndex,
   previewService,
   videoService,
+  editService,
   updateService,
   getCdpStatus,
   pushNativeSync,
@@ -59,6 +61,7 @@ export function createRouterHandlers({
 }) {
   const effectivePreviewService = previewService || new PreviewService(stateStore.dataDir);
   const effectiveVideoService = videoService || new VideoService(stateStore.dataDir);
+  const effectiveEditService = editService || new EditService(stateStore.dataDir);
   const effectiveUpdateService =
     updateService ||
     new UpdateService({
@@ -79,6 +82,7 @@ export function createRouterHandlers({
     ['/app.js', 'frontend/app.js', 'application/javascript; charset=utf-8'],
     ['/wheel.css', 'shared/wheel_styles.css', 'text/css; charset=utf-8'],
     ['/nav_shared.js', 'shared/nav_shared.js', 'application/javascript; charset=utf-8'],
+    ['/soundwave_orb.js', 'shared/soundwave_orb.js', 'application/javascript; charset=utf-8'],
     ['/wheel.js', 'shared/radial_wheel.js', 'application/javascript; charset=utf-8'],
     ['/bilateral_wheel.js', 'shared/bilateral_wheel.js', 'application/javascript; charset=utf-8'],
     ['/layout_wheel.js', 'shared/layout_wheel.js', 'application/javascript; charset=utf-8'],
@@ -86,6 +90,7 @@ export function createRouterHandlers({
     ['/settings_modal.js', 'shared/settings_modal.js', 'application/javascript; charset=utf-8'],
     ['/markdown.js', 'shared/markdown_render.js', 'application/javascript; charset=utf-8'],
     ['/doc_viewer.js', 'shared/doc_viewer.js', 'application/javascript; charset=utf-8'],
+    ['/text_editor.js', 'shared/text_editor.js', 'application/javascript; charset=utf-8'],
   ];
 
   const routes = new Map();
@@ -339,6 +344,32 @@ export function createRouterHandlers({
       return { ok: false, error: 'Explicit user confirmation required' };
     }
     return convertFileToUtf8(data?.path, data?.encoding || '');
+  });
+
+  routes.set('POST /api/file/edit-open', (data) => {
+    return effectiveEditService.openForEdit(data?.path || '');
+  });
+
+  routes.set('POST /api/file/edit-save', (data) => {
+    const res = effectiveEditService.saveEditedFile({
+      path: data?.path || '',
+      sessionId: data?.sessionId || '',
+      content: data?.content ?? '',
+      baseMtimeMs: data?.baseMtimeMs,
+      forceSave: Boolean(data?.forceSave),
+      forceOverwrite: Boolean(data?.forceOverwrite),
+    });
+    if (res?.ok && /\.(?:md|mdx|markdown)$/i.test(res.path || '')) {
+      backlinkIndex.scheduleBackgroundRescan({ force: false });
+    }
+    return res;
+  });
+
+  routes.set('POST /api/file/edit-history', (data) => {
+    return effectiveEditService.getEditHistory({
+      path: data?.path || '',
+      limit: data?.limit || 20,
+    });
   });
 
   routes.set('POST /api/doc/render', (data) => {

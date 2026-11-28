@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { openExternalDocument, renderDocument } from './document_renderer.mjs';
+import { EditService } from './edit_service.mjs';
 import { convertFileToUtf8, inspectFileEncoding } from './encoding.mjs';
 import { renderSlidesWithLocalEngine } from './local_office_exporter.mjs';
 import { buildNavContext, classifyFile, listDirectoryDirectFiles } from './nav_context.mjs';
@@ -177,6 +178,7 @@ class MiniCdpSession {
 const BUNDLE_SOURCE_FILES = Object.freeze([
   ['shared', 'wheel_styles.css'],
   ['shared', 'nav_shared.js'],
+  ['shared', 'soundwave_orb.js'],
   ['shared', 'radial_wheel.js'],
   ['shared', 'bilateral_wheel.js'],
   ['shared', 'layout_wheel.js'],
@@ -184,6 +186,7 @@ const BUNDLE_SOURCE_FILES = Object.freeze([
   ['shared', 'settings_modal.js'],
   ['shared', 'markdown_render.js'],
   ['shared', 'doc_viewer.js'],
+  ['shared', 'text_editor.js'],
   ['native', 'native_enhancer.js'],
 ]);
 
@@ -194,11 +197,12 @@ function safeJson(val) {
 }
 
 export class CdpBridge {
-  constructor({ stateStore, backlinkIndex, previewService, videoService, updateService, getMediaBaseUrl, portFilePath } = {}) {
+  constructor({ stateStore, backlinkIndex, previewService, videoService, editService, updateService, getMediaBaseUrl, portFilePath } = {}) {
     this.stateStore = stateStore;
     this.backlinkIndex = backlinkIndex;
     this.previewService = previewService || (stateStore ? new PreviewService(stateStore.dataDir) : null);
     this.videoService = videoService || (stateStore ? new VideoService(stateStore.dataDir) : null);
+    this.editService = editService || (stateStore ? new EditService(stateStore.dataDir) : null);
     this.updateService =
       updateService ||
       (stateStore
@@ -246,6 +250,7 @@ export class CdpBridge {
   buildInjectBundle() {
     const wheelCss = fs.readFileSync(path.join(SIDECAR_ROOT, 'shared', 'wheel_styles.css'), 'utf8');
     const navSharedJs = fs.readFileSync(path.join(SIDECAR_ROOT, 'shared', 'nav_shared.js'), 'utf8');
+    const soundwaveJs = fs.readFileSync(path.join(SIDECAR_ROOT, 'shared', 'soundwave_orb.js'), 'utf8');
     const wheelJs = fs.readFileSync(path.join(SIDECAR_ROOT, 'shared', 'radial_wheel.js'), 'utf8');
     const bilateralJs = fs.readFileSync(path.join(SIDECAR_ROOT, 'shared', 'bilateral_wheel.js'), 'utf8');
     const layoutWheelJs = fs.readFileSync(path.join(SIDECAR_ROOT, 'shared', 'layout_wheel.js'), 'utf8');
@@ -253,6 +258,7 @@ export class CdpBridge {
     const settingsModalJs = fs.readFileSync(path.join(SIDECAR_ROOT, 'shared', 'settings_modal.js'), 'utf8');
     const mdJs = fs.readFileSync(path.join(SIDECAR_ROOT, 'shared', 'markdown_render.js'), 'utf8');
     const docViewerJs = fs.readFileSync(path.join(SIDECAR_ROOT, 'shared', 'doc_viewer.js'), 'utf8');
+    const textEditorJs = fs.readFileSync(path.join(SIDECAR_ROOT, 'shared', 'text_editor.js'), 'utf8');
     const nativeJs = fs.readFileSync(path.join(SIDECAR_ROOT, 'native', 'native_enhancer.js'), 'utf8');
     const meta = this.updateService?.getPluginMeta?.() || null;
 
@@ -268,6 +274,7 @@ export class CdpBridge {
     return [
       `window.__agAnchorWheelBoot = ${safeJson(bootConfig)};`,
       navSharedJs,
+      soundwaveJs,
       wheelJs,
       bilateralJs,
       layoutWheelJs,
@@ -275,6 +282,7 @@ export class CdpBridge {
       settingsModalJs,
       mdJs,
       docViewerJs,
+      textEditorJs,
       nativeJs,
     ].join('\n;\n');
   }
@@ -491,6 +499,27 @@ export class CdpBridge {
       case 'convertUtf8':
         if (!req.confirm) return { ok: false, error: 'Explicit confirm required' };
         return convertFileToUtf8(req.path, req.encoding || '');
+      case 'openForEdit':
+        if (!this.editService) return { ok: false, error: 'Edit service unavailable' };
+        return this.editService.openForEdit(req.path || '');
+      case 'saveEditedFile': {
+        if (!this.editService) return { ok: false, error: 'Edit service unavailable' };
+        const res = this.editService.saveEditedFile({
+          path: req.path || '',
+          sessionId: req.sessionId || '',
+          content: req.content ?? '',
+          baseMtimeMs: req.baseMtimeMs,
+          forceSave: Boolean(req.forceSave),
+          forceOverwrite: Boolean(req.forceOverwrite),
+        });
+        if (res?.ok && /\.(?:md|mdx|markdown)$/i.test(res.path || '')) {
+          this.backlinkIndex?.scheduleBackgroundRescan?.({ force: false });
+        }
+        return res;
+      }
+      case 'getEditHistory':
+        if (!this.editService) return { ok: false, error: 'Edit service unavailable' };
+        return this.editService.getEditHistory({ path: req.path || '', limit: req.limit || 20 });
       case 'renderDocument':
         return renderDocument(req.path || '', { snippetOnly: Boolean(req.snippetOnly) });
       case 'renderSlidesHiRes':

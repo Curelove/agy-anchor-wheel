@@ -58,6 +58,7 @@ function buildReleaseBundles() {
     'install-plugin.cmd',
     'install-plugin.sh',
     'assets',
+    'skills',
     'sidecars',
     path.join('scripts', 'install-plugin.mjs'),
     path.join('scripts', 'remove-plugin.mjs'),

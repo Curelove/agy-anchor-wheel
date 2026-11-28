@@ -91,12 +91,20 @@
 
     let activeState = null;
     let backdropEl = null;
+    let soundwaveInst = null;
+
+    function destroySoundwave() {
+      if (!soundwaveInst) return;
+      try { soundwaveInst.destroy(); } catch {}
+      soundwaveInst = null;
+    }
 
     function onWindowBlur() {
       close();
     }
 
     function close() {
+      destroySoundwave();
       try { doc.defaultView?.removeEventListener?.('blur', onWindowBlur); } catch {}
       if (!backdropEl) return;
       doc.removeEventListener('pointermove', onPointerMove, true);
@@ -178,10 +186,11 @@
         close();
         return;
       }
+      const dx = ev.clientX - activeState.cx;
+      const dy = ev.clientY - activeState.cy;
+      soundwaveInst?.setPointerOffset?.(dx, dy);
       const aimEl = backdropEl?.querySelector('.aw-wheel-aim');
       if (aimEl) {
-        const dx = ev.clientX - activeState.cx;
-        const dy = ev.clientY - activeState.cy;
         const deg = (Math.atan2(dy, dx) * 180) / Math.PI + 90;
         aimEl.style.transform = `rotate(${deg.toFixed(1)}deg)`;
         aimEl.setAttribute('data-visible', Math.hypot(dx, dy) > 20 ? '1' : '0');
@@ -248,6 +257,7 @@
 
     function renderContent() {
       if (!activeState || !backdropEl) return;
+      destroySoundwave();
       backdropEl.innerHTML = '';
 
       const st = activeState;
@@ -358,7 +368,7 @@
         if (!children.length) {
           const empty = doc.createElement('div');
           empty.className = 'aw-link-row-snippet';
-          empty.textContent = st.emptyHint || '当前母页下暂无子标签，左键或中键点击 MD 内链接即可收编。';
+          empty.textContent = st.emptyHint || '当前母页下暂无子标签，左键或中键点击文档内链接即可加入本组。';
           body.appendChild(empty);
         }
 
@@ -396,6 +406,11 @@
 
         const pathEl = doc.createElementNS(SVG_NS, 'path');
         pathEl.setAttribute('d', sectorPath(CX, CY, R_INNER + 4, R_OUTER, a0, a1));
+        pathEl.setAttribute('data-aw-a0', String(a0));
+        pathEl.setAttribute('data-aw-a1', String(a1));
+        pathEl.setAttribute('data-aw-gap', '1.6');
+        pathEl.setAttribute('data-aw-rin', String(R_INNER + 4));
+        pathEl.setAttribute('data-aw-rout', String(R_OUTER));
         pathEl.setAttribute('class', 'aw-wheel-sector');
         if (!item) pathEl.setAttribute('data-empty', '1');
         if (item) {
@@ -515,7 +530,7 @@
         countSpan.style.color = 'var(--aw-fg-muted)';
         countSpan.textContent = children.length
           ? `${children.length} 项${totalPages > 1 ? ` · ${st.page + 1}/${totalPages} 页` : ''}`
-          : st.emptyHint || '点击 MD 链接即收编';
+          : st.emptyHint || '点击文档内链接即可加入本组';
         toolbar.appendChild(countSpan);
 
         if (st.isLiveFallback && st.onPinCurrent) {
@@ -532,7 +547,7 @@
         if (st.onShowOutlinks) {
           const outBtn = markNode(doc.createElement('button'));
           outBtn.className = 'aw-wheel-toolbar-btn';
-          outBtn.textContent = '本文出链';
+          outBtn.textContent = '文中链接';
           outBtn.addEventListener('click', () => {
             close();
             st.onShowOutlinks?.();
@@ -563,6 +578,17 @@
         stage.appendChild(toolbar);
       }
       backdropEl.appendChild(stage);
+      if (options.isSoundwaveEnabled?.() && globalThis.AnchorWheelSoundwave?.mountWheelSoundwave) {
+        stage.setAttribute('data-aw-soundwave', '1');
+        soundwaveInst = globalThis.AnchorWheelSoundwave.mountWheelSoundwave(stage, {
+          document: doc,
+          svgEl: svg,
+          rInner: R_INNER,
+          rOuter: R_OUTER,
+          getScale: () => st.scale || 1,
+          getTheme: options.getTheme,
+        });
+      }
     }
 
     function open({

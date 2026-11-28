@@ -21,6 +21,8 @@
     activePopover: null,
     dragPayload: null,
     docViewerInstance: null,
+    editorInstance: null,
+    editorOpen: false,
   };
 
   const els = {
@@ -33,6 +35,8 @@
     btnFiles: document.getElementById('aw-btn-files'),
     btnSettings: document.getElementById('aw-btn-settings'),
     crumbText: document.getElementById('aw-crumb-text'),
+    btnEdit: document.getElementById('aw-btn-edit'),
+    editLabel: document.getElementById('aw-edit-label'),
     btnTree: document.getElementById('aw-btn-tree'),
     btnPinAnchor: document.getElementById('aw-btn-pin-anchor'),
     pinAnchorLabel: document.getElementById('aw-pin-anchor-label'),
@@ -52,18 +56,32 @@
   let lastHostPrismTheme = '';
   const buildRawFileUrl = (p) =>
     `/api/file/raw?path=${encodeURIComponent(p)}&token=${encodeURIComponent(state.mediaToken || '')}`;
+  const isSoundwaveOn = () =>
+    Boolean(
+      window.AnchorWheelSoundwave?.isSoundwaveActiveForSettings
+        ? window.AnchorWheelSoundwave.isSoundwaveActiveForSettings(state.settings)
+        : state.settings?.theme === 'soundwave' || state.settings?.wheelSoundwaveEnabled
+    );
+  const getThemeSetting = () => state.settings?.theme || 'auto';
   const previewOpts = {
     document,
     mountRoot: document.body,
     fetchPreview: (p, o = {}) =>
       apiPost('/api/preview', { path: p, animated: o.animated ?? state.settings?.videoPreviewAnimated !== false }),
+    getTheme: getThemeSetting,
+    isSoundwaveEnabled: isSoundwaveOn,
     getDelayMs: () => state.settings?.hoverPreviewDelayMs ?? 250,
     getAnimated: () => state.settings?.videoPreviewAnimated !== false,
     isPreviewEnabled: () => state.settings?.hoverPreviewEnabled !== false,
     getHotkey: () => state.settings?.tabCustomHotkey || 'Tab',
     standaloneRawUrl: buildRawFileUrl,
   };
-  const wheel = window.AnchorWheelUI.createRadialWheel({ document, mountRoot: document.body });
+  const wheel = window.AnchorWheelUI.createRadialWheel({
+    document,
+    mountRoot: document.body,
+    getTheme: getThemeSetting,
+    isSoundwaveEnabled: isSoundwaveOn,
+  });
   const bilateral = window.AnchorWheelBilateral.createBilateralWheel(previewOpts);
   const aeTree = window.AnchorWheelTree.createAeTree(previewOpts);
   const settingsModal = window.AnchorWheelSettingsModal.createSettingsModal({
@@ -177,7 +195,7 @@
       const pill = document.createElement('button');
       pill.type = 'button';
       pill.className = 'aw-anchor-pill';
-      pill.title = `优先母页：${grp.anchorPath}\n点击名称切回母页，点击数字呼出轮盘；可拖入链接收编`;
+      pill.title = `本组母页：${grp.anchorPath}\n点击名称切回母页，点击数字呼出轮盘；可拖入链接归入本组`;
       if (aKey === activeKey) pill.style.borderColor = 'var(--aw-accent)';
 
       const iconWrap = document.createElement('span');
@@ -351,7 +369,7 @@
       isLiveFallback,
       emptyHint: isLiveFallback
         ? (group.children?.length ? '当前已打开标签' : '点击下方设为母页或点 MD 链接')
-        : '点击 MD 链接即收编进本组',
+        : '点击文档内链接即可加入本组',
       onSelect: (picked) => {
         const keepNav = Boolean(extra.fromTabMode && !holdMode && !state.settings?.tabCloseOnSelect);
         void openFile(picked.path, {
@@ -398,7 +416,7 @@
               state.session = res.session;
               updateSubbar();
               renderTabsBar();
-              showToast(`已设为优先母页：${baseName(state.activeTabPath)}`);
+              showToast(`已固定为母页：${baseName(state.activeTabPath)}`);
             }
           }
         : null,
@@ -639,6 +657,7 @@
     if (!state.activeTabPath || !state.currentDoc) {
       els.crumbText.textContent = '未打开文件 · 请选择下方工作区文档或报告';
       els.crumbText.title = '';
+      if (els.btnEdit) els.btnEdit.hidden = true;
       if (els.btnTree) els.btnTree.hidden = true;
       els.btnPinAnchor.hidden = true;
       els.btnLinks.hidden = true;
@@ -653,13 +672,26 @@
 
     const rel = findGroupByChildOrAnchor(state.activeTabPath);
     const isDir = Boolean(state.currentDoc?.isDirectory);
+    const canEdit = Boolean(
+      !isDir &&
+      !state.currentDoc?.isBinary &&
+      window.AnchorWheelEditor?.isEditableTextPath?.(state.activeTabPath)
+    );
+    if (els.btnEdit) {
+      els.btnEdit.hidden = !canEdit;
+      if (canEdit) {
+        if (els.editLabel) els.editLabel.textContent = state.editorOpen ? '正在编辑' : '编辑';
+        if (state.editorOpen) els.btnEdit.setAttribute('data-has-links', '1');
+        else els.btnEdit.removeAttribute('data-has-links');
+      }
+    }
     const isMd = /\.(md|mdx|txt)$/i.test(state.activeTabPath);
     els.btnPinAnchor.hidden = !isMd && !isDir && !rel;
     if (rel && rel.role === 'anchor') {
-      els.pinAnchorLabel.textContent = '取消优先母页';
+      els.pinAnchorLabel.textContent = '取消固定母页';
       els.btnPinAnchor.setAttribute('data-has-links', '1');
     } else {
-      els.pinAnchorLabel.textContent = '设为优先母页';
+      els.pinAnchorLabel.textContent = '固定为母页';
       els.btnPinAnchor.removeAttribute('data-has-links');
     }
 
@@ -667,9 +699,9 @@
     const outCount = isDir ? (state.currentDoc?.files?.length || 0) : (state.currentLinks?.outlinks?.length || 0);
     els.btnLinks.hidden = false;
     if (isDir) {
-      els.linksLabel.textContent = backCount > 0 ? `被 ${backCount} 引用 · ${outCount} 文件` : `目录 ${outCount} 文件`;
+      els.linksLabel.textContent = backCount > 0 ? `被 ${backCount} 处引用 · ${outCount} 文件` : `目录 ${outCount} 文件`;
     } else {
-      els.linksLabel.textContent = backCount > 0 ? `被 ${backCount} 份引用` : `引用链 ${outCount}`;
+      els.linksLabel.textContent = backCount > 0 ? `被 ${backCount} 份引用` : `文中链接 ${outCount}`;
     }
     if (backCount > 0) els.btnLinks.setAttribute('data-has-links', '1');
     else els.btnLinks.removeAttribute('data-has-links');
@@ -738,9 +770,86 @@
     }
   }
 
+  async function closeWorkbenchEditor({ reloadDoc = false } = {}) {
+    if (!state.editorOpen) return;
+    try { state.editorInstance?.destroy?.(); } catch {}
+    state.editorInstance = null;
+    state.editorOpen = false;
+    els.reader.removeAttribute('data-aw-editor-mode');
+    updateSubbar();
+    if (reloadDoc && state.activeTabPath) {
+      await openFile(state.activeTabPath, { skipHistory: true });
+    } else if (state.currentDoc) {
+      renderDocumentBody(state.currentDoc);
+    }
+  }
+
+  async function openWorkbenchEditor({ initialLocate = null } = {}) {
+    if (!state.activeTabPath || !window.AnchorWheelEditor?.mountTextEditor) return false;
+    if (!window.AnchorWheelEditor.isEditableTextPath(state.activeTabPath)) {
+      showToast('当前文件类型不支持直接作为文本编辑');
+      return false;
+    }
+    if (state.editorOpen && state.editorInstance) {
+      if (initialLocate) state.editorInstance.locateSelection?.(initialLocate);
+      return true;
+    }
+    const res = await apiPost('/api/file/edit-open', { path: state.activeTabPath });
+    if (!res?.ok) {
+      showToast(res?.error || '无法打开编辑视图');
+      return false;
+    }
+    try { state.docViewerInstance?.destroy?.(); } catch {}
+    state.docViewerInstance = null;
+    try { state.editorInstance?.destroy?.(); } catch {}
+    state.editorOpen = true;
+    els.reader.removeAttribute('data-aw-doc-mode');
+    els.reader.setAttribute('data-aw-editor-mode', '1');
+    els.encodingBanner.hidden = true;
+    updateSubbar();
+
+    const copyTxt = async (txt, msg = '已复制到剪贴板') => {
+      try {
+        if (navigator.clipboard?.writeText) {
+          await navigator.clipboard.writeText(txt);
+          showToast(msg);
+          return;
+        }
+      } catch {}
+      const ta = document.createElement('textarea');
+      ta.value = txt;
+      ta.style.cssText = 'position:fixed;left:-9999px;opacity:0';
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      ta.remove();
+      showToast(msg);
+    };
+
+    state.editorInstance = window.AnchorWheelEditor.mountTextEditor(els.reader, res, {
+      initialLocate,
+      onSave: (payload) => apiPost('/api/file/edit-save', payload),
+      onReload: (p) => apiPost('/api/file/edit-open', { path: p }),
+      onNotify: (msg) => showToast(msg),
+      onCopyText: (txt, msg) => void copyTxt(txt, msg),
+      onSendToAi: (promptText) => void copyTxt(promptText, '已复制修改记录，可直接粘贴到对话输入框'),
+      onExit: ({ saved }) => {
+        void closeWorkbenchEditor({ reloadDoc: Boolean(saved || true) });
+      },
+    });
+    return true;
+  }
+
   async function openFile(rawPath, opts = {}) {
     closeOverlays({ keepTabNavigator: Boolean(opts.keepNavigator) });
     if (!rawPath) return;
+    if (state.editorOpen) {
+      if (state.editorInstance?.isDirty?.()) await state.editorInstance.flushIfValid?.();
+      try { state.editorInstance?.destroy?.(); } catch {}
+      state.editorInstance = null;
+      state.editorOpen = false;
+      els.reader.removeAttribute('data-aw-editor-mode');
+    }
 
     const prevPath = state.activeTabPath;
     const prevIsDir = Boolean(state.currentDoc?.isDirectory);
@@ -1268,7 +1377,7 @@
     const backInit = state.currentLinks?.backlinks || [];
     const dirInit = isDirMode && Array.isArray(state.currentDoc?.files) ? state.currentDoc.files : [];
     const outInit = isDirMode ? dirInit : (state.currentLinks?.outlinks || []);
-    const secondLabel = isDirMode ? '目录文件' : '本文出链';
+    const secondLabel = isDirMode ? '目录文件' : '文中链接';
     let currentTab = initialTab || (isDirMode ? (dirInit.length > 0 ? 'outlinks' : 'backlinks') : backInit.length > 0 ? 'backlinks' : outInit.length > 0 ? 'outlinks' : 'backlinks');
     let filterText = '';
 
@@ -1372,7 +1481,7 @@
               </button>`
               )
               .join('')
-          : `<div class="aw-link-row-snippet">${out.length ? '无匹配的出链记录。' : '当前文档内暂无本地文件出链。'}</div>`;
+          : `<div class="aw-link-row-snippet">${out.length ? '无匹配的链接记录。' : '当前文档内暂无本地文件链接。'}</div>`;
       }
 
       for (const rowBtn of bodyEl.querySelectorAll('[data-jump-path]')) {
@@ -1759,6 +1868,15 @@
     });
     els.btnFiles.addEventListener('click', (e) => void openFilesPopover(e.currentTarget));
     els.btnSettings.addEventListener('click', () => void openSettingsModalView('modes'));
+    els.btnEdit?.addEventListener('click', () => {
+      if (state.editorOpen) {
+        const exitBtn = els.reader.querySelector('#aw-ed-exit');
+        if (exitBtn) exitBtn.click();
+        else void closeWorkbenchEditor({ reloadDoc: true });
+      } else {
+        void openWorkbenchEditor();
+      }
+    });
     els.btnTree?.addEventListener('click', () => triggerTabNavigator());
     els.btnLinks.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -2125,6 +2243,8 @@
       openEncodingPopover,
       openSettingsPopover: () => openSettingsModalView('modes'),
       openSettingsModal: openSettingsModalView,
+      openWorkbenchEditor,
+      closeWorkbenchEditor,
       triggerTabNavigator,
       syncUpdateBadge,
       getState: () => state,

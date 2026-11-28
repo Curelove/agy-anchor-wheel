@@ -17,19 +17,19 @@
     {
       key: 'ae_tree',
       title: '竖向层级树',
-      desc: '推荐快捷键呼出：纵向串联「祖父页 → 母页 → 当前页」，右侧排布各自子页；悬停点亮整支与快览，叠角展开自动让位。',
+      desc: '推荐快捷键呼出：纵向串联「祖父页 → 母页 → 当前页」，右侧排布各自子页；悬停点亮整条路径并显示内容预览，更多子项可展开查看。',
     },
     {
       key: 'classic_wheel',
-      title: '经典母页轮盘',
-      desc: '圆心固定为优先母页，周围扇区展示组内子页；按住触发键划选扇区或中心松手打开，移到圈外自动取消。',
+      title: '母页分组轮盘',
+      desc: '圆心固定为本组母页，周围扇区展示组内子页；按住触发键划选扇区或中心松手打开，移到圈外自动取消。',
     },
   ]);
 
   const FOOTER_HINTS = Object.freeze({
-    modes: '仅当前聚焦主模式卡片全亮，悬停灰显卡片可预览动效',
-    categories: '增删分类规则或调整快览参数，上方图解即时同步',
-    storage: '调节扇区数或四套主题立即预览，保存后全局生效',
+    modes: '仅当前查看通道所选的模式卡片全亮，悬停其余卡片可预览动态效果',
+    categories: '按住分类左侧手柄上下拖动即可调整轮盘扇区顺序，上方图解实时同步',
+    storage: '切换界面主题、音浪球动态效果或标签收纳策略，保存后立即全局生效',
   });
 
   const DEFAULT_MAIN_LAYOUT_SLOTS = Object.freeze({
@@ -54,6 +54,60 @@
   ]);
 
   const VALID_MAIN_LAYOUT_ACTIONS = new Set(MAIN_LAYOUT_ACTION_OPTIONS.map((o) => o.id));
+  const NON_SOUNDWAVE_THEMES = Object.freeze(['auto', 'obsidian', 'warm', 'crystal', 'alabaster']);
+  const LS_SOUNDWAVE_MAP_KEY = 'aw_soundwave_by_theme_v1';
+
+  function readLocalSoundwaveMap(win) {
+    try {
+      const raw = win?.localStorage?.getItem?.(LS_SOUNDWAVE_MAP_KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function writeLocalSoundwaveMap(win, map) {
+    try {
+      if (win?.localStorage?.setItem && map && typeof map === 'object') {
+        win.localStorage.setItem(LS_SOUNDWAVE_MAP_KEY, JSON.stringify(map));
+      }
+    } catch {}
+  }
+
+  function normalizeDraftSoundwaveByTheme(settings, win) {
+    const out = { auto: false, obsidian: false, warm: false, crystal: false, alabaster: false };
+    const fromSettings =
+      settings?.wheelSoundwaveByTheme &&
+      typeof settings.wheelSoundwaveByTheme === 'object' &&
+      !Array.isArray(settings.wheelSoundwaveByTheme)
+        ? settings.wheelSoundwaveByTheme
+        : null;
+    const fromLs = !fromSettings ? readLocalSoundwaveMap(win) : null;
+    const src = fromSettings || fromLs;
+    if (src) {
+      for (const k of NON_SOUNDWAVE_THEMES) {
+        if (typeof src[k] === 'boolean') out[k] = src[k];
+      }
+    } else if (
+      settings &&
+      settings.theme &&
+      settings.theme !== 'soundwave' &&
+      typeof settings.wheelSoundwaveEnabled === 'boolean'
+    ) {
+      const t = NON_SOUNDWAVE_THEMES.includes(settings.theme) ? settings.theme : 'auto';
+      out[t] = settings.wheelSoundwaveEnabled;
+    }
+    return out;
+  }
+
+  function isSoundwaveCheckedForDraft(draftObj) {
+    if (!draftObj) return false;
+    const t = draftObj.theme || 'auto';
+    if (t === 'soundwave') return true;
+    return Boolean(draftObj.wheelSoundwaveByTheme?.[t]);
+  }
 
   function normalizeDraftLayoutSlots(raw) {
     const src = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
@@ -278,6 +332,7 @@
       if (g('#aw-sm-rich-doc')) draft.richDocPreviewEnabled = Boolean(g('#aw-sm-rich-doc').checked);
       if (g('#aw-sm-rich-strategy')) draft.richDocAutoStrategy = g('#aw-sm-rich-strategy').value;
       if (g('#aw-sm-rich-paper')) draft.richDocPaperMode = Boolean(g('#aw-sm-rich-paper').checked);
+      if (g('#aw-sm-sel-menu')) draft.rightPaneSelectionMenuEnabled = Boolean(g('#aw-sm-sel-menu').checked);
 
       const ruleRows = modalEl.querySelectorAll('[data-aw-rule-idx]');
       if (ruleRows.length) {
@@ -299,10 +354,37 @@
       if (g('#aw-sm-auto')) draft.autoAnchorSummaryMd = Boolean(g('#aw-sm-auto').checked);
       if (g('#aw-sm-auto-update')) draft.autoCheckUpdates = Boolean(g('#aw-sm-auto-update').checked);
       if (g('#aw-sm-sectors')) draft.wheelSectors = Number(g('#aw-sm-sectors').value || 8);
-      if (g('#aw-sm-theme')) {
-        draft.theme = g('#aw-sm-theme').value;
-        applyThemePreview(draft.theme);
+      const prevTheme = draft.theme || 'auto';
+      const themeSel = g('#aw-sm-theme');
+      const swCheckbox = g('#aw-sm-soundwave');
+      if (!draft.wheelSoundwaveByTheme || typeof draft.wheelSoundwaveByTheme !== 'object') {
+        draft.wheelSoundwaveByTheme = normalizeDraftSoundwaveByTheme(draft, doc.defaultView);
       }
+      if (themeSel) {
+        const nextTheme = themeSel.value || 'auto';
+        if (nextTheme !== prevTheme) {
+          draft.theme = nextTheme;
+          applyThemePreview(draft.theme);
+          if (swCheckbox) {
+            if (nextTheme === 'soundwave') {
+              swCheckbox.checked = true;
+              swCheckbox.disabled = true;
+            } else {
+              const remembered = Boolean(draft.wheelSoundwaveByTheme[nextTheme]);
+              swCheckbox.disabled = false;
+              swCheckbox.checked = remembered;
+            }
+          }
+        } else {
+          applyThemePreview(draft.theme);
+          if (swCheckbox && nextTheme !== 'soundwave' && !swCheckbox.disabled) {
+            draft.wheelSoundwaveByTheme[nextTheme] = Boolean(swCheckbox.checked);
+          }
+        }
+      } else if (swCheckbox && prevTheme !== 'soundwave' && !swCheckbox.disabled) {
+        draft.wheelSoundwaveByTheme[prevTheme] = Boolean(swCheckbox.checked);
+      }
+      draft.wheelSoundwaveEnabled = isSoundwaveCheckedForDraft(draft);
       if (g('#aw-sm-extra')) {
         draft.extraScanDirs = String(g('#aw-sm-extra').value || '')
           .split(/[,;\n]/)
@@ -315,17 +397,21 @@
       if (!modalEl || !draft) return;
       const activeKey = getActiveCardKey();
       const trigMeta = S.resolveWheelTriggerButton ? S.resolveWheelTriggerButton(draft) : { id: 'middle', shortLabel: '中键', label: '鼠标中键' };
+      const hkRaw = draft.tabCustomHotkey || 'Tab';
+      const hkDisplay = S.formatHotkeyLabel ? S.formatHotkeyLabel(hkRaw) : hkRaw;
       const otherMode =
         focusChannel === 'middle'
           ? (draft.tabTriggerEnabled !== false ? draft.tabMode : '')
           : draft.middleMode;
-      const otherLabel = focusChannel === 'middle' ? '快捷键已用' : `${trigMeta.shortLabel}已用`;
+      const otherLabel = focusChannel === 'middle' ? `${hkDisplay} 已绑定` : `${trigMeta.shortLabel}已绑定`;
 
       modalEl.querySelectorAll('[data-aw-focus-ch]').forEach((btn) => {
         const ch = btn.getAttribute('data-aw-focus-ch');
         btn.setAttribute('data-active', ch === focusChannel ? '1' : '0');
         if (ch === 'middle') {
-          btn.textContent = `聚焦：按住${trigMeta.shortLabel}模式`;
+          btn.textContent = `鼠标呼出（${trigMeta.shortLabel}）`;
+        } else if (ch === 'tab') {
+          btn.textContent = `快捷键呼出（${hkDisplay}）`;
         }
       });
 
@@ -343,7 +429,7 @@
         } else if (trigMeta.modifier && trigMeta.modifier !== 'none') {
           trigSub.textContent = `按住 ${trigMeta.label} 呼出，完全避开 Quicker、鼠标手势与常规右键菜单`;
         } else if (trigMeta.id === 'right') {
-          trigSub.textContent = '按住或拖动呼出轮盘；短按保留菜单，按住 Shift + 右键强制透传宿主原生菜单';
+          trigSub.textContent = '按住或拖动呼出轮盘；短按保留菜单，按住 Shift + 右键强制打开原生菜单';
         } else if (trigMeta.id === 'side_back' || trigMeta.id === 'side_forward') {
           trigSub.textContent = '在右侧栏按住对应侧键即呼出轮盘，另一颗侧键照常翻页';
         } else {
@@ -351,8 +437,6 @@
         }
       }
 
-      const hkRaw = draft.tabCustomHotkey || 'Tab';
-      const hkDisplay = S.formatHotkeyLabel ? S.formatHotkeyLabel(hkRaw) : hkRaw;
       const tabHold = draft.tabTriggerAction === 'hold';
       const recBtn = modalEl.querySelector('#aw-sm-hotkey-rec');
       if (recBtn) {
@@ -414,26 +498,44 @@
       if (layoutSlotsReset) {
         layoutSlotsReset.hidden = isDefaultLayoutSlots(draft.mainChatLayoutSlots);
       }
+      const swSub = modalEl.querySelector('#aw-sm-soundwave-sub');
+      if (swSub) {
+        swSub.textContent =
+          draft.theme === 'soundwave'
+            ? '「音浪圆球」主题下默认开启且无法关闭；切换到其他主题时会按主题独立记忆开关状态'
+            : '默认关闭（按主题独立记忆）：呼出轮盘后圆心保持平稳动态，光标偏向哪一侧即在对应方向涌起音浪';
+      }
+      const swCtrl = modalEl.querySelector('#aw-sm-soundwave');
+      if (swCtrl) {
+        swCtrl.disabled = draft.theme === 'soundwave';
+        swCtrl.checked = isSoundwaveCheckedForDraft(draft);
+      }
 
       const focusHintEl = modalEl.querySelector('#aw-sm-focus-hint');
       if (focusHintEl) {
         focusHintEl.textContent = !activeKey
-          ? '当前通道已关闭，点击任意模式卡片即可重新启用'
-          : '点击卡片直接切换，悬停灰显卡片可预览动效';
+          ? '当前查看的呼出通道已关闭，点击下方任意卡片即可重新启用'
+          : '点击卡片直接设为当前通道模式，悬停其余卡片可预览动态效果';
       }
+
+      const bilateralUsed =
+        draft.middleMode === 'bilateral_wheel' ||
+        (draft.tabTriggerEnabled !== false && draft.tabMode === 'bilateral_wheel');
+      const treeUsed =
+        draft.middleMode === 'ae_tree' ||
+        (draft.tabTriggerEnabled !== false && draft.tabMode === 'ae_tree');
+      const classicUsed =
+        draft.middleMode === 'classic_wheel' ||
+        (draft.tabTriggerEnabled !== false && draft.tabMode === 'classic_wheel');
 
       // Dim dependent form rows when their parent toggle/channel is disabled
       const trigRow = modalEl.querySelector('#aw-sm-row-trigger-btn');
       if (trigRow) {
         trigRow.setAttribute('data-dim', draft.middleMode === 'off' && !draft.mainChatLayoutWheelEnabled ? '1' : '0');
       }
-      const pdirRow = modalEl.querySelector('#aw-sm-row-pdir');
-      if (pdirRow) {
-        const bilateralUsed =
-          draft.middleMode === 'bilateral_wheel' ||
-          (draft.tabTriggerEnabled !== false && draft.tabMode === 'bilateral_wheel');
-        pdirRow.setAttribute('data-dim', bilateralUsed ? '0' : '1');
-      }
+      modalEl.querySelector('#aw-sm-row-pdir')?.setAttribute('data-dim', bilateralUsed ? '0' : '1');
+      modalEl.querySelector('#aw-sm-row-sectors')?.setAttribute('data-dim', classicUsed ? '0' : '1');
+
       const tabOff = draft.tabTriggerEnabled === false;
       for (const id of ['#aw-sm-row-tab-mode', '#aw-sm-row-tab-key']) {
         modalEl.querySelector(id)?.setAttribute('data-dim', tabOff ? '1' : '0');
@@ -456,7 +558,7 @@
         const chip = card.querySelector('.aw-guide-chip');
         if (chip) {
           if (isPrimary) {
-            chip.textContent = focusChannel === 'middle' ? `${trigMeta.shortLabel}主用` : '快捷键主用';
+            chip.textContent = focusChannel === 'middle' ? `${trigMeta.shortLabel}使用中` : `${hkDisplay} 使用中`;
             chip.setAttribute('data-tone', 'active');
             chip.hidden = false;
           } else if (key === otherMode && otherMode !== 'off') {
@@ -472,28 +574,32 @@
         if (svgHost) svgHost.innerHTML = S.renderModeGuideSvg(key, draft);
       });
 
-      // Live mini previews on secondary tabs without stealing input focus
+      // Live mini previews on categories tab (mark unused mode visibly so it never misleads)
       const catMini = modalEl.querySelector('#aw-sm-cat-live-preview');
       if (catMini) {
         catMini.setAttribute('data-narrow-active', activeCatPreview);
         const biCol = catMini.querySelector('[data-aw-mini-col="bilateral"]');
         const trCol = catMini.querySelector('[data-aw-mini-col="tree"]');
-        if (biCol) biCol.innerHTML = S.renderModeGuideSvg('bilateral_wheel', draft);
-        if (trCol) trCol.innerHTML = S.renderModeGuideSvg('ae_tree', draft);
-      }
-      const advMini = modalEl.querySelector('#aw-sm-adv-live-preview');
-      if (advMini) {
-        advMini.innerHTML = `<div class="aw-mini-preview-col" style="max-width:340px;margin:0 auto">${S.renderModeGuideSvg('classic_wheel', draft)}</div>`;
+        if (biCol) {
+          biCol.setAttribute('data-unused', bilateralUsed ? '0' : '1');
+          biCol.innerHTML = S.renderModeGuideSvg('bilateral_wheel', draft);
+        }
+        if (trCol) {
+          trCol.setAttribute('data-unused', treeUsed ? '0' : '1');
+          trCol.innerHTML = S.renderModeGuideSvg('ae_tree', draft);
+        }
       }
     }
 
     function buildCategoryRuleRowsHtml() {
       const canDel = editingRules.length > 1;
+      const canReorder = editingRules.length > 1;
       return (
         editingRules
           .map(
             (r, i) => `
           <div class="aw-rule-row" data-aw-rule-idx="${i}" data-aw-rule-id="${S.esc(r.id)}">
+            <button type="button" class="aw-rule-drag-handle" data-drag-idx="${i}" aria-label="拖动调整分类顺序" title="按住上下拖动调整轮盘分类顺序（或按 Alt+↑ / Alt+↓）" ${canReorder ? '' : 'disabled'}>${S.ICONS.grip || '⋮⋮'}</button>
             <input type="text" class="aw-input aw-sm-rule-label aw-reactive-ctrl" value="${S.esc(r.label)}" maxlength="12" placeholder="分类名" />
             <input type="text" class="aw-input aw-sm-rule-exts aw-reactive-ctrl" value="${S.esc(r.extensionsRaw)}" placeholder="扩展名，如 png, jpg, svg" />
             <button type="button" class="aw-tray-btn aw-sm-del-rule" data-del-idx="${i}" title="删除此分类" ${canDel ? '' : 'disabled'}>${S.ICONS.trash}</button>
@@ -501,18 +607,118 @@
           )
           .join('') +
         `<div class="aw-rule-row aw-rule-locked">
+          <span class="aw-rule-drag-spacer" aria-hidden="true"></span>
           <input type="text" class="aw-input" value="其他" disabled />
-          <input type="text" class="aw-input" value="未命中上述分类的全部文件与文件夹（固定兜底）" disabled />
+          <input type="text" class="aw-input" value="未归入上述分类的全部文件与文件夹（固定在末尾）" disabled />
           <span class="aw-link-row-badge">固定</span>
         </div>`
       );
     }
 
+    function reindexRuleRowsInDom(listEl) {
+      if (!listEl) return;
+      const rows = listEl.querySelectorAll('.aw-rule-row[data-aw-rule-idx]');
+      rows.forEach((row, idx) => {
+        row.setAttribute('data-aw-rule-idx', String(idx));
+        const h = row.querySelector('.aw-rule-drag-handle');
+        if (h) h.setAttribute('data-drag-idx', String(idx));
+        const d = row.querySelector('.aw-sm-del-rule');
+        if (d) d.setAttribute('data-del-idx', String(idx));
+      });
+    }
+
+    function swapRuleOrder(modalEl, fromIdx, toIdx, { rerenderDom = true, focusRowIdx = -1 } = {}) {
+      if (fromIdx === toIdx) return false;
+      if (fromIdx < 0 || toIdx < 0 || fromIdx >= editingRules.length || toIdx >= editingRules.length) return false;
+      const [moved] = editingRules.splice(fromIdx, 1);
+      editingRules.splice(toIdx, 0, moved);
+      const compiled = compileValidRulesFromEditing();
+      if (compiled.length && draft) draft.categoryRules = compiled;
+      if (rerenderDom) {
+        renderCategoryRulesDom(modalEl, { focusLast: false });
+        if (focusRowIdx >= 0) {
+          const targetHandle = modalEl.querySelector(`.aw-rule-row[data-aw-rule-idx="${focusRowIdx}"] .aw-rule-drag-handle`);
+          targetHandle?.focus();
+        }
+      } else {
+        updateLiveGuides(modalEl);
+      }
+      return true;
+    }
+
     function bindRuleRowEvents(modalEl) {
+      const listEl = modalEl.querySelector('.aw-rule-list');
       modalEl.querySelectorAll('.aw-rule-list .aw-reactive-ctrl').forEach((ctrl) => {
         ctrl.addEventListener('input', () => {
           syncDraftFromDom(modalEl);
           updateLiveGuides(modalEl);
+        });
+      });
+      modalEl.querySelectorAll('.aw-rule-row[data-aw-rule-idx]').forEach((row) => {
+        row.addEventListener('keydown', (e) => {
+          if (!e.altKey || (e.key !== 'ArrowUp' && e.key !== 'ArrowDown')) return;
+          e.preventDefault();
+          e.stopPropagation();
+          syncDraftFromDom(modalEl);
+          const idx = Number(row.getAttribute('data-aw-rule-idx'));
+          const nextIdx = e.key === 'ArrowUp' ? idx - 1 : idx + 1;
+          swapRuleOrder(modalEl, idx, nextIdx, { rerenderDom: true, focusRowIdx: nextIdx });
+        });
+      });
+      modalEl.querySelectorAll('.aw-rule-drag-handle').forEach((handle) => {
+        handle.addEventListener('pointerdown', (e) => {
+          if (e.button !== 0 || editingRules.length <= 1 || !listEl) return;
+          const row = handle.closest('.aw-rule-row[data-aw-rule-idx]');
+          if (!row) return;
+          e.preventDefault();
+          e.stopPropagation();
+          syncDraftFromDom(modalEl);
+
+          let curIdx = Number(row.getAttribute('data-aw-rule-idx'));
+          row.setAttribute('data-dragging', '1');
+          listEl.setAttribute('data-reordering', '1');
+          try { handle.setPointerCapture?.(e.pointerId); } catch {}
+
+          const onMove = (mv) => {
+            mv.preventDefault();
+            const customRows = Array.from(listEl.querySelectorAll('.aw-rule-row[data-aw-rule-idx]'));
+            if (curIdx > 0) {
+              const prevRow = customRows[curIdx - 1];
+              const prevRect = prevRow?.getBoundingClientRect();
+              if (prevRect && mv.clientY < prevRect.top + prevRect.height * 0.52) {
+                listEl.insertBefore(row, prevRow);
+                reindexRuleRowsInDom(listEl);
+                swapRuleOrder(modalEl, curIdx, curIdx - 1, { rerenderDom: false });
+                curIdx -= 1;
+                return;
+              }
+            }
+            if (curIdx < customRows.length - 1) {
+              const nextRow = customRows[curIdx + 1];
+              const nextRect = nextRow?.getBoundingClientRect();
+              if (nextRect && mv.clientY > nextRect.top + nextRect.height * 0.48) {
+                listEl.insertBefore(nextRow, row);
+                reindexRuleRowsInDom(listEl);
+                swapRuleOrder(modalEl, curIdx, curIdx + 1, { rerenderDom: false });
+                curIdx += 1;
+              }
+            }
+          };
+
+          const finishDrag = () => {
+            doc.removeEventListener('pointermove', onMove, true);
+            doc.removeEventListener('pointerup', finishDrag, true);
+            doc.removeEventListener('pointercancel', finishDrag, true);
+            row.removeAttribute('data-dragging');
+            listEl.removeAttribute('data-reordering');
+            try { handle.releasePointerCapture?.(e.pointerId); } catch {}
+            syncDraftFromDom(modalEl);
+            updateLiveGuides(modalEl);
+          };
+
+          doc.addEventListener('pointermove', onMove, true);
+          doc.addEventListener('pointerup', finishDrag, true);
+          doc.addEventListener('pointercancel', finishDrag, true);
         });
       });
       modalEl.querySelectorAll('.aw-sm-del-rule').forEach((btn) => {
@@ -706,10 +912,10 @@
         tabBody = `
           <div class="aw-focus-bar">
             <div class="aw-tray">
-              <button type="button" class="aw-tray-btn" data-aw-focus-ch="middle" data-active="${focusChannel === 'middle' ? '1' : '0'}">聚焦：按住中键模式</button>
-              <button type="button" class="aw-tray-btn" data-aw-focus-ch="tab" data-active="${focusChannel === 'tab' ? '1' : '0'}">聚焦：快捷键模式</button>
+              <button type="button" class="aw-tray-btn" data-aw-focus-ch="middle" data-active="${focusChannel === 'middle' ? '1' : '0'}">鼠标呼出（中键）</button>
+              <button type="button" class="aw-tray-btn" data-aw-focus-ch="tab" data-active="${focusChannel === 'tab' ? '1' : '0'}">快捷键呼出（Tab）</button>
             </div>
-            <span class="aw-focus-hint" id="aw-sm-focus-hint">点击卡片直接切换，悬停灰显卡片可预览动效</span>
+            <span class="aw-focus-hint" id="aw-sm-focus-hint">点击卡片直接设为当前通道模式，悬停其余卡片可预览动态效果</span>
           </div>
 
           <div class="aw-guide-grid">
@@ -729,7 +935,7 @@
           </div>
 
           <div class="aw-settings-group">
-            <div class="aw-settings-group-title">双通道呼出与实时布局联动</div>
+            <div class="aw-settings-group-title">呼出方式与布局参数</div>
             <div class="aw-form-row">
               <div class="aw-form-label">
                 <strong id="aw-sm-middle-label">按住鼠标中键呼出模式（松手即确认）</strong>
@@ -737,7 +943,7 @@
               </div>
               <select id="aw-sm-middle" class="aw-select aw-reactive-ctrl">
                 <option value="bilateral_wheel" ${s.middleMode === 'bilateral_wheel' ? 'selected' : ''}>双侧分类轮盘</option>
-                <option value="classic_wheel" ${s.middleMode === 'classic_wheel' ? 'selected' : ''}>经典母页轮盘</option>
+                <option value="classic_wheel" ${s.middleMode === 'classic_wheel' ? 'selected' : ''}>母页分组轮盘</option>
                 <option value="off" ${s.middleMode === 'off' ? 'selected' : ''}>关闭鼠标呼出</option>
               </select>
             </div>
@@ -766,13 +972,24 @@
             <div class="aw-form-row" id="aw-sm-row-pdir">
               <div class="aw-form-label">
                 <strong>双侧轮盘中「母页」所在方向</strong>
-                <span>调节后上方轮盘动画立刻跟随旋转对齐</span>
+                <span>调节后上方双侧轮盘示意图立即同步旋转</span>
               </div>
               <select id="aw-sm-pdir" class="aw-select aw-reactive-ctrl">
                 <option value="left" ${s.parentDirection === 'left' ? 'selected' : ''}>左侧返回母页（右侧展开子页）</option>
                 <option value="right" ${s.parentDirection === 'right' ? 'selected' : ''}>右侧返回母页（左侧展开子页）</option>
                 <option value="top" ${s.parentDirection === 'top' ? 'selected' : ''}>上方返回母页（下方展开子页）</option>
                 <option value="bottom" ${s.parentDirection === 'bottom' ? 'selected' : ''}>下方返回母页（上方展开子页）</option>
+              </select>
+            </div>
+            <div class="aw-form-row" id="aw-sm-row-sectors">
+              <div class="aw-form-label">
+                <strong>母页分组轮盘每页扇区数</strong>
+                <span>仅在启用「母页分组轮盘」时生效，上方右侧卡片实时同步</span>
+              </div>
+              <select id="aw-sm-sectors" class="aw-select aw-reactive-ctrl">
+                <option value="4" ${Number(s.wheelSectors) === 4 ? 'selected' : ''}>4 扇区</option>
+                <option value="6" ${Number(s.wheelSectors) === 6 ? 'selected' : ''}>6 扇区</option>
+                <option value="8" ${Number(s.wheelSectors || 8) === 8 ? 'selected' : ''}>8 扇区</option>
               </select>
             </div>
             <div class="aw-form-row">
@@ -790,7 +1007,7 @@
               <select id="aw-sm-tab-mode" class="aw-select aw-reactive-ctrl">
                 <option value="ae_tree" ${s.tabMode === 'ae_tree' ? 'selected' : ''}>竖向层级树</option>
                 <option value="bilateral_wheel" ${s.tabMode === 'bilateral_wheel' ? 'selected' : ''}>双侧分类轮盘</option>
-                <option value="classic_wheel" ${s.tabMode === 'classic_wheel' ? 'selected' : ''}>经典母页轮盘</option>
+                <option value="classic_wheel" ${s.tabMode === 'classic_wheel' ? 'selected' : ''}>母页分组轮盘</option>
               </select>
             </div>
             <div class="aw-form-row" id="aw-sm-row-tab-key">
@@ -860,7 +1077,7 @@
       } else if (activeTab === 'categories') {
         tabBody = `
           <div class="aw-mini-preview-narrow-bar">
-            <span class="aw-focus-hint">实时联动图解</span>
+            <span class="aw-focus-hint">分类与预览实时示意图</span>
             <div class="aw-tray">
               <button type="button" class="aw-tray-btn" data-aw-cat-prev="bilateral" data-active="${activeCatPreview === 'bilateral' ? '1' : '0'}">双侧轮盘</button>
               <button type="button" class="aw-tray-btn" data-aw-cat-prev="tree" data-active="${activeCatPreview === 'tree' ? '1' : '0'}">层级树</button>
@@ -872,21 +1089,40 @@
           </div>
 
           <div class="aw-settings-group">
-            <div class="aw-settings-group-title">子页范围与悬停快览</div>
+            <div class="aw-settings-group-title">双侧轮盘自定义分类规则</div>
+            <div class="aw-rule-header">
+              <div style="display:flex;align-items:center;gap:8px;min-width:0;flex-wrap:wrap">
+                <span class="aw-focus-hint">按住每行左侧 ⋮⋮ 手柄上下拖动即可调整扇区顺序</span>
+                <span class="aw-link-row-badge" id="aw-sm-rule-count">${editingRules.length}/8 类 + 兜底</span>
+              </div>
+              <button type="button" class="aw-ghost-btn" id="aw-sm-add-rule" ${editingRules.length >= 8 ? 'disabled' : ''}>${S.ICONS.plus} 新增分类</button>
+            </div>
+            <div class="aw-rule-list">${buildCategoryRuleRowsHtml()}</div>
+          </div>
+
+          <div class="aw-settings-group">
+            <div class="aw-settings-group-title">子页范围、内容预览与右键菜单</div>
             <div class="aw-form-row">
               <div class="aw-form-label">
                 <strong>默认展示的子页范围</strong>
-                <span>浮层顶部仍可一键临时切换</span>
+                <span>浮层顶部仍可随时一键切换</span>
               </div>
               <select id="aw-sm-scope" class="aw-select aw-reactive-ctrl">
-                <option value="opened_and_outlinks" ${s.childSourceScope !== 'opened_only' ? 'selected' : ''}>已开子标签 + 文档本地出链（已开置顶）</option>
-                <option value="opened_only" ${s.childSourceScope === 'opened_only' ? 'selected' : ''}>仅显示已打开或收编的子标签</option>
+                <option value="opened_and_outlinks" ${s.childSourceScope !== 'opened_only' ? 'selected' : ''}>已打开子标签 + 文中本地链接（已打开置顶）</option>
+                <option value="opened_only" ${s.childSourceScope === 'opened_only' ? 'selected' : ''}>仅显示已打开或归入分组的子标签</option>
               </select>
             </div>
             <div class="aw-form-row">
               <div class="aw-form-label">
-                <strong>开启光标悬停快览</strong>
-                <span>显示文档开头片段、图片缩略图与视频开头预览</span>
+                <strong>右侧栏选中文字时启用快捷右键菜单</strong>
+                <span>提供复制、引用选中片段到对话框、进入侧栏编辑并定位（不影响左侧聊天与文件胶囊右键菜单）</span>
+              </div>
+              <input type="checkbox" id="aw-sm-sel-menu" class="aw-reactive-ctrl" ${s.rightPaneSelectionMenuEnabled !== false ? 'checked' : ''} />
+            </div>
+            <div class="aw-form-row">
+              <div class="aw-form-label">
+                <strong>开启光标悬停内容预览</strong>
+                <span>显示文档开头摘要、图片缩略图与视频开头画面</span>
               </div>
               <input type="checkbox" id="aw-sm-prev-en" class="aw-reactive-ctrl" ${s.hoverPreviewEnabled !== false ? 'checked' : ''} />
             </div>
@@ -917,11 +1153,11 @@
             </div>
             <div class="aw-form-row" id="aw-sm-row-rich-strategy">
               <div class="aw-form-label">
-                <strong>与 Antigravity 原生视图的优先关系</strong>
-                <span>智能退让模式下，若未来官方原生支持某格式预览将自动优先展示官方视图</span>
+                <strong>与 Antigravity 官方视图的优先关系</strong>
+                <span>官方优先模式下，文本代码等默认保持官方页面，仅在官方无法预览该格式时接管</span>
               </div>
               <select id="aw-sm-rich-strategy" class="aw-select aw-reactive-ctrl">
-                <option value="auto_yield" ${(s.richDocAutoStrategy || 'auto_yield') === 'auto_yield' ? 'selected' : ''}>智能退让（推荐：仅在官方无法预览时接管）</option>
+                <option value="auto_yield" ${(s.richDocAutoStrategy || 'auto_yield') === 'auto_yield' ? 'selected' : ''}>官方优先（推荐：仅在官方无法预览时接管）</option>
                 <option value="always_plugin" ${s.richDocAutoStrategy === 'always_plugin' ? 'selected' : ''}>始终使用插件预览</option>
                 <option value="manual_only" ${s.richDocAutoStrategy === 'manual_only' ? 'selected' : ''}>仅手动点击时开启</option>
               </select>
@@ -934,30 +1170,41 @@
               <input type="checkbox" id="aw-sm-rich-paper" class="aw-reactive-ctrl" ${s.richDocPaperMode ? 'checked' : ''} />
             </div>
           </div>
-
-          <div class="aw-settings-group">
-            <div class="aw-rule-header">
-              <div style="display:flex;align-items:center;gap:8px;min-width:0;flex-wrap:wrap">
-                <div class="aw-settings-group-title" style="margin:0">双侧轮盘自定义分类规则</div>
-                <span class="aw-link-row-badge" id="aw-sm-rule-count">${editingRules.length}/8 类 + 兜底</span>
-              </div>
-              <button type="button" class="aw-ghost-btn" id="aw-sm-add-rule" ${editingRules.length >= 8 ? 'disabled' : ''}>${S.ICONS.plus} 新增分类</button>
-            </div>
-            <div class="aw-rule-list">${buildCategoryRuleRowsHtml()}</div>
-          </div>
         `;
       } else {
         tabBody = `
-          <div class="aw-mini-preview-strip" id="aw-sm-adv-live-preview">
-            <div class="aw-mini-preview-col" style="max-width:340px;margin:0 auto">${S.renderModeGuideSvg('classic_wheel', s)}</div>
+          <div class="aw-settings-group">
+            <div class="aw-settings-group-title">界面外观</div>
+            <div class="aw-form-row">
+              <div class="aw-form-label"><strong>界面主题（适配 obsidian-prism）</strong><span>切换后立即实时预览配色效果</span></div>
+              <select id="aw-sm-theme" class="aw-select aw-reactive-ctrl">
+                <option value="auto" ${s.theme === 'auto' ? 'selected' : ''}>跟随宿主</option>
+                <option value="soundwave" ${s.theme === 'soundwave' ? 'selected' : ''}>音浪圆球（深色动态）</option>
+                <option value="obsidian" ${s.theme === 'obsidian' ? 'selected' : ''}>深空黑曜</option>
+                <option value="warm" ${s.theme === 'warm' ? 'selected' : ''}>暖炭玄岩</option>
+                <option value="crystal" ${s.theme === 'crystal' ? 'selected' : ''}>白昼冷晶</option>
+                <option value="alabaster" ${s.theme === 'alabaster' ? 'selected' : ''}>暖白画册</option>
+              </select>
+            </div>
+            <div class="aw-form-row">
+              <div class="aw-form-label">
+                <strong>开启轮盘音浪球动态效果</strong>
+                <span id="aw-sm-soundwave-sub">${
+                  s.theme === 'soundwave'
+                    ? '「音浪圆球」主题下默认开启且无法关闭；切换到其他主题时会按主题独立记忆开关状态'
+                    : '默认关闭（按主题独立记忆）：呼出轮盘后圆心保持平稳动态，光标偏向哪一侧即在对应方向涌起音浪'
+                }</span>
+              </div>
+              <input type="checkbox" id="aw-sm-soundwave" class="aw-reactive-ctrl" ${isSoundwaveCheckedForDraft(s) ? 'checked' : ''} ${s.theme === 'soundwave' ? 'disabled' : ''} />
+            </div>
           </div>
 
           <div class="aw-settings-group">
-            <div class="aw-settings-group-title">标签组收纳与外观</div>
+            <div class="aw-settings-group-title">标签组收纳与扫描目录</div>
             ${
               cdp !== null
                 ? `<div class="aw-form-row">
-                    <div class="aw-form-label"><strong>原生侧栏连接状态</strong><span>${cdp.connected ? `已附着主窗口（端口 ${cdp.port}）` : '当前未附着调试端口'}</span></div>
+                    <div class="aw-form-label"><strong>原生侧栏连接状态</strong><span>${cdp.connected ? `已连接主窗口（端口 ${cdp.port}）` : '当前未连接调试端口'}</span></div>
                     ${!cdp.connected && currentCallbacks?.onGenerateLauncher ? '<button type="button" id="aw-sm-launcher" class="aw-ghost-btn">生成调试启动器</button>' : `<span class="aw-link-row-badge">${cdp.connected ? '已在线' : '离线'}</span>`}
                   </div>`
                 : ''
@@ -971,30 +1218,12 @@
               <input type="checkbox" id="aw-sm-fold" ${s.foldChildTabsInNativeBar !== false ? 'checked' : ''} />
             </div>
             <div class="aw-form-row">
-              <div class="aw-form-label"><strong>点击对话文件时不覆盖当前标签页</strong><span>自动固化右侧栏临时预览标签，连续打开多个文件时逐个保留</span></div>
+              <div class="aw-form-label"><strong>点击对话文件时不覆盖当前标签页</strong><span>自动保留右侧栏临时预览标签，连续打开多个文件时逐个并列打开</span></div>
               <input type="checkbox" id="aw-sm-preserve-tabs" ${s.preventPreviewTabOverwrite !== false ? 'checked' : ''} />
             </div>
             <div class="aw-form-row">
-              <div class="aw-form-label"><strong>汇总型 MD 自动设为优先母页</strong><span>含 3 个以上本地链接时自动立组</span></div>
+              <div class="aw-form-label"><strong>汇总型文档自动设为母页</strong><span>含 3 个以上本地链接的 Markdown 文档自动建立分组</span></div>
               <input type="checkbox" id="aw-sm-auto" ${s.autoAnchorSummaryMd ? 'checked' : ''} />
-            </div>
-            <div class="aw-form-row">
-              <div class="aw-form-label"><strong>经典轮盘每页扇区数</strong><span>实时反映在上方经典轮盘结构中</span></div>
-              <select id="aw-sm-sectors" class="aw-select aw-reactive-ctrl">
-                <option value="4" ${Number(s.wheelSectors) === 4 ? 'selected' : ''}>4 扇区</option>
-                <option value="6" ${Number(s.wheelSectors) === 6 ? 'selected' : ''}>6 扇区</option>
-                <option value="8" ${Number(s.wheelSectors || 8) === 8 ? 'selected' : ''}>8 扇区</option>
-              </select>
-            </div>
-            <div class="aw-form-row">
-              <div class="aw-form-label"><strong>界面主题（适配 obsidian-prism）</strong><span>切换立即实时预览配色效果</span></div>
-              <select id="aw-sm-theme" class="aw-select aw-reactive-ctrl">
-                <option value="auto" ${s.theme === 'auto' ? 'selected' : ''}>跟随宿主</option>
-                <option value="obsidian" ${s.theme === 'obsidian' ? 'selected' : ''}>深空黑曜</option>
-                <option value="warm" ${s.theme === 'warm' ? 'selected' : ''}>暖炭玄岩</option>
-                <option value="crystal" ${s.theme === 'crystal' ? 'selected' : ''}>白昼冷晶</option>
-                <option value="alabaster" ${s.theme === 'alabaster' ? 'selected' : ''}>暖白画册</option>
-              </select>
             </div>
             <div class="aw-form-row" style="flex-direction:column;align-items:stretch;gap:6px">
               <div class="aw-form-label"><strong>额外扫描目录（逗号分隔）</strong><span>纳入工作区外的 Obsidian 库等双向链接索引</span></div>
@@ -1025,9 +1254,9 @@
               const diagOk = diag && diag.hasRedux && diag.hasBrowserCtx && diag.hasRightPane && diag.hasContentWrap;
               const missingHooks = diag
                 ? [
-                    !diag.hasRedux && 'Redux',
-                    !diag.hasBrowserCtx && 'BrowserContext',
-                    !diag.hasRouter && 'Router',
+                    !diag.hasRedux && '状态同步',
+                    !diag.hasBrowserCtx && '文件上下文',
+                    !diag.hasRouter && '页面跳转',
                     !diag.hasRightPane && '右侧栏容器',
                     !diag.hasContentWrap && '文档内容区',
                   ].filter(Boolean)
@@ -1050,12 +1279,12 @@
                   diag
                     ? `<div class="aw-compat-diag">${
                         diagOk
-                          ? '原生侧栏钩子自检：Redux / Router / 右侧栏容器全部正常就绪。'
-                          : `原生侧栏部分钩子未命中（${S.esc(missingHooks.join('、') || '宿主容器')}）：若 AGY 刚升级导致侧栏异常，可使用官方侧栏「锚点轮盘工作台」并检查插件更新。`
+                          ? '原生侧边栏连接自检：文档面板、标签切换与侧栏容器均正常就绪。'
+                          : `原生侧边栏部分连接未就绪（${S.esc(missingHooks.join('、') || '侧栏容器')}）：若软件刚升级导致侧栏异常，可使用官方侧栏「锚点轮盘工作台」并检查插件更新。`
                       }</div>`
                     : `<div class="aw-compat-diag">${S.esc(
                         compat?.nativeEnhancerNotice ||
-                          'Mode 1（原生侧栏增强）依赖调试端口与前端内部结构，AGY 大改版后可能需要随插件升级；Mode 2 工作台基于官方接口，跨版本更稳定。'
+                          '原生侧栏增强依赖窗口调试接口，Antigravity 大版本升级后可能需要随插件同步更新；独立侧栏「锚点轮盘工作台」基于官方接口，跨版本更稳定。'
                       )}</div>`
                 }
                 <div class="aw-form-row">
@@ -1074,7 +1303,7 @@
           </div>
 
           <div class="aw-settings-group">
-            <div class="aw-settings-group-title">最近自动收纳（点击捞回）</div>
+            <div class="aw-settings-group-title">最近自动清理的文件（点击恢复）</div>
             ${
               evicted.length
                 ? evicted
@@ -1105,7 +1334,7 @@
           </div>
           <div class="aw-tray" style="flex-wrap:wrap">
             <button type="button" class="aw-tray-btn" data-aw-sm-tab="modes" data-active="${activeTab === 'modes' ? '1' : '0'}">交互模式与图解</button>
-            <button type="button" class="aw-tray-btn" data-aw-sm-tab="categories" data-active="${activeTab === 'categories' ? '1' : '0'}">分类与快览</button>
+            <button type="button" class="aw-tray-btn" data-aw-sm-tab="categories" data-active="${activeTab === 'categories' ? '1' : '0'}">分类与预览</button>
             <button type="button" class="aw-tray-btn" data-aw-sm-tab="storage" data-active="${activeTab === 'storage' ? '1' : '0'}">收纳与高级</button>
           </div>
           <button type="button" class="aw-tray-btn" id="aw-sm-close" title="关闭">${S.ICONS.close}</button>
@@ -1330,7 +1559,11 @@
         syncDraftFromDom(modal);
         const compiled = compileValidRulesFromEditing();
         if (compiled.length) draft.categoryRules = compiled;
-        const payload = { ...draft };
+        writeLocalSoundwaveMap(doc.defaultView, draft.wheelSoundwaveByTheme);
+        const payload = {
+          ...draft,
+          wheelSoundwaveByTheme: { ...(draft.wheelSoundwaveByTheme || {}) },
+        };
         const cb = currentCallbacks?.onSave;
         close();
         await cb?.(payload);
@@ -1369,12 +1602,15 @@
         label: r.label,
         extensionsRaw: (r.extensions || []).join(', '),
       }));
+      const soundwaveByTheme = normalizeDraftSoundwaveByTheme(settings, doc.defaultView);
       draft = {
         ...settings,
         categoryRules: sanitizedRules,
         extraScanDirs: [...(settings?.extraScanDirs || [])],
         mainChatLayoutSlots: normalizeDraftLayoutSlots(settings?.mainChatLayoutSlots),
+        wheelSoundwaveByTheme: soundwaveByTheme,
       };
+      draft.wheelSoundwaveEnabled = isSoundwaveCheckedForDraft(draft);
       currentCallbacks = {
         evicted,
         cdpStatus,

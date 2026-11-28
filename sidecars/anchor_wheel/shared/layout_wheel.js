@@ -245,12 +245,20 @@
 
     let backdropEl = null;
     let activeState = null;
+    let soundwaveInst = null;
+
+    function destroySoundwave() {
+      if (!soundwaveInst) return;
+      try { soundwaveInst.destroy(); } catch {}
+      soundwaveInst = null;
+    }
 
     function onWindowBlur() {
       close();
     }
 
     function close() {
+      destroySoundwave();
       try { doc.defaultView?.removeEventListener?.('blur', onWindowBlur); } catch {}
       if (!backdropEl) return;
       doc.removeEventListener('pointermove', onPointerMove, true);
@@ -359,6 +367,10 @@
       }
       const dragFromSpawn = Math.hypot(ev.clientX - st.spawnX, ev.clientY - st.spawnY);
       if (dragFromSpawn > st.maxDragFromSpawn) st.maxDragFromSpawn = dragFromSpawn;
+      soundwaveInst?.setPointerOffset?.(
+        st.clamped && st.maxDragFromSpawn < 10 ? 0 : ev.clientX - st.cx,
+        st.clamped && st.maxDragFromSpawn < 10 ? 0 : ev.clientY - st.cy
+      );
       const aimEl = backdropEl.querySelector('.aw-wheel-aim');
       if (aimEl) {
         if (st.clamped && st.maxDragFromSpawn < 10) {
@@ -397,6 +409,7 @@
 
     function renderWheel() {
       if (!activeState || !backdropEl) return;
+      destroySoundwave();
       backdropEl.innerHTML = '';
       const st = activeState;
       const ls = st.layoutState || {};
@@ -428,6 +441,11 @@
 
         const pathEl = doc.createElementNS(SVG_NS, 'path');
         pathEl.setAttribute('d', sectorPath(CX, CY, R_INNER + 6, R_OUTER, sec.a0, sec.a1, 2.6));
+        pathEl.setAttribute('data-aw-a0', String(sec.a0));
+        pathEl.setAttribute('data-aw-a1', String(sec.a1));
+        pathEl.setAttribute('data-aw-gap', '2.6');
+        pathEl.setAttribute('data-aw-rin', String(R_INNER + 6));
+        pathEl.setAttribute('data-aw-rout', String(R_OUTER));
         pathEl.setAttribute('class', 'aw-wheel-sector aw-layout-sector');
         pathEl.setAttribute('data-layout-slot', sec.slot);
         pathEl.setAttribute('data-layout-action', meta.actionId);
@@ -498,6 +516,17 @@
       stage.appendChild(centerLabel);
       stage.appendChild(hint);
       backdropEl.appendChild(stage);
+      if (options.isSoundwaveEnabled?.() && globalThis.AnchorWheelSoundwave?.mountWheelSoundwave) {
+        stage.setAttribute('data-aw-soundwave', '1');
+        soundwaveInst = globalThis.AnchorWheelSoundwave.mountWheelSoundwave(stage, {
+          document: doc,
+          svgEl: svg,
+          rInner: R_INNER,
+          rOuter: R_OUTER,
+          getScale: () => st.scale || 1,
+          getTheme: options.getTheme,
+        });
+      }
     }
 
     function open({

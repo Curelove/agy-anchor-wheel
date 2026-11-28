@@ -28,6 +28,7 @@
     chevronDown: '<svg class="aw-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>',
     plus: '<svg class="aw-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>',
     trash: '<svg class="aw-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>',
+    grip: '<svg class="aw-icon" viewBox="0 0 24 24" fill="currentColor" stroke="none"><circle cx="9" cy="6" r="1.5"/><circle cx="15" cy="6" r="1.5"/><circle cx="9" cy="12" r="1.5"/><circle cx="15" cy="12" r="1.5"/><circle cx="9" cy="18" r="1.5"/><circle cx="15" cy="18" r="1.5"/></svg>',
     wheel: '<svg class="aw-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3"/><line x1="12" y1="3" x2="12" y2="9"/><line x1="12" y1="15" x2="12" y2="21"/><line x1="3" y1="12" x2="9" y2="12"/><line x1="15" y1="12" x2="21" y2="12"/></svg>',
   });
 
@@ -38,10 +39,20 @@
       label: '视频',
       extensions: [
         'mp4', 'm4v', 'mov', 'qt', 'mkv', 'webm', 'avi', 'flv', 'f4v', 'wmv', 'asf',
-        'ts', 'mts', 'm2ts', 'mpg', 'mpeg', 'ogv', '3gp', 'rmvb', 'vob', 'mxf',
+        'mts', 'm2ts', 'mpg', 'mpeg', 'ogv', '3gp', 'rmvb', 'vob', 'mxf',
       ],
     },
-    { id: 'doc', label: '文档', extensions: ['md', 'mdx', 'txt', 'pdf', 'docx', 'doc', 'xlsx', 'xlsm', 'xls', 'pptx', 'ppt', 'odt', 'ods', 'odp', 'rtf', 'epub', 'srt', 'ass', 'ssa', 'json', 'yaml', 'yml', 'csv', 'tsv'] },
+    {
+      id: 'doc',
+      label: '文档',
+      extensions: [
+        'md', 'mdx', 'txt', 'pdf', 'docx', 'doc', 'xlsx', 'xlsm', 'xls', 'pptx', 'ppt',
+        'odt', 'ods', 'odp', 'rtf', 'epub', 'srt', 'ass', 'ssa', 'json', 'jsonl', 'ndjson', 'yaml', 'yml', 'csv', 'tsv',
+        'js', 'mjs', 'cjs', 'ts', 'cts', 'tsx', 'jsx', 'vue', 'svelte',
+        'html', 'htm', 'css', 'scss', 'less', 'xml', 'toml', 'ini', 'conf', 'jsonc',
+        'py', 'sh', 'bash', 'ps1', 'bat', 'cmd', 'sql', 'log',
+      ],
+    },
   ]);
 
   const WHEEL_TRIGGER_BUTTONS = Object.freeze({
@@ -796,7 +807,7 @@
       } else if (data.kind === 'video') {
         const mediaSrc = data.animDataUrl || data.posterDataUrl;
         if (mediaSrc) {
-          const hint = data.animDataUrl ? '3 秒动态预览' : data.animPending ? '已跳过黑帧 · 动态缓存中...' : '首段非黑帧快览';
+          const hint = data.animDataUrl ? '3 秒动态预览' : data.animPending ? '已跳过黑帧 · 正在生成动态图...' : '视频开头预览';
           bodyHtml = `<div class="aw-preview-media"><img src="${mediaSrc}" alt="${title}" /><span class="aw-preview-media-tag">${hint}</span></div>`;
         } else if (options.standaloneRawUrl && item?.path) {
           bodyHtml = `<div class="aw-preview-media"><video src="${options.standaloneRawUrl(item.path)}" muted playsinline preload="metadata"></video><span class="aw-preview-media-tag">视频流预览</span></div>`;
@@ -943,12 +954,14 @@
     const hotkeySpec = normalizeHotkeyString(cfg.tabCustomHotkey || 'Tab') || 'Tab';
     const hotkey = formatHotkeyLabel(hotkeySpec, { compact: true });
     const triggerBtnShort = resolveWheelTriggerButton(cfg).shortLabel;
-    const wheelUseHotkeyCaption = cfg.middleMode === 'off' && cfg.tabTriggerEnabled !== false && cfg.tabMode === modeKey;
-    const wheelTriggerCaption = wheelUseHotkeyCaption
+    const mouseUsesThis = cfg.middleMode === modeKey;
+    const hotkeyUsesThis = cfg.tabTriggerEnabled !== false && cfg.tabMode === modeKey;
+    const wheelUseHotkeyCaption = !mouseUsesThis && hotkeyUsesThis;
+    const wheelTriggerCaption = mouseUsesThis
+      ? (/^[A-Za-z]/.test(triggerBtnShort) ? `按住 ${triggerBtnShort}` : `按住${triggerBtnShort}`)
+      : wheelUseHotkeyCaption
       ? (tabHoldMode ? `按住 ${hotkey}` : `按 ${hotkey}`)
-      : /^[A-Za-z]/.test(triggerBtnShort)
-      ? `按住 ${triggerBtnShort}`
-      : `按住${triggerBtnShort}`;
+      : '分类示意';
     const sectors = [4, 6, 8].includes(Number(cfg.wheelSectors)) ? Number(cfg.wheelSectors) : 8;
 
     if (modeKey === 'bilateral_wheel') {
@@ -1058,13 +1071,13 @@
           <rect x="${panelX}" y="58" width="${panelW}" height="84" rx="9" fill="var(--aw-popover)" stroke="var(--aw-card-border)"/>
           <rect x="${panelX + 8}" y="66" width="${panelW - 16}" height="46" rx="6" fill="url(#${uid}_thumb)" stroke="var(--aw-accent)" stroke-opacity="0.3"/>
           ${
-            previewOn
-              ? `<circle cx="${panelX + 30}" cy="82" r="7" fill="var(--aw-accent)" fill-opacity="0.72"/>
-                 <path d="M ${panelX + 18} 106 L ${panelX + 44} 88 L ${panelX + 66} 98 L ${panelX + 92} 78 L ${panelX + 114} 106 Z" fill="var(--aw-accent)" fill-opacity="0.45"/>
-                 ${firstExtBadge ? `<rect x="${panelX + panelW - 46}" y="70" width="34" height="14" rx="4" fill="var(--aw-card)" stroke="var(--aw-border)"/><text x="${panelX + panelW - 29}" y="80" fill="var(--aw-accent)" font-size="8.5" font-weight="600" text-anchor="middle">${firstExtBadge}</text>` : ''}
-                 <text x="${panelX + panelW / 2}" y="129" fill="var(--aw-fg)" font-size="10.5" font-weight="600" text-anchor="middle">${delayMs}ms 悬停快览</text>`
-              : `<text x="${panelX + panelW / 2}" y="93" fill="var(--aw-fg-muted)" font-size="10.5" text-anchor="middle">快览已关闭</text>
-                 <text x="${panelX + panelW / 2}" y="129" fill="var(--aw-fg-muted)" font-size="10" text-anchor="middle">${wheelUseHotkeyCaption && !tabHoldMode ? '点击目标即打开' : `松手${esc(wheelUseHotkeyCaption ? hotkey : triggerBtnShort)}即打开`}</text>`
+             previewOn
+               ? `<circle cx="${panelX + 30}" cy="82" r="7" fill="var(--aw-accent)" fill-opacity="0.72"/>
+                  <path d="M ${panelX + 18} 106 L ${panelX + 44} 88 L ${panelX + 66} 98 L ${panelX + 92} 78 L ${panelX + 114} 106 Z" fill="var(--aw-accent)" fill-opacity="0.45"/>
+                  ${firstExtBadge ? `<rect x="${panelX + panelW - 46}" y="70" width="34" height="14" rx="4" fill="var(--aw-card)" stroke="var(--aw-border)"/><text x="${panelX + panelW - 29}" y="80" fill="var(--aw-accent)" font-size="8.5" font-weight="600" text-anchor="middle">${firstExtBadge}</text>` : ''}
+                  <text x="${panelX + panelW / 2}" y="129" fill="var(--aw-fg)" font-size="10.5" font-weight="600" text-anchor="middle">${delayMs}ms 悬停预览</text>`
+               : `<text x="${panelX + panelW / 2}" y="93" fill="var(--aw-fg-muted)" font-size="10.5" text-anchor="middle">悬停预览已关闭</text>
+                  <text x="${panelX + panelW / 2}" y="129" fill="var(--aw-fg-muted)" font-size="10" text-anchor="middle">${wheelUseHotkeyCaption && !tabHoldMode ? '点击目标即打开' : mouseUsesThis || wheelUseHotkeyCaption ? `松开${esc(wheelUseHotkeyCaption ? hotkey : triggerBtnShort)}即打开` : '滑动选定目标打开'}</text>`
           }
         </g>
         <!-- Animated cursor dot & release ripple -->
@@ -1098,7 +1111,7 @@
         </g>
         <rect x="194" y="12" width="108" height="19" rx="6" fill="var(--aw-hover)" stroke="var(--aw-border)"/>
         <rect x="${onlyOpened ? scopeXOpen : scopeXAll}" y="14" width="${onlyOpened ? 50 : 48}" height="15" rx="4.5" fill="var(--aw-card)" stroke="var(--aw-border)"/>
-        <text x="222" y="24.5" fill="${onlyOpened ? 'var(--aw-fg-muted)' : 'var(--aw-fg)'}" font-size="9" font-weight="${onlyOpened ? '500' : '600'}" text-anchor="middle">全部出链</text>
+        <text x="222" y="24.5" fill="${onlyOpened ? 'var(--aw-fg-muted)' : 'var(--aw-fg)'}" font-size="9" font-weight="${onlyOpened ? '500' : '600'}" text-anchor="middle">全部链接</text>
         <text x="273" y="24.5" fill="${onlyOpened ? 'var(--aw-fg)' : 'var(--aw-fg-muted)'}" font-size="9" font-weight="${onlyOpened ? '600' : '500'}" text-anchor="middle">仅已开</text>
 
         <!-- Vertical trunk spine -->
@@ -1126,7 +1139,7 @@
         <g class="aw-anim-tree-stack">
           <rect x="120" y="121" width="64" height="19" rx="6" fill="var(--aw-card)" stroke="var(--aw-border)" opacity="0.55"/>
           <rect x="116" y="116" width="66" height="20" rx="6" fill="var(--aw-card)" stroke="var(--aw-card-border)"/>
-          <text x="149" y="129.5" fill="var(--aw-fg-muted)" font-size="9.5" text-anchor="middle">+4 叠角展开</text>
+          <text x="149" y="129.5" fill="var(--aw-fg-muted)" font-size="9.5" text-anchor="middle">+4 展开更多</text>
         </g>
 
         <!-- Bright animated hover preview card (NO dark/black void!) -->
@@ -1141,14 +1154,14 @@
                  <rect class="aw-anim-wave3" x="272" y="72" width="8" height="18" rx="4" fill="var(--aw-accent)"/>
                  <rect x="202" y="115" width="96" height="3" rx="1.5" fill="var(--aw-border)"/>
                  <rect class="aw-anim-scan" x="202" y="115" width="44" height="3" rx="1.5" fill="var(--aw-accent)"/>
-                 <text x="250" y="133" fill="var(--aw-fg)" font-size="9.5" font-weight="600" text-anchor="middle">${animVid ? `${delayMs}ms 亮画预览` : `${delayMs}ms 静态快览`}</text>`
-              : `<text x="250" y="85" fill="var(--aw-fg-muted)" font-size="10" text-anchor="middle">悬停快览已关闭</text>
+                 <text x="250" y="133" fill="var(--aw-fg)" font-size="9.5" font-weight="600" text-anchor="middle">${animVid ? `${delayMs}ms 动态预览` : `${delayMs}ms 静态预览`}</text>`
+              : `<text x="250" y="85" fill="var(--aw-fg-muted)" font-size="10" text-anchor="middle">悬停预览已关闭</text>
                  <text x="250" y="133" fill="var(--aw-fg-muted)" font-size="9.5" text-anchor="middle">${closeOnSel ? '点选收起' : '常驻对比'}</text>`
           }
         </g>
 
         <circle class="aw-anim-cursor-tree" cx="148" cy="100" r="4.5" fill="var(--aw-accent)"/>
-        <text x="160" y="166" fill="var(--aw-fg-muted)" font-size="10.5" text-anchor="middle">${tabHoldMode ? `按住 ${esc(hotkey)} 悬停松开确认` : `${esc(hotkey)} ${closeOnSel ? '跳转即收' : '常驻对比'}`} · 悬停点亮整支与快览</text>
+        <text x="160" y="166" fill="var(--aw-fg-muted)" font-size="10.5" text-anchor="middle">${hotkeyUsesThis ? (tabHoldMode ? `按住 ${esc(hotkey)} 悬停松开确认` : `${esc(hotkey)} ${closeOnSel ? '跳转即收' : '常驻对比'}`) : '层级树示意'} · 悬停显示预览</text>
       </svg>`;
     }
 
@@ -1177,12 +1190,12 @@
       <rect x="4" y="4" width="312" height="174" rx="12" fill="var(--aw-bg)" stroke="var(--aw-border)"/>
       ${sectorPaths}
       <circle cx="${cx}" cy="${cy}" r="${rIn}" fill="var(--aw-card)" stroke="var(--aw-accent)" stroke-width="1.7"/>
-      <text x="${cx}" y="${cy + 4}" fill="var(--aw-fg)" font-size="10.5" font-weight="600" text-anchor="middle">优先母页</text>
+      <text x="${cx}" y="${cy + 4}" fill="var(--aw-fg)" font-size="10.5" font-weight="600" text-anchor="middle">母页</text>
       <g class="aw-anim-cl-needle" style="transform-origin:${cx}px ${cy}px">
         <circle cx="${cx}" cy="${cy - rIn}" r="3.5" fill="var(--aw-accent)"/>
       </g>
       <circle class="aw-anim-cursor-cl" cx="${cx}" cy="${cy}" r="4.5" fill="var(--aw-accent)"/>
-      <text x="160" y="166" fill="var(--aw-fg-muted)" font-size="10.5" text-anchor="middle">当前 ${sectors} 扇区分布 · 圆心固定母页，圈外松手取消</text>
+      <text x="160" y="166" fill="var(--aw-fg-muted)" font-size="10.5" text-anchor="middle">每页 ${sectors} 扇区 · 圆心为母页，圈外松手取消</text>
     </svg>`;
   }
 

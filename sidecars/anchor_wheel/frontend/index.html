@@ -46,17 +46,21 @@
         <span id="aw-crumb-text">未打开文件 · 请从下方选择文档或粘贴路径</span>
       </div>
       <div class="aw-subbar-actions">
-        <button type="button" id="aw-btn-tree" class="aw-status-pill" hidden title="常驻层级导览 (按 Tab 键开关)">
+        <button type="button" id="aw-btn-edit" class="aw-status-pill" hidden title="在侧边栏直接编辑此文档并自动保存">
+          <svg class="aw-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+          <span id="aw-edit-label">编辑</span>
+        </button>
+        <button type="button" id="aw-btn-tree" class="aw-status-pill" hidden title="层级导览 (按 Tab 键开关)">
           <svg class="aw-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="3" y="14" width="7" height="5" rx="1.5"/><rect x="14" y="14" width="7" height="5" rx="1.5"/><path d="M6.5 8v6"/><path d="M10 5.5h4"/><path d="M10 16.5h4"/></svg>
           <span>层级</span>
         </button>
         <button type="button" id="aw-btn-pin-anchor" class="aw-status-pill" hidden>
           <svg class="aw-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="5" r="3"/><line x1="12" y1="22" x2="12" y2="8"/><path d="M5 12H2a10 10 0 0 0 20 0h-3"/></svg>
-          <span id="aw-pin-anchor-label">设为优先母页</span>
+          <span id="aw-pin-anchor-label">固定为母页</span>
         </button>
         <button type="button" id="aw-btn-links" class="aw-status-pill" hidden>
           <svg class="aw-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
-          <span id="aw-links-label">反向引用 0</span>
+          <span id="aw-links-label">文中链接 0</span>
         </button>
         <button type="button" id="aw-btn-reveal" class="aw-status-pill" hidden title="在系统文件资源管理器中打开">
           <svg class="aw-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M5 19a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4l2 3h9a2 2 0 0 1 2 2v1"/><path d="M3 17l2.5-7h15.5l-2.2 7.4A2 2 0 0 1 16.9 19H5z"/></svg>
@@ -80,12 +84,14 @@
   <div id="aw-popover-root"></div>
 
   <script src="/nav_shared.js"></script>
+  <script src="/soundwave_orb.js"></script>
   <script src="/wheel.js"></script>
   <script src="/bilateral_wheel.js"></script>
   <script src="/ae_tree.js"></script>
   <script src="/settings_modal.js"></script>
   <script src="/markdown.js"></script>
   <script src="/doc_viewer.js"></script>
+  <script src="/text_editor.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { BacklinkIndex } from './backend/backlink_index.mjs';
+import { EditService } from './backend/edit_service.mjs';
 import { createRouterHandlers } from './backend/http_router.mjs';
 import { PreviewService } from './backend/preview_service.mjs';
 import { normalizeFilePath } from './backend/security.mjs';
@@ -114,6 +115,7 @@ export async function startServer(options = {}) {
   const stateStore = new StateStore(dataDir);
   const previewService = new PreviewService(dataDir);
   const videoService = new VideoService(dataDir);
+  const editService = new EditService(dataDir);
   const updateService = new UpdateService({
     dataDir,
     pluginRoot: PLUGIN_ROOT,
@@ -145,6 +147,7 @@ export async function startServer(options = {}) {
         backlinkIndex,
         previewService,
         videoService,
+        editService,
         updateService,
         getMediaBaseUrl,
       });
@@ -190,6 +193,7 @@ export async function startServer(options = {}) {
       backlinkIndex,
       previewService,
       videoService,
+      editService,
       updateService,
       getCdpStatus,
       pushNativeSync,
@@ -238,6 +242,7 @@ export async function startServer(options = {}) {
     backlinkIndex,
     previewService,
     videoService,
+    editService,
     updateService,
     getCdpStatus,
     pushNativeSync,
